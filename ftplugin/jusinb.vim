@@ -7,7 +7,11 @@ if !exists('b:jusi_mappings_initialized')
   nnoremap <silent> <buffer> <leader>r :JusiRebuild<CR>
   nnoremap <silent> <buffer> <leader>a :JusiCellNewAbove<CR>
   nnoremap <silent> <buffer> <leader>b :JusiCellNewBelow<CR>
-  inoremap <silent> <buffer> <C-C> <C-\><C-n>:call jusi#cellmode#update_indicator()<CR>
+  nnoremap <silent> <buffer> <leader>x :JusiCellDelete<CR>
+  nnoremap <silent> <buffer> <leader>c :JusiCellEdit<CR>
+  nnoremap <silent> <buffer> <leader>y :JusiCellCopy<CR>
+  nnoremap <silent> <buffer> <leader>p :JusiCellPasteBelow<CR>
+  inoremap <silent> <buffer> <C-C> <C-\><C-n>:call jusi#notebook#handle_insert_exit()<Bar>call jusi#cellmode#update_indicator()<CR>
 endif
 
 call jusi#cellmode#refresh(bufnr('%'))

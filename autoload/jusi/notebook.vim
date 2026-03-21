@@ -1,5 +1,21 @@
 let s:delimiter_pattern = '^##\s*$'
 
+let s:buffer_cache = {}
+let s:buffer_listener = {}
+
+function! s:perf_enabled() abort
+  return get(g:, 'jusi_perf_log', 0) == 1
+endfunction
+
+function! s:perf_log(event, start, ...) abort
+  if !s:perf_enabled()
+    return
+  endif
+  let l:elapsed = reltimefloat(reltime(a:start)) * 1000.0
+  let l:extra = a:0 >= 1 ? a:1 : ''
+  call writefile([printf('%s %.3fms %s', a:event, l:elapsed, l:extra)], '/tmp/jusivim-perf.log', 'a')
+endfunction
+
 function! s:normalize_bufnr(bufnr) abort
   if a:bufnr is# 0 || a:bufnr is# ''
     return bufnr('%')
@@ -21,13 +37,54 @@ endfunction
 function! s:ensure_state(bufnr) abort
   if !has_key(getbufvar(a:bufnr, ''), 'jusi_nb')
     call setbufvar(a:bufnr, 'jusi_nb', {
-          \ 'bufnr': a:bufnr,
-          \ 'changedtick': -1,
-          \ 'next_cell_id': 1,
-          \ 'cells': [],
+      \ 'bufnr': a:bufnr,
+      \ 'changedtick': -1,
+      \ 'next_cell_id': 1,
+      \ 'cells': [],
+      \ 'dirty_insert': 0,
+      \ 'syntax_dirty': 0,
+      \ 'syntax_dirty_from': 0,
           \ })
   endif
   return getbufvar(a:bufnr, 'jusi_nb')
+endfunction
+
+function! s:ensure_buffer_tracking(bufnr) abort
+  if !has_key(s:buffer_cache, a:bufnr)
+    let s:buffer_cache[a:bufnr] = {
+          \ 'lines': getbufline(a:bufnr, 1, '$'),
+          \ 'change': {},
+          \ }
+  endif
+  if exists('*listener_add') && !has_key(s:buffer_listener, a:bufnr)
+    let s:buffer_listener[a:bufnr] = listener_add(function('s:on_buffer_change'), a:bufnr)
+  endif
+endfunction
+
+function! s:on_buffer_change(bufnr, start, end, added, changes) abort
+  let s:buffer_cache[a:bufnr] = get(s:buffer_cache, a:bufnr, {'lines': [], 'change': {}})
+  let s:buffer_cache[a:bufnr].change = {
+        \ 'start': a:start,
+        \ 'end': a:end,
+        \ 'added': a:added,
+        \ 'changes': copy(a:changes),
+        \ }
+endfunction
+
+function! s:update_buffer_cache_lines(bufnr, lines) abort
+  call s:ensure_buffer_tracking(a:bufnr)
+  let s:buffer_cache[a:bufnr].lines = copy(a:lines)
+  let s:buffer_cache[a:bufnr].change = {}
+endfunction
+
+function! s:buffer_cache_lines(bufnr) abort
+  call s:ensure_buffer_tracking(a:bufnr)
+  return get(s:buffer_cache[a:bufnr], 'lines', [])
+endfunction
+
+function! s:last_change(bufnr) abort
+  call s:ensure_buffer_tracking(a:bufnr)
+  return get(s:buffer_cache[a:bufnr], 'change', {})
 endfunction
 
 function! s:max_cell_id(cells) abort
@@ -67,17 +124,26 @@ function! s:default_syntax(kind, magic) abort
   return 'python'
 endfunction
 
+function! s:cell_signature(lines, start_lnum, end_lnum) abort
+  let l:text = join(a:lines[a:start_lnum - 1 : a:end_lnum - 1], "\n")
+  if exists('*sha256')
+    return sha256(l:text)
+  endif
+  return l:text
+endfunction
+
 function! s:is_default_syntax(cell) abort
   return get(a:cell, 'syntax', '') ==# s:default_syntax(get(a:cell, 'kind', ''), get(a:cell, 'magic', ''))
 endfunction
 
-function! s:make_parsed_cell(start, end_, kind, magic) abort
+function! s:make_parsed_cell(start, end_, kind, magic, signature) abort
   return {
         \ 'start': a:start,
         \ 'end': a:end_,
         \ 'kind': a:kind,
         \ 'magic': a:magic,
         \ 'syntax': s:default_syntax(a:kind, a:magic),
+        \ 'signature': a:signature,
         \ }
 endfunction
 
@@ -138,7 +204,12 @@ function! s:parse_raw_cells(lines) abort
     if l:line =~# s:delimiter_pattern
       if l:start != -1
         let l:type_info = s:derive_cell_type(a:lines, l:start, l:lnum - 1)
-        call add(l:cells, s:make_parsed_cell(l:start, l:lnum - 1, l:type_info.kind, l:type_info.magic))
+        call add(l:cells, s:make_parsed_cell(
+              \ l:start,
+              \ l:lnum - 1,
+              \ l:type_info.kind,
+              \ l:type_info.magic,
+              \ s:cell_signature(a:lines, l:start, l:lnum - 1)))
       endif
       let l:start = l:lnum
     endif
@@ -147,7 +218,12 @@ function! s:parse_raw_cells(lines) abort
 
   if l:start != -1
     let l:type_info = s:derive_cell_type(a:lines, l:start, l:line_count)
-    call add(l:cells, s:make_parsed_cell(l:start, l:line_count, l:type_info.kind, l:type_info.magic))
+    call add(l:cells, s:make_parsed_cell(
+          \ l:start,
+          \ l:line_count,
+          \ l:type_info.kind,
+          \ l:type_info.magic,
+          \ s:cell_signature(a:lines, l:start, l:line_count)))
   endif
 
   return l:cells
@@ -159,35 +235,86 @@ function! s:interval_overlap(a_start, a_end, b_start, b_end) abort
   return max([0, l:end - l:start + 1])
 endfunction
 
+function! s:match_score(parsed, prev) abort
+  let l:score = s:interval_overlap(a:parsed.start, a:parsed.end, a:prev.start, a:prev.end)
+  if get(a:parsed, 'signature', '') !=# '' && get(a:parsed, 'signature', '') ==# get(a:prev, 'signature', '')
+    let l:score += 1000000
+  endif
+  return l:score
+endfunction
+
+function! s:add_signature_index(map, cell, idx) abort
+  let l:signature = get(a:cell, 'signature', '')
+  if empty(l:signature)
+    return
+  endif
+  if !has_key(a:map, l:signature)
+    let a:map[l:signature] = []
+  endif
+  call add(a:map[l:signature], a:idx)
+endfunction
+
+function! s:take_signature_match(map, used_prev, signature) abort
+  if empty(a:signature) || !has_key(a:map, a:signature)
+    return -1
+  endif
+  while !empty(a:map[a:signature])
+    let l:idx = remove(a:map[a:signature], 0)
+    if !has_key(a:used_prev, l:idx)
+      return l:idx
+    endif
+  endwhile
+  return -1
+endfunction
+
+function! s:take_local_overlap_match(prev_cells, used_prev, parsed, parsed_idx) abort
+  let l:candidates = [a:parsed_idx, a:parsed_idx - 1, a:parsed_idx + 1]
+  let l:best_idx = -1
+  let l:best_score = -1
+
+  for l:idx in l:candidates
+    if l:idx < 0 || l:idx >= len(a:prev_cells) || has_key(a:used_prev, l:idx)
+      continue
+    endif
+    let l:score = s:interval_overlap(a:parsed.start, a:parsed.end, a:prev_cells[l:idx].start, a:prev_cells[l:idx].end)
+    if l:score > l:best_score
+      let l:best_score = l:score
+      let l:best_idx = l:idx
+    endif
+  endfor
+
+  if l:best_score > 0
+    return l:best_idx
+  endif
+  return -1
+endfunction
+
 function! s:reconcile_cells(parsed_cells, prev_cells, state) abort
   let l:cells = []
   let l:used_prev = {}
+  let l:signature_map = {}
+  let l:i = 0
 
+  while l:i < len(a:prev_cells)
+    call s:add_signature_index(l:signature_map, a:prev_cells[l:i], l:i)
+    let l:i += 1
+  endwhile
+
+  let l:parsed_idx = 0
   for l:parsed in a:parsed_cells
-    let l:best_idx = -1
-    let l:best_overlap = -1
-    let l:i = 0
-    while l:i < len(a:prev_cells)
-      if has_key(l:used_prev, l:i)
-        let l:i += 1
-        continue
-      endif
-      let l:prev = a:prev_cells[l:i]
-      let l:overlap = s:interval_overlap(l:parsed.start, l:parsed.end, l:prev.start, l:prev.end)
-      if l:overlap > l:best_overlap
-        let l:best_overlap = l:overlap
-        let l:best_idx = l:i
-      endif
-      let l:i += 1
-    endwhile
+    let l:best_idx = s:take_signature_match(l:signature_map, l:used_prev, get(l:parsed, 'signature', ''))
+    if l:best_idx < 0
+      let l:best_idx = s:take_local_overlap_match(a:prev_cells, l:used_prev, l:parsed, l:parsed_idx)
+    endif
 
-    if l:best_idx >= 0 && l:best_overlap > 0
+    if l:best_idx >= 0
       let l:cell = s:merge_runtime_cell(a:prev_cells[l:best_idx], l:parsed)
       let l:used_prev[l:best_idx] = 1
       call add(l:cells, l:cell)
     else
       call add(l:cells, s:init_runtime_cell(l:parsed, a:state))
     endif
+    let l:parsed_idx += 1
   endfor
 
   return l:cells
@@ -206,7 +333,200 @@ function! jusi#notebook#parse_lines(lines, ...) abort
         \ }
 endfunction
 
+function! s:parse_cell_at(lines, cell) abort
+  let l:type_info = s:derive_cell_type(a:lines, a:cell.start, a:cell.end)
+  return s:make_parsed_cell(
+        \ a:cell.start,
+        \ a:cell.end,
+        \ l:type_info.kind,
+        \ l:type_info.magic,
+        \ s:cell_signature(a:lines, a:cell.start, a:cell.end))
+endfunction
+
+function! s:lines_have_delimiter(lines) abort
+  for l:line in a:lines
+    if l:line =~# s:delimiter_pattern
+      return 1
+    endif
+  endfor
+  return 0
+endfunction
+
+function! s:sync_from_index(bufnr, state, start_idx) abort
+  let l:i = a:start_idx
+  while l:i < len(a:state.cells)
+    let l:cell = a:state.cells[l:i]
+    execute 'sign unplace ' . l:cell.sign_id
+          \ . ' group=' . jusi#render#sign_group()
+          \ . ' buffer=' . a:bufnr
+    execute 'sign place ' . l:cell.sign_id
+          \ . ' line=' . jusi#render#sign_lnum(l:cell)
+          \ . ' name=' . jusi#render#sign_name(l:cell.status)
+          \ . ' group=' . jusi#render#sign_group()
+          \ . ' buffer=' . a:bufnr
+    let l:i += 1
+  endwhile
+endfunction
+
+function! s:mark_syntax_dirty(bufnr, state, start_idx) abort
+  let a:state.syntax_dirty = 1
+  if get(a:state, 'syntax_dirty_from', 0) == 0
+    let a:state.syntax_dirty_from = a:start_idx
+  else
+    let a:state.syntax_dirty_from = min([a:state.syntax_dirty_from, a:start_idx])
+  endif
+  call setbufvar(a:bufnr, 'jusi_nb', a:state)
+endfunction
+
+function! s:maybe_resize_cell(bufnr, state) abort
+  let l:change = s:last_change(a:bufnr)
+  if empty(l:change)
+    return {}
+  endif
+  if get(l:change, 'added', 0) == 0
+    return {}
+  endif
+  let l:changes = get(l:change, 'changes', [])
+  if len(l:changes) != 1
+    return {}
+  endif
+  let l:item = l:changes[0]
+  let l:delta = get(l:item, 'added', 0)
+  if l:delta == 0
+    return {}
+  endif
+
+  let l:start = get(l:item, 'lnum', 0)
+  let l:end = get(l:item, 'end', 0)
+  if l:start <= 0
+    return {}
+  endif
+
+  let l:old_lines = s:buffer_cache_lines(a:bufnr)
+  let l:new_lines = getbufline(a:bufnr, 1, '$')
+  let l:old_slice_start = max([1, l:start])
+  let l:old_slice_end = min([len(l:old_lines), max([l:start, l:end - 1])])
+  let l:new_slice_end = min([len(l:new_lines), l:old_slice_end + l:delta])
+  let l:old_slice = l:old_slice_end >= l:old_slice_start ? l:old_lines[l:old_slice_start - 1 : l:old_slice_end - 1] : []
+  let l:new_slice = l:new_slice_end >= l:old_slice_start ? l:new_lines[l:old_slice_start - 1 : l:new_slice_end - 1] : []
+
+  if s:lines_have_delimiter(l:old_slice) || s:lines_have_delimiter(l:new_slice)
+    return {}
+  endif
+
+  let l:idx = s:cell_index_at_line(a:state, l:start)
+  if l:idx >= 0 && l:delta > 0
+    let l:cell_at_start = a:state.cells[l:idx]
+    if l:start == l:cell_at_start.start && l:idx > 0
+      let l:prev = a:state.cells[l:idx - 1]
+      if l:prev.end + 1 == l:start
+        let l:idx -= 1
+      endif
+    endif
+  endif
+  if l:idx < 0
+    return {}
+  endif
+  let l:cell = a:state.cells[l:idx]
+  if l:start <= l:cell.start && !(l:delta > 0 && l:start == l:cell.end + 1)
+    return {}
+  endif
+
+  let l:updated_cell = copy(l:cell)
+  let l:updated_cell.end += l:delta
+  if l:updated_cell.end < l:updated_cell.start
+    return {}
+  endif
+
+  let l:parsed = s:parse_cell_at(l:new_lines, l:updated_cell)
+  let l:updated = s:merge_runtime_cell(l:cell, l:parsed)
+  let a:state.cells[l:idx] = l:updated
+
+  let l:i = l:idx + 1
+  while l:i < len(a:state.cells)
+    let a:state.cells[l:i].start += l:delta
+    let a:state.cells[l:i].end += l:delta
+    let l:i += 1
+  endwhile
+
+  let a:state.changedtick = getbufvar(a:bufnr, 'changedtick')
+  let a:state.dirty_insert = 0
+  call setbufvar(a:bufnr, 'jusi_nb', a:state)
+  call s:update_buffer_cache_lines(a:bufnr, l:new_lines)
+  call s:mark_syntax_dirty(a:bufnr, a:state, l:idx)
+
+  let l:i = l:idx
+  while l:i < len(a:state.cells)
+    let l:cell = a:state.cells[l:i]
+    execute 'sign unplace ' . l:cell.sign_id
+          \ . ' group=' . jusi#render#sign_group()
+          \ . ' buffer=' . a:bufnr
+    execute 'sign place ' . l:cell.sign_id
+          \ . ' line=' . jusi#render#sign_lnum(l:cell)
+          \ . ' name=' . jusi#render#sign_name(l:cell.status)
+          \ . ' group=' . jusi#render#sign_group()
+          \ . ' buffer=' . a:bufnr
+    let l:i += 1
+  endwhile
+  return a:state
+endfunction
+
+function! s:maybe_fast_update(bufnr, state) abort
+  let l:change = s:last_change(a:bufnr)
+  if empty(l:change)
+    return {}
+  endif
+  if get(l:change, 'added', 0) != 0
+    return {}
+  endif
+  let l:changes = get(l:change, 'changes', [])
+  if len(l:changes) != 1
+    return {}
+  endif
+  let l:item = l:changes[0]
+  if get(l:item, 'added', 0) != 0
+    return {}
+  endif
+  let l:start = get(l:item, 'lnum', 0)
+  let l:end = get(l:item, 'end', 0)
+  if l:start <= 0 || l:end != l:start + 1
+    return {}
+  endif
+
+  let l:old_lines = s:buffer_cache_lines(a:bufnr)
+  if len(l:old_lines) != line('$')
+    return {}
+  endif
+
+  let l:old_line = get(l:old_lines, l:start - 1, '')
+  let l:new_line = getbufline(a:bufnr, l:start, l:start)[0]
+  if l:old_line =~# s:delimiter_pattern || l:new_line =~# s:delimiter_pattern
+    return {}
+  endif
+
+  let l:idx = s:cell_index_at_line(a:state, l:start)
+  if l:idx < 0
+    return {}
+  endif
+  let l:cell = a:state.cells[l:idx]
+  let l:lines = copy(l:old_lines)
+  let l:lines[l:start - 1] = l:new_line
+  let l:parsed = s:parse_cell_at(l:lines, l:cell)
+  let l:updated = s:merge_runtime_cell(l:cell, l:parsed)
+  let a:state.cells[l:idx] = l:updated
+  let a:state.changedtick = getbufvar(a:bufnr, 'changedtick')
+  let a:state.dirty_insert = 0
+  call setbufvar(a:bufnr, 'jusi_nb', a:state)
+  call s:update_buffer_cache_lines(a:bufnr, l:lines)
+
+  if l:cell.kind !=# l:updated.kind || l:cell.magic !=# l:updated.magic || l:cell.syntax !=# l:updated.syntax
+    call jusi#syntax#sync(a:bufnr, a:state.cells)
+  endif
+  return a:state
+endfunction
+
 function! jusi#notebook#rebuild(...) abort
+  let l:perf_start = reltime()
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
   if !s:is_notebook_buffer(l:bufnr)
     return {}
@@ -214,8 +534,10 @@ function! jusi#notebook#rebuild(...) abort
 
   call s:ensure_initial_delimiter(l:bufnr)
   let l:state = s:ensure_state(l:bufnr)
+  call s:ensure_buffer_tracking(l:bufnr)
   let l:tick = getbufvar(l:bufnr, 'changedtick')
   if l:state.changedtick ==# l:tick
+    call s:perf_log('rebuild-skip', l:perf_start, 'buf=' . l:bufnr)
     return l:state
   endif
 
@@ -224,11 +546,117 @@ function! jusi#notebook#rebuild(...) abort
   let l:state.cells = l:parsed.cells
   let l:state.next_cell_id = max([l:state.next_cell_id, l:parsed.next_cell_id])
   let l:state.changedtick = l:tick
+  let l:state.dirty_insert = 0
+  let l:state.syntax_dirty = 0
+  let l:state.syntax_dirty_from = 0
 
   call setbufvar(l:bufnr, 'jusi_nb', l:state)
+  call s:update_buffer_cache_lines(l:bufnr, l:lines)
   call jusi#render#sync_signs(l:bufnr, l:state.cells)
   call jusi#syntax#sync(l:bufnr, l:state.cells)
+  call s:perf_log('rebuild', l:perf_start, 'buf=' . l:bufnr . ' cells=' . len(l:state.cells))
   return l:state
+endfunction
+
+function! jusi#notebook#handle_text_changed(...) abort
+  let l:perf_start = reltime()
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if !s:is_notebook_buffer(l:bufnr)
+    return {}
+  endif
+  let l:state = s:ensure_state(l:bufnr)
+  if !empty(l:state.cells)
+    let l:fast = s:maybe_fast_update(l:bufnr, l:state)
+    if !empty(l:fast)
+      call s:perf_log('handle_text_changed-fast', l:perf_start, 'buf=' . l:bufnr)
+      return l:fast
+    endif
+    let l:resize = s:maybe_resize_cell(l:bufnr, l:state)
+    if !empty(l:resize)
+      call s:perf_log('handle_text_changed-resize', l:perf_start, 'buf=' . l:bufnr)
+      return l:resize
+    endif
+  endif
+  let l:result = jusi#notebook#rebuild(l:bufnr)
+  call s:perf_log('handle_text_changed-rebuild', l:perf_start, 'buf=' . l:bufnr)
+  return l:result
+endfunction
+
+function! jusi#notebook#handle_text_changed_insert(...) abort
+  let l:perf_start = reltime()
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if !s:is_notebook_buffer(l:bufnr)
+    return {}
+  endif
+  let l:state = s:ensure_state(l:bufnr)
+  if !empty(l:state.cells)
+    let l:fast = s:maybe_fast_update(l:bufnr, l:state)
+    if !empty(l:fast)
+      call s:perf_log('handle_text_changed_insert-fast', l:perf_start, 'buf=' . l:bufnr)
+      return l:fast
+    endif
+    let l:resize = s:maybe_resize_cell(l:bufnr, l:state)
+    if !empty(l:resize)
+      call s:perf_log('handle_text_changed_insert-resize', l:perf_start, 'buf=' . l:bufnr)
+      return l:resize
+    endif
+  endif
+  call jusi#notebook#invalidate(l:bufnr)
+  call s:perf_log('handle_text_changed_insert-invalidate', l:perf_start, 'buf=' . l:bufnr)
+  return l:state
+endfunction
+
+function! jusi#notebook#invalidate(...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if !s:is_notebook_buffer(l:bufnr)
+    return
+  endif
+  let l:state = s:ensure_state(l:bufnr)
+  let l:state.dirty_insert = 1
+  call setbufvar(l:bufnr, 'jusi_nb', l:state)
+endfunction
+
+function! jusi#notebook#handle_insert_exit(...) abort
+  let l:perf_start = reltime()
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if !s:is_notebook_buffer(l:bufnr)
+    return {}
+  endif
+  let l:state = s:ensure_state(l:bufnr)
+  if get(l:state, 'dirty_insert', 0)
+    let l:result = jusi#notebook#rebuild(l:bufnr)
+    call s:perf_log('handle_insert_exit-rebuild', l:perf_start, 'buf=' . l:bufnr)
+    return l:result
+  endif
+  call s:perf_log('handle_insert_exit-clean', l:perf_start, 'buf=' . l:bufnr)
+  return l:state
+endfunction
+
+function! jusi#notebook#flush_deferred(...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if !s:is_notebook_buffer(l:bufnr)
+    return {}
+  endif
+  let l:state = s:ensure_state(l:bufnr)
+  if !get(l:state, 'syntax_dirty', 0)
+    return l:state
+  endif
+  let l:state.syntax_dirty = 0
+  let l:state.syntax_dirty_from = 0
+  call setbufvar(l:bufnr, 'jusi_nb', l:state)
+  return l:state
+endfunction
+
+function! jusi#notebook#cleanup(...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if has_key(s:buffer_listener, l:bufnr)
+    call listener_remove(s:buffer_listener[l:bufnr])
+    call remove(s:buffer_listener, l:bufnr)
+  endif
+  if has_key(s:buffer_cache, l:bufnr)
+    call remove(s:buffer_cache, l:bufnr)
+  endif
+  call jusi#syntax#cleanup(l:bufnr)
 endfunction
 
 function! jusi#notebook#state(...) abort
@@ -328,6 +756,92 @@ endfunction
 function! s:enter_insert_at_cell(cell) abort
   call s:goto_cell(a:cell)
   startinsert
+endfunction
+
+function! s:delete_range(start_lnum, end_lnum) abort
+  execute a:start_lnum . ',' . a:end_lnum . 'delete _'
+endfunction
+
+function! s:cell_lines(cell) abort
+  return getline(a:cell.start, a:cell.end)
+endfunction
+
+function! s:replacement_index_after_delete(state, deleted_idx) abort
+  if len(a:state.cells) <= 1
+    return -1
+  endif
+  if a:deleted_idx < len(a:state.cells) - 1
+    return a:deleted_idx
+  endif
+  return a:deleted_idx - 1
+endfunction
+
+function! jusi#notebook#delete_current() abort
+  let l:state = jusi#notebook#rebuild()
+  let l:idx = s:cell_index_at_line(l:state, line('.'))
+  if l:idx < 0
+    return {}
+  endif
+
+  let l:cell = l:state.cells[l:idx]
+  let l:target_idx = s:replacement_index_after_delete(l:state, l:idx)
+
+  if len(l:state.cells) <= 1
+    call setline(1, ['##'])
+    if line('$') > 1
+      execute '2,$delete _'
+    endif
+    call jusi#notebook#rebuild()
+    let l:new_cell = jusi#notebook#cell_at_line(bufnr('%'), 1)
+    call s:enter_insert_at_cell(l:new_cell)
+    return l:new_cell
+  endif
+
+  call s:delete_range(l:cell.start, l:cell.end)
+  let l:new_state = jusi#notebook#rebuild()
+  let l:new_cell = l:target_idx >= 0 ? l:new_state.cells[l:target_idx] : {}
+  call s:goto_cell(l:new_cell)
+  return l:new_cell
+endfunction
+
+function! jusi#notebook#edit_current() abort
+  let l:cell = jusi#notebook#cell_at_line(bufnr('%'), line('.'))
+  if empty(l:cell)
+    return {}
+  endif
+
+  if l:cell.start < l:cell.end
+    call s:delete_range(l:cell.start + 1, l:cell.end)
+  endif
+  call append(l:cell.start, '')
+  call jusi#notebook#rebuild()
+  let l:new_cell = jusi#notebook#cell_at_line(bufnr('%'), l:cell.start)
+  call s:enter_insert_at_cell(l:new_cell)
+  return l:new_cell
+endfunction
+
+function! jusi#notebook#copy_current() abort
+  let l:cell = jusi#notebook#cell_at_line(bufnr('%'), line('.'))
+  if empty(l:cell)
+    let g:jusi_cell_clipboard = []
+    return []
+  endif
+  let g:jusi_cell_clipboard = copy(s:cell_lines(l:cell))
+  return g:jusi_cell_clipboard
+endfunction
+
+function! jusi#notebook#paste_below() abort
+  if empty(get(g:, 'jusi_cell_clipboard', []))
+    return {}
+  endif
+
+  let l:cell = jusi#notebook#cell_at_line(bufnr('%'), line('.'))
+  let l:target = empty(l:cell) ? line('$') : l:cell.end
+  call append(l:target, copy(g:jusi_cell_clipboard))
+  call jusi#notebook#rebuild()
+  let l:new_cell = jusi#notebook#cell_at_line(bufnr('%'), l:target + 1)
+  call s:goto_cell(l:new_cell)
+  return l:new_cell
 endfunction
 
 function! jusi#notebook#insert_above() abort

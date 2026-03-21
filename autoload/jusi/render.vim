@@ -10,6 +10,19 @@ let s:sign_specs = {
       \ 'parked': {'text': 'JusiSignParked', 'line': 'JusiSignLineParked', 'fg': 'Blue', 'guifg': '#3b7cff', 'bg': '#3b7cff', 'ctermfg_active': 'Black', 'guifg_active': '#000000'},
       \ }
 
+function! s:perf_enabled() abort
+  return get(g:, 'jusi_perf_log', 0) == 1
+endfunction
+
+function! s:perf_log(event, start, ...) abort
+  if !s:perf_enabled()
+    return
+  endif
+  let l:elapsed = reltimefloat(reltime(a:start)) * 1000.0
+  let l:extra = a:0 >= 1 ? a:1 : ''
+  call writefile([printf('%s %.3fms %s', a:event, l:elapsed, l:extra)], '/tmp/jusivim-perf.log', 'a')
+endfunction
+
 function! jusi#render#sign_group() abort
   return s:sign_group
 endfunction
@@ -54,6 +67,7 @@ function! jusi#render#define_signs() abort
 endfunction
 
 function! jusi#render#sync_signs(bufnr, cells) abort
+  let l:perf_start = reltime()
   execute 'sign unplace * group=' . s:sign_group . ' buffer=' . a:bufnr
   for l:cell in a:cells
     execute 'sign place ' . l:cell.sign_id
@@ -62,4 +76,5 @@ function! jusi#render#sync_signs(bufnr, cells) abort
           \ . ' group=' . s:sign_group
           \ . ' buffer=' . a:bufnr
   endfor
+  call s:perf_log('sync_signs', l:perf_start, 'buf=' . a:bufnr . ' cells=' . len(a:cells))
 endfunction

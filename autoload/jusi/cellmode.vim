@@ -1,3 +1,16 @@
+function! s:perf_enabled() abort
+  return get(g:, 'jusi_perf_log', 0) == 1
+endfunction
+
+function! s:perf_log(event, start, ...) abort
+  if !s:perf_enabled()
+    return
+  endif
+  let l:elapsed = reltimefloat(reltime(a:start)) * 1000.0
+  let l:extra = a:0 >= 1 ? a:1 : ''
+  call writefile([printf('%s %.3fms %s', a:event, l:elapsed, l:extra)], '/tmp/jusivim-perf.log', 'a')
+endfunction
+
 function! s:is_enabled(bufnr) abort
   return getbufvar(a:bufnr, 'jusi_cell_mode', g:jusi_cell_mode)
 endfunction
@@ -11,6 +24,10 @@ function! s:map_normal_mode() abort
   nnoremap <silent> <buffer> k :<C-U>execute "JusiCellPrev"<CR>
   nnoremap <silent> <buffer> B :JusiCellNewBelow<CR>
   nnoremap <silent> <buffer> A :JusiCellNewAbove<CR>
+  nnoremap <silent> <buffer> X :JusiCellDelete<CR>
+  nnoremap <silent> <buffer> C :JusiCellEdit<CR>
+  nnoremap <silent> <buffer> Y :JusiCellCopy<CR>
+  nnoremap <silent> <buffer> P :JusiCellPasteBelow<CR>
   nnoremap <silent> <buffer> R :JusiRebuild<CR>
 endfunction
 
@@ -19,6 +36,10 @@ function! s:unmap_normal_mode() abort
   silent! nunmap <buffer> k
   silent! nunmap <buffer> B
   silent! nunmap <buffer> A
+  silent! nunmap <buffer> X
+  silent! nunmap <buffer> C
+  silent! nunmap <buffer> Y
+  silent! nunmap <buffer> P
   silent! nunmap <buffer> R
 endfunction
 
@@ -36,6 +57,7 @@ function! jusi#cellmode#refresh(...) abort
 endfunction
 
 function! jusi#cellmode#update_indicator(...) abort
+  let l:perf_start = reltime()
   let l:force_clear = a:0 >= 1 ? a:1 : v:false
   let l:should_show = jusi#cellmode#should_show_indicator() && !l:force_clear
 
@@ -46,6 +68,7 @@ function! jusi#cellmode#update_indicator(...) abort
     echon '-- CELL --'
     echohl None
     let g:jusi_cellmode_indicator = 1
+    call s:perf_log('cellmode_indicator-show', l:perf_start)
     return
   endif
 
@@ -53,7 +76,10 @@ function! jusi#cellmode#update_indicator(...) abort
     redraw
     echo ''
     let g:jusi_cellmode_indicator = 0
+    call s:perf_log('cellmode_indicator-clear', l:perf_start)
+    return
   endif
+  call s:perf_log('cellmode_indicator-noop', l:perf_start)
 endfunction
 
 function! jusi#cellmode#should_show_indicator() abort
