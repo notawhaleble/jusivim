@@ -31,8 +31,8 @@ function! Test_rebuild_places_signs_on_cell_starts() abort
         \ ])
   let l:signs = Test_sign_lines(bufnr('%'))
   call assert_equal(2, len(l:signs))
-  call assert_equal(1, l:signs[0][1])
-  call assert_equal(3, l:signs[1][1])
+  call assert_equal(2, l:signs[0][1])
+  call assert_equal(4, l:signs[1][1])
   let l:state = b:jusi_nb
   call assert_equal([1, 2], map(copy(l:state.cells), 'v:val.id'))
   call assert_false(has_key(l:state, 'line_to_cell'))
@@ -150,6 +150,7 @@ function! Test_syntax_updates_after_cell_type_change() abort
   call append(2, 'select 1')
   call jusi#notebook#rebuild()
   call assert_equal('jusiMagicHeader', Test_syn_name(2, 1))
+  call assert_equal('sql', b:jusi_nb.cells[0].syntax)
 endfunction
 
 function! Test_long_sql_cell_multiline_comment_sync() abort
@@ -168,4 +169,85 @@ function! Test_long_sql_cell_multiline_comment_sync() abort
 
   call assert_equal('sqlComment', Test_syn_name(l:comment_line, 1))
   call assert_equal('sqlStatement', Test_syn_name(l:select_line, 1))
+endfunction
+
+function! Test_default_buffer_mappings_exist() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'one',
+        \ ])
+  call assert_equal(':JusiRebuild<CR>', maparg('<leader>r', 'n', 0, 1).rhs)
+  call assert_equal(':JusiCellNewAbove<CR>', maparg('<leader>a', 'n', 0, 1).rhs)
+  call assert_equal(':JusiCellNewBelow<CR>', maparg('<leader>b', 'n', 0, 1).rhs)
+  call assert_equal('', maparg(']]', 'n'))
+  call assert_equal('', maparg('[[', 'n'))
+  call assert_equal(':JusiCellModeToggle<CR>', maparg('<Space>', 'n', 0, 1).rhs)
+  call assert_equal('<C-\><C-n>:call jusi#cellmode#update_indicator()<CR>', maparg('<C-C>', 'i', 0, 1).rhs)
+endfunction
+
+function! Test_cell_mode_toggle_maps_navigation_keys() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'one',
+        \ '##',
+        \ 'two',
+        \ ])
+  call assert_equal('', maparg('j', 'n'))
+  call jusi#cellmode#enable()
+  call assert_equal(1, get(b:, 'jusi_cell_mode', 0))
+  call assert_equal(':<C-U>execute "JusiCellNext"<CR>', maparg('j', 'n', 0, 1).rhs)
+  call assert_equal(':<C-U>execute "JusiCellPrev"<CR>', maparg('k', 'n', 0, 1).rhs)
+  call assert_equal(':JusiCellNewBelow<CR>', maparg('B', 'n', 0, 1).rhs)
+  call assert_equal(':JusiCellNewAbove<CR>', maparg('A', 'n', 0, 1).rhs)
+  call assert_equal(':JusiRebuild<CR>', maparg('R', 'n', 0, 1).rhs)
+  call jusi#cellmode#disable()
+  call assert_equal(0, get(b:, 'jusi_cell_mode', 1))
+  call assert_equal('', maparg('j', 'n'))
+endfunction
+
+function! Test_cell_mode_switches_sign_highlights() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'one',
+        \ ])
+  call jusi#cellmode#disable()
+  call assert_match('ctermfg=', execute('highlight JusiSignDone'))
+  call assert_notmatch('ctermbg=', execute('highlight JusiSignDone'))
+  call jusi#cellmode#enable()
+  call assert_match('ctermbg=', execute('highlight JusiSignDone'))
+  call assert_match('guibg=', execute('highlight JusiSignDone'))
+endfunction
+
+function! Test_blank_body_cell_sign_uses_first_body_line() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '',
+        \ ])
+  let l:signs = Test_sign_lines(bufnr('%'))
+  call assert_equal(1, len(l:signs))
+  call assert_equal(2, l:signs[0][1])
+endfunction
+
+function! Test_empty_vipynb_buffer_gets_initial_delimiter() abort
+  call Test_open_scratch([])
+  call assert_equal(['##'], getline(1, '$'))
+  let l:cells = jusi#notebook#cells()
+  call assert_equal(1, len(l:cells))
+  call assert_equal(1, l:cells[0].start)
+  call assert_equal(1, l:cells[0].end)
+endfunction
+
+function! Test_cell_mode_indicator_state_transitions() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'one',
+        \ ])
+  let g:jusi_cellmode_indicator = 0
+  call jusi#cellmode#disable()
+  call assert_equal(0, jusi#cellmode#should_show_indicator())
+  call assert_equal(0, g:jusi_cellmode_indicator)
+  call jusi#cellmode#enable()
+  call assert_equal(&filetype ==# 'jusinb' && mode() =~# '^n', jusi#cellmode#should_show_indicator())
+  call jusi#cellmode#update_indicator(v:true)
+  call assert_equal(0, g:jusi_cellmode_indicator)
 endfunction

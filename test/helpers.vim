@@ -6,6 +6,8 @@ function! Test_open_scratch(lines) abort
   file test.vipynb
   setlocal filetype=jusinb
   setlocal syntax=jusinb
+  runtime! ftplugin/jusinb.vim
+  runtime! syntax/jusinb.vim
   if empty(a:lines)
     call setline(1, [''])
   else

@@ -1,9 +1,19 @@
 scriptencoding utf-8
 
+scriptencoding utf-8
+
 if exists('g:loaded_jusi')
   finish
 endif
 let g:loaded_jusi = 1
+
+if !exists('g:jusi_cell_mode')
+  let g:jusi_cell_mode = 0
+endif
+
+if !exists('g:jusi_cellmode_indicator')
+  let g:jusi_cellmode_indicator = 0
+endif
 
 if !exists('g:jusi_sign_texts')
   let g:jusi_sign_texts = {
@@ -23,10 +33,18 @@ command! JusiCellNext call jusi#notebook#goto_next()
 command! JusiCellPrev call jusi#notebook#goto_prev()
 command! JusiCellNewAbove call jusi#notebook#insert_above()
 command! JusiCellNewBelow call jusi#notebook#insert_below()
+command! JusiCellModeEnable call jusi#cellmode#enable()
+command! JusiCellModeDisable call jusi#cellmode#disable()
+command! JusiCellModeToggle call jusi#cellmode#toggle()
 
 augroup jusi_notebook
   au!
   au BufReadPost,BufNewFile *.vipynb call jusi#notebook#rebuild(expand('<abuf>'))
   au TextChanged,TextChangedI *.vipynb call jusi#notebook#rebuild(expand('<abuf>'))
   au BufEnter *.vipynb call jusi#notebook#rebuild(expand('<abuf>'))
+  au BufEnter,CursorMoved,InsertEnter,InsertLeave *.vipynb call jusi#cellmode#update_indicator()
+  au BufLeave *.vipynb call jusi#cellmode#update_indicator(v:true)
+  if exists('##ModeChanged')
+    au ModeChanged *.vipynb call jusi#cellmode#update_indicator()
+  endif
 augroup END

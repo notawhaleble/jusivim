@@ -11,6 +11,13 @@ function! s:is_notebook_buffer(bufnr) abort
   return bufexists(a:bufnr) && getbufvar(a:bufnr, '&filetype') ==# 'jusinb'
 endfunction
 
+function! s:ensure_initial_delimiter(bufnr) abort
+  let l:lines = getbufline(a:bufnr, 1, '$')
+  if len(l:lines) == 1 && l:lines[0] ==# ''
+    call setbufline(a:bufnr, 1, ['##'])
+  endif
+endfunction
+
 function! s:ensure_state(bufnr) abort
   if !has_key(getbufvar(a:bufnr, ''), 'jusi_nb')
     call setbufvar(a:bufnr, 'jusi_nb', {
@@ -67,6 +74,13 @@ function! s:first_content_line(lines, start_idx, end_idx) abort
   return ''
 endfunction
 
+function! s:default_syntax(kind, magic) abort
+  if a:kind ==# 'magic'
+    return a:magic
+  endif
+  return 'python'
+endfunction
+
 function! s:derive_cell_type(lines, start_lnum, end_lnum) abort
   if a:start_lnum + 1 > a:end_lnum
     let l:first = ''
@@ -78,13 +92,13 @@ function! s:derive_cell_type(lines, start_lnum, end_lnum) abort
     return {
           \ 'kind': 'magic',
           \ 'magic': l:magic,
-          \ 'syntax': l:magic,
+          \ 'syntax': s:default_syntax('magic', l:magic),
           \ }
   endif
   return {
         \ 'kind': 'code',
         \ 'magic': '',
-        \ 'syntax': 'python',
+        \ 'syntax': s:default_syntax('code', ''),
         \ }
 endfunction
 
@@ -156,11 +170,12 @@ function! s:preserve_cell_state(raw_cells, prev_cells, state) abort
 
     if l:best_idx >= 0 && l:best_overlap > 0
       let l:prev = copy(a:prev_cells[l:best_idx])
+      let l:prev_default_syntax = s:default_syntax(l:prev.kind, l:prev.magic)
       let l:prev.start = l:raw.start
       let l:prev.end = l:raw.end
       let l:prev.kind = l:raw.kind
       let l:prev.magic = l:raw.magic
-      if !has_key(l:prev, 'syntax') || empty(l:prev.syntax)
+      if !has_key(l:prev, 'syntax') || empty(l:prev.syntax) || l:prev.syntax ==# l:prev_default_syntax
         let l:prev.syntax = l:raw.syntax
       endif
       call s:assign_sign_id(l:prev)
@@ -195,6 +210,7 @@ function! jusi#notebook#rebuild(...) abort
     return {}
   endif
 
+  call s:ensure_initial_delimiter(l:bufnr)
   let l:state = s:ensure_state(l:bufnr)
   let l:tick = getbufvar(l:bufnr, 'changedtick')
   if l:state.changedtick ==# l:tick
