@@ -103,6 +103,14 @@ Key properties:
 Cell ids should be allocated monotonically per notebook buffer and preserved across incremental reparses whenever the cell continues to exist.
 Default syntax is derived locally from cell type and may later be refined by backend-aware updates.
 
+Cell fields should be treated by policy class during reconciliation:
+
+- parsed fields are rebuilt from buffer text
+- runtime fields are preserved for surviving cells
+- override-capable fields are preserved only when they differ from their local defaults
+
+This policy should remain centralized in the notebook reconciler rather than spread across commands.
+
 ## Parsing And Indexing
 
 ### Parsing Rules

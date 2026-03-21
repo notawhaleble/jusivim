@@ -129,6 +129,30 @@ function! Test_existing_syntax_override_survives_rebuild() abort
   call assert_equal('sqloracle', b:jusi_nb.cells[0].syntax)
 endfunction
 
+function! Test_default_runtime_state_is_initialized_for_new_cells() abort
+  let l:parsed = jusi#notebook#parse_lines([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  call assert_equal(1, len(l:parsed.cells))
+  call assert_equal('initial', l:parsed.cells[0].status)
+  call assert_equal(-1, l:parsed.cells[0].client_bufnr)
+  call assert_true(l:parsed.cells[0].sign_id > 0)
+endfunction
+
+function! Test_non_default_runtime_state_is_preserved_for_surviving_cells() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  let b:jusi_nb.cells[0].status = 'busy'
+  let b:jusi_nb.cells[0].client_bufnr = 42
+  call setline(2, 'print("HELLO")')
+  call jusi#notebook#rebuild()
+  call assert_equal('busy', b:jusi_nb.cells[0].status)
+  call assert_equal(42, b:jusi_nb.cells[0].client_bufnr)
+endfunction
+
 function! Test_magic_header_has_dedicated_syntax_group() abort
   call Test_open_scratch([
         \ '##',

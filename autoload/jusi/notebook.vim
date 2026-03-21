@@ -44,20 +44,6 @@ function! s:new_cell_id(state) abort
   return l:id
 endfunction
 
-function! s:default_cell(raw, state) abort
-  return {
-        \ 'id': s:new_cell_id(a:state),
-        \ 'start': a:raw.start,
-        \ 'end': a:raw.end,
-        \ 'kind': a:raw.kind,
-        \ 'magic': a:raw.magic,
-        \ 'syntax': a:raw.syntax,
-        \ 'status': 'initial',
-        \ 'sign_id': 0,
-        \ 'client_bufnr': -1,
-        \ }
-endfunction
-
 function! s:assign_sign_id(cell) abort
   let a:cell.sign_id = 1000 + a:cell.id
 endfunction
@@ -79,6 +65,45 @@ function! s:default_syntax(kind, magic) abort
     return a:magic
   endif
   return 'python'
+endfunction
+
+function! s:is_default_syntax(cell) abort
+  return get(a:cell, 'syntax', '') ==# s:default_syntax(get(a:cell, 'kind', ''), get(a:cell, 'magic', ''))
+endfunction
+
+function! s:make_parsed_cell(start, end_, kind, magic) abort
+  return {
+        \ 'start': a:start,
+        \ 'end': a:end_,
+        \ 'kind': a:kind,
+        \ 'magic': a:magic,
+        \ 'syntax': s:default_syntax(a:kind, a:magic),
+        \ }
+endfunction
+
+function! s:init_runtime_cell(parsed, state) abort
+  let l:cell = copy(a:parsed)
+  let l:cell.id = s:new_cell_id(a:state)
+  let l:cell.status = 'initial'
+  let l:cell.sign_id = 0
+  let l:cell.client_bufnr = -1
+  call s:assign_sign_id(l:cell)
+  return l:cell
+endfunction
+
+function! s:merge_runtime_cell(prev, parsed) abort
+  let l:cell = copy(a:parsed)
+  let l:cell.id = get(a:prev, 'id', 0)
+  let l:cell.status = get(a:prev, 'status', 'initial')
+  let l:cell.sign_id = get(a:prev, 'sign_id', 0)
+  let l:cell.client_bufnr = get(a:prev, 'client_bufnr', -1)
+
+  if has_key(a:prev, 'syntax') && !empty(a:prev.syntax) && !s:is_default_syntax(a:prev)
+    let l:cell.syntax = a:prev.syntax
+  endif
+
+  call s:assign_sign_id(l:cell)
+  return l:cell
 endfunction
 
 function! s:derive_cell_type(lines, start_lnum, end_lnum) abort
@@ -113,13 +138,7 @@ function! s:parse_raw_cells(lines) abort
     if l:line =~# s:delimiter_pattern
       if l:start != -1
         let l:type_info = s:derive_cell_type(a:lines, l:start, l:lnum - 1)
-        call add(l:cells, {
-              \ 'start': l:start,
-              \ 'end': l:lnum - 1,
-              \ 'kind': l:type_info.kind,
-              \ 'magic': l:type_info.magic,
-              \ 'syntax': l:type_info.syntax,
-              \ })
+        call add(l:cells, s:make_parsed_cell(l:start, l:lnum - 1, l:type_info.kind, l:type_info.magic))
       endif
       let l:start = l:lnum
     endif
@@ -128,13 +147,7 @@ function! s:parse_raw_cells(lines) abort
 
   if l:start != -1
     let l:type_info = s:derive_cell_type(a:lines, l:start, l:line_count)
-    call add(l:cells, {
-          \ 'start': l:start,
-          \ 'end': l:line_count,
-          \ 'kind': l:type_info.kind,
-          \ 'magic': l:type_info.magic,
-          \ 'syntax': l:type_info.syntax,
-          \ })
+    call add(l:cells, s:make_parsed_cell(l:start, l:line_count, l:type_info.kind, l:type_info.magic))
   endif
 
   return l:cells
@@ -146,11 +159,11 @@ function! s:interval_overlap(a_start, a_end, b_start, b_end) abort
   return max([0, l:end - l:start + 1])
 endfunction
 
-function! s:preserve_cell_state(raw_cells, prev_cells, state) abort
+function! s:reconcile_cells(parsed_cells, prev_cells, state) abort
   let l:cells = []
   let l:used_prev = {}
 
-  for l:raw in a:raw_cells
+  for l:parsed in a:parsed_cells
     let l:best_idx = -1
     let l:best_overlap = -1
     let l:i = 0
@@ -160,7 +173,7 @@ function! s:preserve_cell_state(raw_cells, prev_cells, state) abort
         continue
       endif
       let l:prev = a:prev_cells[l:i]
-      let l:overlap = s:interval_overlap(l:raw.start, l:raw.end, l:prev.start, l:prev.end)
+      let l:overlap = s:interval_overlap(l:parsed.start, l:parsed.end, l:prev.start, l:prev.end)
       if l:overlap > l:best_overlap
         let l:best_overlap = l:overlap
         let l:best_idx = l:i
@@ -169,22 +182,11 @@ function! s:preserve_cell_state(raw_cells, prev_cells, state) abort
     endwhile
 
     if l:best_idx >= 0 && l:best_overlap > 0
-      let l:prev = copy(a:prev_cells[l:best_idx])
-      let l:prev_default_syntax = s:default_syntax(l:prev.kind, l:prev.magic)
-      let l:prev.start = l:raw.start
-      let l:prev.end = l:raw.end
-      let l:prev.kind = l:raw.kind
-      let l:prev.magic = l:raw.magic
-      if !has_key(l:prev, 'syntax') || empty(l:prev.syntax) || l:prev.syntax ==# l:prev_default_syntax
-        let l:prev.syntax = l:raw.syntax
-      endif
-      call s:assign_sign_id(l:prev)
+      let l:cell = s:merge_runtime_cell(a:prev_cells[l:best_idx], l:parsed)
       let l:used_prev[l:best_idx] = 1
-      call add(l:cells, l:prev)
-    else
-      let l:cell = s:default_cell(l:raw, a:state)
-      call s:assign_sign_id(l:cell)
       call add(l:cells, l:cell)
+    else
+      call add(l:cells, s:init_runtime_cell(l:parsed, a:state))
     endif
   endfor
 
@@ -196,8 +198,8 @@ function! jusi#notebook#parse_lines(lines, ...) abort
   let l:prev_cells = get(l:prev_state, 'cells', [])
   let l:next_cell_id = get(l:prev_state, 'next_cell_id', s:max_cell_id(l:prev_cells) + 1)
   let l:state = {'next_cell_id': l:next_cell_id}
-  let l:raw_cells = s:parse_raw_cells(a:lines)
-  let l:cells = s:preserve_cell_state(l:raw_cells, l:prev_cells, l:state)
+  let l:parsed_cells = s:parse_raw_cells(a:lines)
+  let l:cells = s:reconcile_cells(l:parsed_cells, l:prev_cells, l:state)
   return {
         \ 'next_cell_id': l:state.next_cell_id,
         \ 'cells': l:cells,

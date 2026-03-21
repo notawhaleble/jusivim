@@ -29,6 +29,7 @@ This repository owns the Vim plugin side only. Backend execution logic belongs i
 - Keep modules focused: notebook model, rendering, commands, session state, transport adapter.
 - Favor correctness first, then optimize hot paths deliberately.
 - Avoid full-buffer recomputation on ordinary edits where practical, but do not sacrifice clarity or correctness for premature optimization.
+- When adding a new cell field, define its preservation policy in the notebook reconciler instead of scattering field-copy logic across commands.
 
 ## Testing
 
