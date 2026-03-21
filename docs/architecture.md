@@ -59,7 +59,6 @@ Suggested fields:
   'changedtick': 81,
   'next_cell_id': 24,
   'cells': [...],
-  'cell_index': {...},
   'session': {...},
   'ui': {...}
 }
@@ -69,7 +68,7 @@ Responsibilities:
 
 - represent the current parsed cell structure
 - track whether cached structure matches the buffer
-- provide fast lookup of cell by line number
+- provide lookup of cell by line number
 - own notebook-local state needed by rendering and execution
 
 ### Cell
@@ -85,6 +84,7 @@ Suggested fields:
   'end': 32,
   'kind': 'magic',
   'magic': 'sql',
+  'syntax': 'sql',
   'status': 'busy',
   'sign_id': 1007,
   'client_bufnr': 45,
@@ -97,9 +97,11 @@ Key properties:
 - `id` is an opaque runtime identifier
 - `start` and `end` are current coordinates, not identity
 - `kind` and `magic` are derived from cell text
+- `syntax` is the currently resolved syntax dialect for the cell
 - `status` describes the current editor-visible execution state
 
 Cell ids should be allocated monotonically per notebook buffer and preserved across incremental reparses whenever the cell continues to exist.
+Default syntax is derived locally from cell type and may later be refined by backend-aware updates.
 
 ## Parsing And Indexing
 
@@ -146,7 +148,7 @@ The notebook model should support:
 This can be implemented with:
 
 - ordered cell list
-- auxiliary line index or searchable boundary list
+- searchable boundary list
 - buffer-local dictionaries for id-based lookup
 
 The exact representation may evolve as long as common operations remain cheap.

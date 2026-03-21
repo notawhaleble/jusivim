@@ -1,6 +1,7 @@
 set nocompatible
 set runtimepath^=.
 set viminfofile=NONE
+syntax on
 
 runtime plugin/jusi.vim
 
@@ -12,6 +13,11 @@ call Test_insert_below_creates_new_cell()
 call Test_insert_above_creates_new_cell()
 call Test_navigation_moves_to_cell_boundaries()
 call Test_existing_cell_ids_are_preserved_across_rebuilds()
+call Test_cell_lookup_works_inside_long_cell_without_line_map()
+call Test_existing_syntax_override_survives_rebuild()
+call Test_magic_header_has_dedicated_syntax_group()
+call Test_syntax_updates_after_cell_type_change()
+call Test_long_sql_cell_multiline_comment_sync()
 
 if empty(v:errors)
   cquit 0

@@ -18,7 +18,6 @@ function! s:ensure_state(bufnr) abort
           \ 'changedtick': -1,
           \ 'next_cell_id': 1,
           \ 'cells': [],
-          \ 'line_to_cell': {},
           \ })
   endif
   return getbufvar(a:bufnr, 'jusi_nb')
@@ -45,6 +44,7 @@ function! s:default_cell(raw, state) abort
         \ 'end': a:raw.end,
         \ 'kind': a:raw.kind,
         \ 'magic': a:raw.magic,
+        \ 'syntax': a:raw.syntax,
         \ 'status': 'initial',
         \ 'sign_id': 0,
         \ 'client_bufnr': -1,
@@ -74,14 +74,17 @@ function! s:derive_cell_type(lines, start_lnum, end_lnum) abort
     let l:first = s:first_content_line(a:lines, a:start_lnum + 1, a:end_lnum)
   endif
   if l:first =~# '^%%\(\k\+\)'
+    let l:magic = matchstr(l:first, '^%%\zs\k\+')
     return {
           \ 'kind': 'magic',
-          \ 'magic': matchstr(l:first, '^%%\zs\k\+'),
+          \ 'magic': l:magic,
+          \ 'syntax': l:magic,
           \ }
   endif
   return {
         \ 'kind': 'code',
         \ 'magic': '',
+        \ 'syntax': 'python',
         \ }
 endfunction
 
@@ -101,6 +104,7 @@ function! s:parse_raw_cells(lines) abort
               \ 'end': l:lnum - 1,
               \ 'kind': l:type_info.kind,
               \ 'magic': l:type_info.magic,
+              \ 'syntax': l:type_info.syntax,
               \ })
       endif
       let l:start = l:lnum
@@ -115,6 +119,7 @@ function! s:parse_raw_cells(lines) abort
           \ 'end': l:line_count,
           \ 'kind': l:type_info.kind,
           \ 'magic': l:type_info.magic,
+          \ 'syntax': l:type_info.syntax,
           \ })
   endif
 
@@ -155,6 +160,9 @@ function! s:preserve_cell_state(raw_cells, prev_cells, state) abort
       let l:prev.end = l:raw.end
       let l:prev.kind = l:raw.kind
       let l:prev.magic = l:raw.magic
+      if !has_key(l:prev, 'syntax') || empty(l:prev.syntax)
+        let l:prev.syntax = l:raw.syntax
+      endif
       call s:assign_sign_id(l:prev)
       let l:used_prev[l:best_idx] = 1
       call add(l:cells, l:prev)
@@ -168,17 +176,6 @@ function! s:preserve_cell_state(raw_cells, prev_cells, state) abort
   return l:cells
 endfunction
 
-function! s:build_line_index(cells) abort
-  let l:index = {}
-  for l:idx in range(len(a:cells))
-    let l:cell = a:cells[l:idx]
-    for l:lnum in range(l:cell.start, l:cell.end)
-      let l:index[l:lnum] = l:idx
-    endfor
-  endfor
-  return l:index
-endfunction
-
 function! jusi#notebook#parse_lines(lines, ...) abort
   let l:prev_state = a:0 >= 1 ? a:1 : {}
   let l:prev_cells = get(l:prev_state, 'cells', [])
@@ -189,7 +186,6 @@ function! jusi#notebook#parse_lines(lines, ...) abort
   return {
         \ 'next_cell_id': l:state.next_cell_id,
         \ 'cells': l:cells,
-        \ 'line_to_cell': s:build_line_index(l:cells),
         \ }
 endfunction
 
@@ -208,12 +204,12 @@ function! jusi#notebook#rebuild(...) abort
   let l:lines = getbufline(l:bufnr, 1, '$')
   let l:parsed = jusi#notebook#parse_lines(l:lines, l:state)
   let l:state.cells = l:parsed.cells
-  let l:state.line_to_cell = l:parsed.line_to_cell
   let l:state.next_cell_id = max([l:state.next_cell_id, l:parsed.next_cell_id])
   let l:state.changedtick = l:tick
 
   call setbufvar(l:bufnr, 'jusi_nb', l:state)
   call jusi#render#sync_signs(l:bufnr, l:state.cells)
+  call jusi#syntax#sync(l:bufnr, l:state.cells)
   return l:state
 endfunction
 
@@ -234,7 +230,7 @@ function! jusi#notebook#cell_at_line(...) abort
   if empty(l:state)
     return {}
   endif
-  let l:idx = get(l:state.line_to_cell, l:lnum, -1)
+  let l:idx = s:cell_index_at_line(l:state, l:lnum)
   if l:idx < 0
     return {}
   endif
@@ -242,7 +238,22 @@ function! jusi#notebook#cell_at_line(...) abort
 endfunction
 
 function! s:cell_index_at_line(state, lnum) abort
-  return get(a:state.line_to_cell, a:lnum, -1)
+  let l:low = 0
+  let l:high = len(a:state.cells) - 1
+
+  while l:low <= l:high
+    let l:mid = (l:low + l:high) / 2
+    let l:cell = a:state.cells[l:mid]
+    if a:lnum < l:cell.start
+      let l:high = l:mid - 1
+    elseif a:lnum > l:cell.end
+      let l:low = l:mid + 1
+    else
+      return l:mid
+    endif
+  endwhile
+
+  return -1
 endfunction
 
 function! s:goto_cell_line(target_line) abort

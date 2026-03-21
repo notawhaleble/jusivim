@@ -5,6 +5,7 @@ function! Test_open_scratch(lines) abort
   setlocal swapfile&
   file test.vipynb
   setlocal filetype=jusinb
+  setlocal syntax=jusinb
   if empty(a:lines)
     call setline(1, [''])
   else
@@ -14,6 +15,10 @@ function! Test_open_scratch(lines) abort
     execute (len(a:lines) + 1) . ',$delete _'
   endif
   call jusi#notebook#rebuild()
+endfunction
+
+function! Test_syn_name(lnum, col) abort
+  return synIDattr(synID(a:lnum, a:col, 1), 'name')
 endfunction
 
 function! Test_sign_lines(bufnr) abort

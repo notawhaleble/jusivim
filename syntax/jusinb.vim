@@ -2,7 +2,6 @@ if exists('b:current_syntax')
   finish
 endif
 
-syntax match jusiDelimiter '^##\s*$'
-highlight default link jusiDelimiter Comment
+call jusi#syntax#define_base()
 
 let b:current_syntax = 'jusinb'
