@@ -50,6 +50,7 @@ augroup jusi_notebook
   au TextChangedI *.vipynb call jusi#notebook#handle_text_changed_insert(expand('<abuf>'))
   au InsertLeave *.vipynb call jusi#notebook#handle_insert_exit(expand('<abuf>'))
   au BufEnter *.vipynb call jusi#notebook#rebuild(expand('<abuf>'))
+  au BufEnter,CursorMoved,CursorMovedI *.vipynb call jusi#syntax#request_refresh(expand('<abuf>'))
   au BufUnload *.vipynb call jusi#notebook#cleanup(expand('<abuf>'))
   au BufEnter,CursorMoved,InsertEnter,InsertLeave *.vipynb call jusi#cellmode#update_indicator()
   au BufLeave *.vipynb call jusi#cellmode#update_indicator(v:true)

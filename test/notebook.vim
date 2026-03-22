@@ -282,6 +282,74 @@ function! Test_syntax_updates_after_cell_type_change() abort
   call assert_equal('sql', b:jusi_nb.cells[0].syntax)
 endfunction
 
+function! Test_visible_cell_body_gets_rich_syntax() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'return 1',
+        \ ])
+  call cursor(1, 1)
+  call jusi#syntax#schedule(bufnr('%'))
+  call assert_notequal('', Test_syn_name(2, 1))
+endfunction
+
+function! Test_rich_syntax_covers_all_visible_cells() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'return 1',
+        \ '##',
+        \ 'return 2',
+        \ ])
+  call cursor(1, 1)
+  call jusi#syntax#schedule(bufnr('%'))
+  call assert_notequal('', Test_syn_name(2, 1))
+  call assert_notequal('', Test_syn_name(4, 1))
+endfunction
+
+function! Test_rich_syntax_covers_partially_visible_cell() abort
+  let l:save_lines = &lines
+  try
+    let &lines = 8
+    call Test_open_scratch([
+          \ '##',
+          \ '%%sql main',
+          \ 'select 1',
+          \ 'select 2',
+          \ 'select 3',
+          \ 'select 4',
+          \ 'select 5',
+          \ '##',
+          \ 'print("tail")',
+          \ ])
+    call cursor(5, 1)
+    normal! zt
+    call jusi#syntax#schedule(bufnr('%'))
+    call assert_notequal('', Test_syn_name(5, 1))
+  finally
+    let &lines = l:save_lines
+  endtry
+endfunction
+
+function! Test_rich_syntax_survives_jump_into_long_cell() abort
+  let l:lines = ['##', '%%sql main']
+  for l:num in range(1, 1400)
+    call add(l:lines, 'select ' . l:num . ',')
+  endfor
+  call add(l:lines, 'from table_name;')
+  call add(l:lines, '##')
+  call add(l:lines, 'print("tail")')
+
+  call Test_open_scratch(l:lines)
+  call cursor(1400, 1)
+  call jusi#syntax#schedule(bufnr('%'))
+  call assert_notequal('', Test_syn_name(1400, 1))
+
+  call cursor(line('$'), 1)
+  call jusi#syntax#schedule(bufnr('%'))
+  call cursor(1200, 1)
+  call jusi#syntax#schedule(bufnr('%'))
+  call assert_notequal('', Test_syn_name(1200, 1))
+endfunction
+
 function! Test_default_buffer_mappings_exist() abort
   call Test_open_scratch([
         \ '##',

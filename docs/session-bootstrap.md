@@ -5,7 +5,7 @@ Use one of the following prompts to resume work in a new session.
 ## Full Prompt
 
 ```text
-We are continuing work in this repo.
+We are continuing work in this repo, which is recreating the mvp implementation located in ../insourcejusi. MVP contains all the necessary UX, here we implementing it in a stable way, where architecture being designed early could make the project production ready.
 
 Before making changes:
 1. Read `AGENTS.md`.
