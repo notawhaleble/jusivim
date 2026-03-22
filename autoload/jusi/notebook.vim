@@ -1,4 +1,7 @@
 let s:delimiter_pattern = '^##\s*$'
+let s:history_start_pattern = '^##<<\s*$'
+let s:history_end_pattern = '^##>>\s*$'
+let s:history_entry_pattern = '^###\s*$'
 
 let s:buffer_cache = {}
 let s:buffer_listener = {}
@@ -140,11 +143,54 @@ function! s:make_parsed_cell(start, end_, kind, magic, signature) abort
   return {
         \ 'start': a:start,
         \ 'end': a:end_,
+        \ 'body_end': a:end_,
+        \ 'history_start': 0,
+        \ 'history_end': 0,
         \ 'kind': a:kind,
         \ 'magic': a:magic,
         \ 'syntax': s:default_syntax(a:kind, a:magic),
         \ 'signature': a:signature,
         \ }
+endfunction
+
+function! s:find_history_region(lines, start_lnum, end_lnum) abort
+  let l:history_start = 0
+  let l:history_end = 0
+  let l:lnum = a:start_lnum + 1
+
+  while l:lnum <= a:end_lnum
+    let l:line = a:lines[l:lnum - 1]
+    if l:line =~# s:history_start_pattern
+      let l:history_start = l:lnum
+      break
+    endif
+    let l:lnum += 1
+  endwhile
+
+  if l:history_start > 0
+    let l:lnum = l:history_start + 1
+    while l:lnum <= a:end_lnum
+      if a:lines[l:lnum - 1] =~# s:history_end_pattern
+        let l:history_end = l:lnum
+        break
+      endif
+      let l:lnum += 1
+    endwhile
+  endif
+
+  return {
+        \ 'history_start': l:history_start,
+        \ 'history_end': l:history_end,
+        \ 'body_end': l:history_start > 0 ? l:history_start - 1 : a:end_lnum,
+        \ }
+endfunction
+
+function! s:decorate_parsed_cell(lines, cell) abort
+  let l:history = s:find_history_region(a:lines, a:cell.start, a:cell.end)
+  let a:cell.body_end = l:history.body_end
+  let a:cell.history_start = l:history.history_start
+  let a:cell.history_end = l:history.history_end
+  return a:cell
 endfunction
 
 function! s:init_runtime_cell(parsed, state) abort
@@ -204,12 +250,13 @@ function! s:parse_raw_cells(lines) abort
     if l:line =~# s:delimiter_pattern
       if l:start != -1
         let l:type_info = s:derive_cell_type(a:lines, l:start, l:lnum - 1)
-        call add(l:cells, s:make_parsed_cell(
+        let l:cell = s:make_parsed_cell(
               \ l:start,
               \ l:lnum - 1,
               \ l:type_info.kind,
               \ l:type_info.magic,
-              \ s:cell_signature(a:lines, l:start, l:lnum - 1)))
+              \ s:cell_signature(a:lines, l:start, l:lnum - 1))
+        call add(l:cells, s:decorate_parsed_cell(a:lines, l:cell))
       endif
       let l:start = l:lnum
     endif
@@ -218,12 +265,13 @@ function! s:parse_raw_cells(lines) abort
 
   if l:start != -1
     let l:type_info = s:derive_cell_type(a:lines, l:start, l:line_count)
-    call add(l:cells, s:make_parsed_cell(
+    let l:cell = s:make_parsed_cell(
           \ l:start,
           \ l:line_count,
           \ l:type_info.kind,
           \ l:type_info.magic,
-          \ s:cell_signature(a:lines, l:start, l:line_count)))
+          \ s:cell_signature(a:lines, l:start, l:line_count))
+    call add(l:cells, s:decorate_parsed_cell(a:lines, l:cell))
   endif
 
   return l:cells
@@ -711,7 +759,7 @@ function! s:cell_entry_line(cell) abort
   if empty(a:cell)
     return line('.')
   endif
-  if a:cell.start < a:cell.end
+  if a:cell.start < a:cell.body_end
     return a:cell.start + 1
   endif
   return a:cell.start
@@ -766,6 +814,17 @@ function! s:cell_lines(cell) abort
   return getline(a:cell.start, a:cell.end)
 endfunction
 
+function! s:cell_main_lines(cell) abort
+  return getline(a:cell.start, a:cell.body_end)
+endfunction
+
+function! s:cell_history_lines(cell) abort
+  if get(a:cell, 'history_start', 0) == 0
+    return []
+  endif
+  return getline(a:cell.history_start, a:cell.end)
+endfunction
+
 function! s:replacement_index_after_delete(state, deleted_idx) abort
   if len(a:state.cells) <= 1
     return -1
@@ -810,8 +869,9 @@ function! jusi#notebook#edit_current() abort
     return {}
   endif
 
-  if l:cell.start < l:cell.end
-    call s:delete_range(l:cell.start + 1, l:cell.end)
+  let l:body_end = get(l:cell, 'body_end', l:cell.end)
+  if l:cell.start < l:body_end
+    call s:delete_range(l:cell.start + 1, l:body_end)
   endif
   call append(l:cell.start, '')
   call jusi#notebook#rebuild()
@@ -828,6 +888,22 @@ function! jusi#notebook#copy_current() abort
   endif
   let g:jusi_cell_clipboard = copy(s:cell_lines(l:cell))
   return g:jusi_cell_clipboard
+endfunction
+
+function! jusi#notebook#cell_main_lines(...) abort
+  let l:cell = a:0 >= 1 ? a:1 : jusi#notebook#cell_at_line(bufnr('%'), line('.'))
+  if empty(l:cell)
+    return []
+  endif
+  return s:cell_main_lines(l:cell)
+endfunction
+
+function! jusi#notebook#cell_history_lines(...) abort
+  let l:cell = a:0 >= 1 ? a:1 : jusi#notebook#cell_at_line(bufnr('%'), line('.'))
+  if empty(l:cell)
+    return []
+  endif
+  return s:cell_history_lines(l:cell)
 endfunction
 
 function! jusi#notebook#paste_below() abort

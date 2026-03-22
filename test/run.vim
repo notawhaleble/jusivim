@@ -8,6 +8,7 @@ runtime plugin/jusi.vim
 source test/notebook.vim
 
 call Test_parser_detects_cells_and_magic()
+call Test_parser_tracks_magic_history_region()
 call Test_rebuild_places_signs_on_cell_starts()
 call Test_insert_below_creates_new_cell()
 call Test_insert_above_creates_new_cell()
@@ -15,6 +16,7 @@ call Test_delete_middle_cell_keeps_neighbors()
 call Test_delete_only_cell_resets_to_single_empty_cell()
 call Test_delete_last_cell_moves_to_previous_cell()
 call Test_edit_current_clears_cell_body_and_enters_insert_target()
+call Test_edit_current_preserves_magic_history_region()
 call Test_copy_current_stores_cell_lines()
 call Test_paste_below_inserts_copied_cell()
 call Test_paste_below_without_clipboard_is_noop()

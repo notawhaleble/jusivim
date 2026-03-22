@@ -20,6 +20,25 @@ function! Test_parser_detects_cells_and_magic() abort
   call assert_equal(2, l:parsed.cells[1].id)
   call assert_equal('python', l:parsed.cells[0].syntax)
   call assert_equal('sql', l:parsed.cells[1].syntax)
+  call assert_equal(2, l:parsed.cells[0].body_end)
+  call assert_equal(0, l:parsed.cells[1].history_start)
+endfunction
+
+function! Test_parser_tracks_magic_history_region() abort
+  let l:parsed = jusi#notebook#parse_lines([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 0',
+        \ '##>>',
+        \ ])
+  call assert_equal(1, len(l:parsed.cells))
+  call assert_equal('magic', l:parsed.cells[0].kind)
+  call assert_equal(3, l:parsed.cells[0].body_end)
+  call assert_equal(4, l:parsed.cells[0].history_start)
+  call assert_equal(7, l:parsed.cells[0].history_end)
 endfunction
 
 function! Test_rebuild_places_signs_on_cell_starts() abort
@@ -131,6 +150,23 @@ function! Test_edit_current_clears_cell_body_and_enters_insert_target() abort
   let l:cells = jusi#notebook#cells()
   call assert_equal(2, len(l:cells))
   call assert_equal(2, line('.'))
+endfunction
+
+function! Test_edit_current_preserves_magic_history_region() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 0',
+        \ '##>>',
+        \ ])
+  call cursor(3, 1)
+  call jusi#notebook#edit_current()
+  call assert_equal(['##', '', '##<<', '###', 'select 0', '##>>'], getline(1, '$'))
+  call assert_equal(['##', ''], jusi#notebook#cell_main_lines())
+  call assert_equal(['##<<', '###', 'select 0', '##>>'], jusi#notebook#cell_history_lines())
 endfunction
 
 function! Test_copy_current_stores_cell_lines() abort
