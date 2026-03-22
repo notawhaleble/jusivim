@@ -1,5 +1,6 @@
 set nocompatible
 set runtimepath^=.
+set packpath=
 set viminfofile=NONE
 syntax on
 

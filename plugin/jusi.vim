@@ -21,6 +21,14 @@ if !exists('g:jusi_indent_map')
   let g:jusi_indent_map = {}
 endif
 
+if !exists('g:jusi_syntax_map')
+  let g:jusi_syntax_map = {}
+endif
+
+if !exists('g:jusi_ext_api_names')
+  let g:jusi_ext_api_names = {}
+endif
+
 if !exists('g:jusi_sign_texts')
   let g:jusi_sign_texts = {
         \ 'initial': '#',
