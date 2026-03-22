@@ -44,10 +44,15 @@ function! s:ensure_state(bufnr) abort
       \ 'changedtick': -1,
       \ 'next_cell_id': 1,
       \ 'cells': [],
+      \ 'session': jusi#session#default_state(),
       \ 'dirty_insert': 0,
       \ 'syntax_dirty': 0,
       \ 'syntax_dirty_from': 0,
           \ })
+  elseif !has_key(getbufvar(a:bufnr, 'jusi_nb'), 'session')
+    let l:state = getbufvar(a:bufnr, 'jusi_nb')
+    let l:state.session = jusi#session#default_state()
+    call setbufvar(a:bufnr, 'jusi_nb', l:state)
   endif
   return getbufvar(a:bufnr, 'jusi_nb')
 endfunction

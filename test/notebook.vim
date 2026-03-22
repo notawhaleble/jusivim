@@ -294,6 +294,217 @@ function! Test_non_default_runtime_state_is_preserved_for_surviving_cells() abor
   call assert_equal(42, b:jusi_nb.cells[0].client_bufnr)
 endfunction
 
+function! s:test_session_adapter_start(bufnr, payload) abort
+  return {
+        \ 'ok': 1,
+        \ 'session': {
+        \   'state': 'connected',
+        \   'backend': 'mock',
+        \   'kernel_name': get(a:payload, 'kernel_name', ''),
+        \   'connection': 'mock://kernel/' . get(a:payload, 'kernel_name', ''),
+        \   },
+        \ 'prepared': {
+        \   'state': 'ready',
+        \   'bufnr': 91,
+        \   },
+        \ }
+endfunction
+
+function! s:test_session_adapter_execute(bufnr, payload) abort
+  return {
+        \ 'ok': 1,
+        \ 'prepared': {
+        \   'state': 'ready',
+        \   'bufnr': 92,
+        \   },
+        \ }
+endfunction
+
+function! s:test_session_adapter_stop(bufnr, payload) abort
+  return {
+        \ 'ok': 1,
+        \ 'session': {
+        \   'request': {},
+        \   },
+        \ 'prepared': {
+        \   'state': 'missing',
+        \   'bufnr': -1,
+        \   },
+        \ }
+endfunction
+
+function! Test_default_session_state_is_initialized_for_notebook() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  let l:session = jusi#session#state()
+  call assert_equal('idle', l:session.state)
+  call assert_equal('', l:session.backend)
+  call assert_equal('', l:session.last_error)
+  call assert_equal('missing', l:session.prepared.state)
+  call assert_equal(-1, l:session.prepared.bufnr)
+endfunction
+
+function! Test_start_kernel_uses_adapter_and_records_connected_session() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {'start': function('s:test_session_adapter_start')}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#start('python3')
+    let l:session = jusi#session#state()
+    call assert_equal('connected', l:session.state)
+    call assert_equal('mock', l:session.backend)
+    call assert_equal('python3', l:session.kernel_name)
+    call assert_equal('mock://kernel/python3', l:session.connection)
+    call assert_equal('start', l:session.last_action)
+    call assert_equal('', l:session.last_error)
+    call assert_equal('ready', l:session.prepared.state)
+    call assert_equal(91, l:session.prepared.bufnr)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_execute_requires_connected_session() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  call jusi#session#execute_current()
+  call assert_equal('failed', b:jusi_nb.session.state)
+  call assert_match('Cannot execute cell without a connected session', b:jusi_nb.session.last_error)
+  call assert_equal('initial', b:jusi_nb.cells[0].status)
+endfunction
+
+function! Test_execute_requires_prepared_client_buffer() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {'start': function('s:test_session_adapter_start')}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#start('python3')
+    let b:jusi_nb.session.prepared = {'state': 'missing', 'bufnr': -1}
+    call jusi#session#execute_current()
+    call assert_equal('failed', b:jusi_nb.session.state)
+    call assert_match('Cannot execute cell without a prepared client buffer', b:jusi_nb.session.last_error)
+    call assert_equal('initial', b:jusi_nb.cells[0].status)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_execute_consumes_prepared_buffer_and_keeps_session_connected() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'start': function('s:test_session_adapter_start'),
+          \ 'execute': function('s:test_session_adapter_execute'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#start('python3')
+    call jusi#session#execute_current()
+    call assert_equal('connected', b:jusi_nb.session.state)
+    call assert_equal('ready', b:jusi_nb.session.prepared.state)
+    call assert_equal(92, b:jusi_nb.session.prepared.bufnr)
+    call assert_equal('busy', b:jusi_nb.cells[0].status)
+    call assert_equal(91, b:jusi_nb.cells[0].client_bufnr)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_stop_kernel_moves_local_session_to_stopped() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'start': function('s:test_session_adapter_start'),
+          \ 'stop': function('s:test_session_adapter_stop'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#start('python3')
+    call jusi#session#stop()
+    call assert_equal('stopped', b:jusi_nb.session.state)
+    call assert_equal('', b:jusi_nb.session.last_error)
+    call assert_equal('missing', b:jusi_nb.session.prepared.state)
+    call assert_equal(-1, b:jusi_nb.session.prepared.bufnr)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_stop_kernel_moves_attachable_session_to_detached() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'start': function('s:test_session_adapter_start'),
+          \ 'stop': function('s:test_session_adapter_stop'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#start('python3')
+    let b:jusi_nb.session.attachable = 1
+    call jusi#session#stop()
+    call assert_equal('detached', b:jusi_nb.session.state)
+    call assert_equal('missing', b:jusi_nb.session.prepared.state)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_session_callback_updates_prepared_state() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  call jusi#session#callback_prepared({'state': 'ready', 'bufnr': 77})
+  call assert_equal('ready', b:jusi_nb.session.prepared.state)
+  call assert_equal(77, b:jusi_nb.session.prepared.bufnr)
+endfunction
+
+function! Test_session_callback_updates_cell_state() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  let l:cell_id = b:jusi_nb.cells[0].id
+  call jusi#session#callback_cell(l:cell_id, {'status': 'follow-up', 'client_bufnr': 88})
+  call assert_equal('follow-up', b:jusi_nb.cells[0].status)
+  call assert_equal(88, b:jusi_nb.cells[0].client_bufnr)
+endfunction
+
+function! Test_session_callback_response_can_update_multiple_areas() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  let l:cell_id = b:jusi_nb.cells[0].id
+  call jusi#session#callback_response({
+        \ 'session': {'state': 'connected', 'backend': 'mock'},
+        \ 'prepared': {'state': 'ready', 'bufnr': 66},
+        \ 'cell': {'id': l:cell_id, 'status': 'done', 'client_bufnr': 55},
+        \ })
+  call assert_equal('connected', b:jusi_nb.session.state)
+  call assert_equal('mock', b:jusi_nb.session.backend)
+  call assert_equal('ready', b:jusi_nb.session.prepared.state)
+  call assert_equal(66, b:jusi_nb.session.prepared.bufnr)
+  call assert_equal('done', b:jusi_nb.cells[0].status)
+  call assert_equal(55, b:jusi_nb.cells[0].client_bufnr)
+endfunction
+
 function! Test_magic_header_has_dedicated_syntax_group() abort
   call Test_open_scratch([
         \ '##',

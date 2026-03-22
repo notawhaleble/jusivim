@@ -29,6 +29,10 @@ if !exists('g:jusi_ext_api_names')
   let g:jusi_ext_api_names = {}
 endif
 
+if !exists('g:jusi_session_adapter')
+  let g:jusi_session_adapter = {}
+endif
+
 if !exists('g:jusi_sign_texts')
   let g:jusi_sign_texts = {
         \ 'initial': '#',
@@ -51,6 +55,11 @@ command! JusiCellDelete call jusi#notebook#delete_current()
 command! JusiCellEdit call jusi#notebook#edit_current()
 command! JusiCellCopy call jusi#notebook#copy_current()
 command! JusiCellPasteBelow call jusi#notebook#paste_below()
+command! -nargs=? JusiStartKernel call jusi#session#start(<q-args>)
+command! -nargs=1 JusiAttach call jusi#session#attach(<q-args>)
+command! JusiExecute call jusi#session#execute_current()
+command! JusiInterruptKernel call jusi#session#interrupt()
+command! JusiStopKernel call jusi#session#stop()
 command! JusiCellModeEnable call jusi#cellmode#enable()
 command! JusiCellModeDisable call jusi#cellmode#disable()
 command! JusiCellModeToggle call jusi#cellmode#toggle()
