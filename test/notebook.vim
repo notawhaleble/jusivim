@@ -350,6 +350,59 @@ function! Test_rich_syntax_survives_jump_into_long_cell() abort
   call assert_notequal('', Test_syn_name(1200, 1))
 endfunction
 
+function! Test_default_cell_uses_python_indent() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'if True:',
+        \ '    pass',
+        \ ])
+  call cursor(2, 1)
+  call jusi#indent#refresh(bufnr('%'))
+  call assert_match('python', &l:indentexpr)
+  call assert_equal('python', get(b:, 'jusi_indent_dialect', ''))
+endfunction
+
+function! Test_magic_cell_updates_indent_dialect() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'if True:',
+        \ '    pass',
+        \ '##',
+        \ '%%sh',
+        \ 'if true; then',
+        \ 'echo ok',
+        \ 'fi',
+        \ ])
+  call cursor(2, 1)
+  call jusi#indent#refresh(bufnr('%'))
+  call assert_match('python', &l:indentexpr)
+
+  call cursor(6, 1)
+  call jusi#indent#refresh(bufnr('%'))
+  call assert_match('GetShIndent', &l:indentexpr)
+  call assert_equal('sh', get(b:, 'jusi_indent_dialect', ''))
+endfunction
+
+function! Test_magic_indent_map_overrides_builtin_lookup() abort
+  let l:save_map = copy(get(g:, 'jusi_indent_map', {}))
+  try
+    let g:jusi_indent_map = {'shell': 'indent/sh.vim'}
+    call Test_open_scratch([
+          \ '##',
+          \ '%%shell',
+          \ 'if true; then',
+          \ 'echo ok',
+          \ 'fi',
+          \ ])
+    call cursor(3, 1)
+    call jusi#indent#refresh(bufnr('%'))
+    call assert_match('GetShIndent', &l:indentexpr)
+    call assert_equal('shell', get(b:, 'jusi_indent_dialect', ''))
+  finally
+    let g:jusi_indent_map = l:save_map
+  endtry
+endfunction
+
 function! Test_default_buffer_mappings_exist() abort
   call Test_open_scratch([
         \ '##',

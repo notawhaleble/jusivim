@@ -17,6 +17,10 @@ if !exists('g:jusi_cell_clipboard')
   let g:jusi_cell_clipboard = []
 endif
 
+if !exists('g:jusi_indent_map')
+  let g:jusi_indent_map = {}
+endif
+
 if !exists('g:jusi_sign_texts')
   let g:jusi_sign_texts = {
         \ 'initial': '#',
@@ -50,7 +54,12 @@ augroup jusi_notebook
   au TextChangedI *.vipynb call jusi#notebook#handle_text_changed_insert(expand('<abuf>'))
   au InsertLeave *.vipynb call jusi#notebook#handle_insert_exit(expand('<abuf>'))
   au BufEnter *.vipynb call jusi#notebook#rebuild(expand('<abuf>'))
+  au BufEnter,CursorMoved,InsertEnter,InsertLeave,TextChanged *.vipynb call jusi#indent#refresh(expand('<abuf>'))
   au BufEnter,CursorMoved,CursorMovedI *.vipynb call jusi#syntax#request_refresh(expand('<abuf>'))
+  if exists('##WinScrolled')
+    au WinScrolled *.vipynb call jusi#syntax#request_refresh(expand('<abuf>'))
+  endif
+  au VimResized *.vipynb call jusi#syntax#request_refresh(expand('<abuf>'))
   au BufUnload *.vipynb call jusi#notebook#cleanup(expand('<abuf>'))
   au BufEnter,CursorMoved,InsertEnter,InsertLeave *.vipynb call jusi#cellmode#update_indicator()
   au BufLeave *.vipynb call jusi#cellmode#update_indicator(v:true)
