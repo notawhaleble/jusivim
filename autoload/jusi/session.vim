@@ -12,6 +12,12 @@ endfunction
 function! s:copy_update(current, update) abort
   let l:next = copy(a:current)
   for [l:key, l:value] in items(a:update)
+    if l:key ==# 'client_id' && !has_key(l:next, 'id')
+      let l:next.id = l:value
+    endif
+    if l:key ==# 'client_bufnr' && !has_key(l:next, 'bufnr')
+      let l:next.bufnr = l:value
+    endif
     let l:next[l:key] = l:value
   endfor
   return l:next
@@ -45,7 +51,24 @@ function! s:update_prepared(bufnr, update) abort
   endif
   let l:prepared = get(l:state.session, 'prepared', jusi#session#default_prepared_state())
   let l:state.session.prepared = s:copy_update(l:prepared, a:update)
+  if has_key(l:state.session.prepared, 'client_id') && !has_key(l:state.session.prepared, 'id')
+    let l:state.session.prepared.id = l:state.session.prepared.client_id
+  endif
+  if has_key(l:state.session.prepared, 'client_bufnr') && !has_key(l:state.session.prepared, 'bufnr')
+    let l:state.session.prepared.bufnr = l:state.session.prepared.client_bufnr
+  endif
   return s:update_state(a:bufnr, l:state)
+endfunction
+
+function! s:normalize_prepared_update(update) abort
+  let l:update = copy(a:update)
+  if has_key(l:update, 'client_id') && !has_key(l:update, 'id')
+    let l:update.id = l:update.client_id
+  endif
+  if has_key(l:update, 'client_bufnr') && !has_key(l:update, 'bufnr')
+    let l:update.bufnr = l:update.client_bufnr
+  endif
+  return l:update
 endfunction
 
 function! s:find_cell_index(state, cell_id) abort
@@ -144,6 +167,7 @@ endfunction
 
 function! jusi#session#default_prepared_state() abort
   return {
+        \ 'id': '',
         \ 'state': 'missing',
         \ 'bufnr': -1,
         \ }
@@ -181,14 +205,24 @@ function! jusi#session#prepared(...) abort
 endfunction
 
 function! jusi#session#apply(...) abort
-  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
-  let l:update = a:0 >= 2 ? a:2 : {}
+  if a:0 >= 1 && type(a:1) == type({})
+    let l:bufnr = bufnr('%')
+    let l:update = a:1
+  else
+    let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+    let l:update = a:0 >= 2 ? a:2 : {}
+  endif
   return s:update_session(l:bufnr, l:update)
 endfunction
 
 function! jusi#session#apply_prepared(...) abort
-  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
-  let l:update = a:0 >= 2 ? a:2 : {}
+  if a:0 >= 1 && type(a:1) == type({})
+    let l:bufnr = bufnr('%')
+    let l:update = s:normalize_prepared_update(a:1)
+  else
+    let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+    let l:update = a:0 >= 2 ? s:normalize_prepared_update(a:2) : {}
+  endif
   return s:update_prepared(l:bufnr, l:update)
 endfunction
 
@@ -204,7 +238,18 @@ endfunction
 
 function! jusi#session#callback_prepared(update, ...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
-  return s:update_prepared(l:bufnr, a:update)
+  let l:update = s:normalize_prepared_update(a:update)
+  let l:state = s:update_prepared(l:bufnr, l:update)
+  if empty(l:state)
+    return {}
+  endif
+  if get(l:state.session.prepared, 'state', '') ==# 'binding'
+        \ && get(l:state.session.prepared, 'bufnr', -1) < 0
+        \ && !empty(get(l:state.session.prepared, 'id', ''))
+    call jusi#session#bind_prepared_client(l:bufnr)
+    return jusi#notebook#state(l:bufnr)
+  endif
+  return l:state
 endfunction
 
 function! jusi#session#callback_cell(cell_id, update, ...) abort
@@ -240,10 +285,10 @@ function! jusi#session#set_connected(...) abort
   return s:update_session(l:bufnr, extend(l:default_update, copy(l:update)))
 endfunction
 
-function! jusi#session#set_detached(...) abort
+function! jusi#session#set_disconnected(...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
   return s:update_session(l:bufnr, {
-        \ 'state': 'detached',
+        \ 'state': 'disconnected',
         \ 'last_error': '',
         \ 'request': {},
         \ 'prepared': jusi#session#default_prepared_state(),
@@ -279,7 +324,7 @@ function! jusi#session#start(...) abort
         \ 'last_action': 'start',
         \ 'last_error': '',
         \ 'request': l:request,
-        \ 'prepared': {'state': 'missing', 'bufnr': -1},
+        \ 'prepared': jusi#session#default_prepared_state(),
         \ })
   let l:response = jusi#adapter#call('start', l:bufnr, l:request)
   if get(l:response, 'ok', 0)
@@ -310,7 +355,7 @@ function! jusi#session#attach(target) abort
         \ 'last_action': 'attach',
         \ 'last_error': '',
         \ 'request': l:request,
-        \ 'prepared': {'state': 'missing', 'bufnr': -1},
+        \ 'prepared': jusi#session#default_prepared_state(),
         \ })
   let l:response = jusi#adapter#call('attach', l:bufnr, l:request)
   if get(l:response, 'ok', 0)
@@ -350,24 +395,27 @@ function! jusi#session#execute_current() abort
         \ 'last_error': '',
         \ 'request': {'cell_id': l:cell.id},
         \ })
-  call s:update_prepared(l:bufnr, {'state': 'spawning', 'bufnr': -1})
+  call s:update_prepared(l:bufnr, jusi#session#default_prepared_state())
   call s:update_cell(l:bufnr, l:cell.id, {
         \ 'status': 'busy',
         \ 'client_bufnr': get(l:prepared, 'bufnr', -1),
         \ })
 
   let l:response = jusi#adapter#call('execute', l:bufnr, {
-        \ 'cell': copy(l:cell),
+        \ 'cell': {
+        \   'id': l:cell.id,
+        \   'kind': l:cell.kind,
+        \   'syntax': l:cell.syntax,
+        \   'main_lines': jusi#notebook#cell_main_lines(l:cell),
+        \   },
         \ 'prepared': copy(l:prepared),
-        \ 'main_lines': jusi#notebook#cell_main_lines(l:cell),
-        \ 'history_lines': jusi#notebook#cell_history_lines(l:cell),
         \ })
   if get(l:response, 'ok', 0)
     return s:apply_response(
           \ l:bufnr,
           \ l:response,
           \ {'state': 'connected', 'request': {'cell_id': l:cell.id}},
-          \ {'state': 'spawning', 'bufnr': -1},
+          \ jusi#session#default_prepared_state(),
           \ {'status': 'busy', 'client_bufnr': get(l:prepared, 'bufnr', -1)},
           \ l:cell.id)
   endif
@@ -409,6 +457,47 @@ function! jusi#session#interrupt() abort
   return jusi#session#interrupt_current()
 endfunction
 
+function! jusi#session#bind_prepared_client(...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if !s:require_notebook_buffer(l:bufnr, 'bind prepared client')
+    return {}
+  endif
+
+  let l:session = jusi#session#state(l:bufnr)
+  let l:prepared = get(l:session, 'prepared', jusi#session#default_prepared_state())
+  if get(l:prepared, 'state', '') !=# 'binding'
+    return l:session
+  endif
+  if empty(get(l:prepared, 'id', ''))
+    return s:fail_session(l:bufnr, {'last_action': 'bind_prepared_client'}, 'Cannot bind a prepared client without a backend client id')
+  endif
+
+  let l:client_bufnr = get(l:prepared, 'bufnr', -1)
+  if l:client_bufnr < 0
+    let l:client_bufnr = jusi#client#create_prepared_buffer(l:bufnr, l:prepared.id)
+    call s:update_prepared(l:bufnr, {'state': 'binding', 'bufnr': l:client_bufnr})
+    let l:prepared = get(jusi#session#state(l:bufnr), 'prepared', l:prepared)
+  endif
+
+  if !jusi#adapter#has('bind_prepared_client')
+    return jusi#notebook#state(l:bufnr)
+  endif
+
+  let l:response = jusi#adapter#call('bind_prepared_client', l:bufnr, {
+        \ 'client_id': l:prepared.id,
+        \ 'client_bufnr': l:client_bufnr,
+        \ 'prepared': copy(l:prepared),
+        \ 'session': copy(l:session),
+        \ })
+  if get(l:response, 'ok', 0)
+    return jusi#notebook#state(l:bufnr)
+  endif
+
+  return s:fail_session(l:bufnr, {
+        \ 'last_action': 'bind_prepared_client',
+        \ }, get(l:response, 'error', 'Failed to bind prepared client'))
+endfunction
+
 function! jusi#session#stop() abort
   let l:bufnr = s:normalize_bufnr(bufnr('%'))
   if !s:require_notebook_buffer(l:bufnr, 'stop')
@@ -428,8 +517,7 @@ function! jusi#session#stop() abort
   call s:update_prepared(l:bufnr, {'state': 'missing', 'bufnr': -1})
   let l:response = jusi#adapter#call('stop', l:bufnr, {'session': copy(l:session)})
   if get(l:response, 'ok', 0)
-    let l:next_state = get(l:session, 'attachable', 0) ? 'detached' : 'stopped'
-    return s:apply_response(l:bufnr, l:response, {'state': l:next_state, 'request': {}}, jusi#session#default_prepared_state())
+    return s:apply_response(l:bufnr, l:response, {'state': 'stopped', 'request': {}}, jusi#session#default_prepared_state())
   endif
   return s:fail_session(l:bufnr, {
         \ 'last_action': 'stop',

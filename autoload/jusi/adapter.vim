@@ -32,3 +32,7 @@ function! jusi#adapter#call(op, bufnr, payload) abort
   endif
   return l:result
 endfunction
+
+function! jusi#adapter#has(op) abort
+  return type(s:adapter_funcref(a:op)) == type(function('tr'))
+endfunction

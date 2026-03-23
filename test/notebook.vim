@@ -304,18 +304,27 @@ function! s:test_session_adapter_start(bufnr, payload) abort
         \   'connection': 'mock://kernel/' . get(a:payload, 'kernel_name', ''),
         \   },
         \ 'prepared': {
-        \   'state': 'ready',
-        \   'bufnr': 91,
+        \   'id': 'client-1',
+        \   'state': 'binding',
+        \   'bufnr': -1,
         \   },
         \ }
+endfunction
+
+let s:last_bound_prepared = {}
+
+function! s:test_session_adapter_bind_prepared(bufnr, payload) abort
+  let s:last_bound_prepared = copy(a:payload)
+  return {'ok': 1}
 endfunction
 
 function! s:test_session_adapter_execute(bufnr, payload) abort
   return {
         \ 'ok': 1,
         \ 'prepared': {
-        \   'state': 'ready',
-        \   'bufnr': 92,
+        \   'id': 'client-2',
+        \   'state': 'binding',
+        \   'bufnr': -1,
         \   },
         \ }
 endfunction
@@ -342,6 +351,7 @@ function! Test_default_session_state_is_initialized_for_notebook() abort
   call assert_equal('idle', l:session.state)
   call assert_equal('', l:session.backend)
   call assert_equal('', l:session.last_error)
+  call assert_equal('', l:session.prepared.id)
   call assert_equal('missing', l:session.prepared.state)
   call assert_equal(-1, l:session.prepared.bufnr)
 endfunction
@@ -362,8 +372,9 @@ function! Test_start_kernel_uses_adapter_and_records_connected_session() abort
     call assert_equal('mock://kernel/python3', l:session.connection)
     call assert_equal('start', l:session.last_action)
     call assert_equal('', l:session.last_error)
-    call assert_equal('ready', l:session.prepared.state)
-    call assert_equal(91, l:session.prepared.bufnr)
+    call assert_equal('client-1', l:session.prepared.id)
+    call assert_equal('binding', l:session.prepared.state)
+    call assert_equal(-1, l:session.prepared.bufnr)
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
@@ -399,11 +410,35 @@ function! Test_execute_requires_prepared_client_buffer() abort
   endtry
 endfunction
 
-function! Test_execute_consumes_prepared_buffer_and_keeps_session_connected() abort
+function! Test_prepared_binding_event_creates_local_buffer_and_sends_bind_ack() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   try
     let g:jusi_session_adapter = {
           \ 'start': function('s:test_session_adapter_start'),
+          \ 'bind_prepared_client': function('s:test_session_adapter_bind_prepared'),
+          \ }
+    let s:last_bound_prepared = {}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#start('python3')
+    call jusi#session#callback_prepared({'id': 'client-1', 'state': 'binding', 'bufnr': -1})
+    call assert_equal('binding', b:jusi_nb.session.prepared.state)
+    call assert_match('^client-1$', get(s:last_bound_prepared, 'client_id', ''))
+    call assert_true(get(s:last_bound_prepared, 'client_bufnr', -1) > 0)
+    call assert_equal(s:last_bound_prepared.client_bufnr, b:jusi_nb.session.prepared.bufnr)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_execute_consumes_ready_prepared_buffer_and_starts_replacement_binding() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'start': function('s:test_session_adapter_start'),
+          \ 'bind_prepared_client': function('s:test_session_adapter_bind_prepared'),
           \ 'execute': function('s:test_session_adapter_execute'),
           \ }
     call Test_open_scratch([
@@ -411,10 +446,12 @@ function! Test_execute_consumes_prepared_buffer_and_keeps_session_connected() ab
           \ 'print("hello")',
           \ ])
     call jusi#session#start('python3')
+    call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'bufnr': 91})
     call jusi#session#execute_current()
     call assert_equal('connected', b:jusi_nb.session.state)
-    call assert_equal('ready', b:jusi_nb.session.prepared.state)
-    call assert_equal(92, b:jusi_nb.session.prepared.bufnr)
+    call assert_equal('client-2', b:jusi_nb.session.prepared.id)
+    call assert_equal('binding', b:jusi_nb.session.prepared.state)
+    call assert_equal(-1, b:jusi_nb.session.prepared.bufnr)
     call assert_equal('busy', b:jusi_nb.cells[0].status)
     call assert_equal(91, b:jusi_nb.cells[0].client_bufnr)
   finally
@@ -444,7 +481,17 @@ function! Test_stop_kernel_moves_local_session_to_stopped() abort
   endtry
 endfunction
 
-function! Test_stop_kernel_moves_attachable_session_to_detached() abort
+function! Test_disconnect_uses_disconnected_state_for_recoverable_link_loss() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  call jusi#session#set_disconnected()
+  call assert_equal('disconnected', b:jusi_nb.session.state)
+  call assert_equal('missing', b:jusi_nb.session.prepared.state)
+endfunction
+
+function! Test_stop_kernel_moves_attachable_session_to_stopped() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   try
     let g:jusi_session_adapter = {
@@ -458,7 +505,7 @@ function! Test_stop_kernel_moves_attachable_session_to_detached() abort
     call jusi#session#start('python3')
     let b:jusi_nb.session.attachable = 1
     call jusi#session#stop()
-    call assert_equal('detached', b:jusi_nb.session.state)
+    call assert_equal('stopped', b:jusi_nb.session.state)
     call assert_equal('missing', b:jusi_nb.session.prepared.state)
   finally
     let g:jusi_session_adapter = l:save_adapter
@@ -470,7 +517,8 @@ function! Test_session_callback_updates_prepared_state() abort
         \ '##',
         \ 'print("hello")',
         \ ])
-  call jusi#session#callback_prepared({'state': 'ready', 'bufnr': 77})
+  call jusi#session#callback_prepared({'id': 'client-77', 'state': 'ready', 'bufnr': 77})
+  call assert_equal('client-77', b:jusi_nb.session.prepared.id)
   call assert_equal('ready', b:jusi_nb.session.prepared.state)
   call assert_equal(77, b:jusi_nb.session.prepared.bufnr)
 endfunction
@@ -494,11 +542,12 @@ function! Test_session_callback_response_can_update_multiple_areas() abort
   let l:cell_id = b:jusi_nb.cells[0].id
   call jusi#session#callback_response({
         \ 'session': {'state': 'connected', 'backend': 'mock'},
-        \ 'prepared': {'state': 'ready', 'bufnr': 66},
+        \ 'prepared': {'id': 'client-66', 'state': 'ready', 'bufnr': 66},
         \ 'cell': {'id': l:cell_id, 'status': 'done', 'client_bufnr': 55},
         \ })
   call assert_equal('connected', b:jusi_nb.session.state)
   call assert_equal('mock', b:jusi_nb.session.backend)
+  call assert_equal('client-66', b:jusi_nb.session.prepared.id)
   call assert_equal('ready', b:jusi_nb.session.prepared.state)
   call assert_equal(66, b:jusi_nb.session.prepared.bufnr)
   call assert_equal('done', b:jusi_nb.cells[0].status)

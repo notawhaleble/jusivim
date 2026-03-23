@@ -229,10 +229,10 @@ Session states should be explicit, for example:
 - `idle`
 - `starting`
 - `connected`
-- `busy`
+- `disconnected`
 - `stopping`
 - `failed`
-- `detached`
+- `stopped`
 
 Exact labels may change, but state transitions must be deliberate and observable.
 
@@ -251,6 +251,15 @@ Adapter responsibilities:
 - stop or detach session
 
 The adapter should convert transport messages into notebook/session updates without leaking protocol details into unrelated editing code.
+
+Prepared-client lifecycle should also remain explicit:
+
+- `missing`
+- `spawning`
+- `binding`
+- `ready`
+
+The frontend owns Vim buffer creation and must acknowledge prepared binding before the backend can treat the client as `ready`.
 
 ## Client Buffer Management
 
