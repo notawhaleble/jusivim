@@ -7,6 +7,7 @@ let s:sign_specs = {
       \ 'busy': {'text': 'JusiSignBusy', 'line': 'JusiSignLineBusy', 'fg': 'Magenta', 'guifg': '#ff00ff', 'bg': '#ff00ff', 'ctermfg_active': 'White', 'guifg_active': '#ffffff'},
       \ 'done': {'text': 'JusiSignDone', 'line': 'JusiSignLineDone', 'fg': 'Green', 'guifg': '#00af00', 'bg': '#00ff00', 'ctermfg_active': 'Black', 'guifg_active': '#000000'},
       \ 'error': {'text': 'JusiSignError', 'line': 'JusiSignLineError', 'fg': 'Red', 'guifg': '#ff0000', 'bg': '#ff0000', 'ctermfg_active': 'White', 'guifg_active': '#ffffff'},
+      \ 'interrupted': {'text': 'JusiSignInterrupted', 'line': 'JusiSignLineInterrupted', 'fg': 'DarkYellow', 'guifg': '#d78700', 'bg': '#d78700', 'ctermfg_active': 'Black', 'guifg_active': '#000000'},
       \ 'parked': {'text': 'JusiSignParked', 'line': 'JusiSignLineParked', 'fg': 'Blue', 'guifg': '#3b7cff', 'bg': '#3b7cff', 'ctermfg_active': 'Black', 'guifg_active': '#000000'},
       \ }
 

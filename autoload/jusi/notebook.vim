@@ -203,7 +203,11 @@ function! s:init_runtime_cell(parsed, state) abort
   let l:cell.id = s:new_cell_id(a:state)
   let l:cell.status = 'initial'
   let l:cell.sign_id = 0
+  let l:cell.client_id = ''
+  let l:cell.client_state = 'shutdown'
   let l:cell.client_bufnr = -1
+  let l:cell.owner = {'kind': ''}
+  let l:cell.close_requested = 0
   call s:assign_sign_id(l:cell)
   return l:cell
 endfunction
@@ -213,7 +217,11 @@ function! s:merge_runtime_cell(prev, parsed) abort
   let l:cell.id = get(a:prev, 'id', 0)
   let l:cell.status = get(a:prev, 'status', 'initial')
   let l:cell.sign_id = get(a:prev, 'sign_id', 0)
+  let l:cell.client_id = get(a:prev, 'client_id', '')
+  let l:cell.client_state = get(a:prev, 'client_state', 'shutdown')
   let l:cell.client_bufnr = get(a:prev, 'client_bufnr', -1)
+  let l:cell.owner = copy(get(a:prev, 'owner', {'kind': ''}))
+  let l:cell.close_requested = get(a:prev, 'close_requested', 0)
 
   if has_key(a:prev, 'syntax') && !empty(a:prev.syntax) && !s:is_default_syntax(a:prev)
     let l:cell.syntax = a:prev.syntax
@@ -371,6 +379,24 @@ function! s:reconcile_cells(parsed_cells, prev_cells, state) abort
   endfor
 
   return l:cells
+endfunction
+
+function! s:shutdown_lost_cells(bufnr, prev_cells, next_cells, reason) abort
+  let l:next_ids = {}
+  for l:cell in a:next_cells
+    let l:next_ids[get(l:cell, 'id', 0)] = 1
+  endfor
+
+  for l:cell in a:prev_cells
+    let l:cell_id = get(l:cell, 'id', 0)
+    if l:cell_id <= 0 || has_key(l:next_ids, l:cell_id)
+      continue
+    endif
+    if empty(get(l:cell, 'client_id', '')) && get(l:cell, 'client_bufnr', -1) < 0
+      continue
+    endif
+    call jusi#session#shutdown_cell_client(l:cell_id, a:reason, a:bufnr)
+  endfor
 endfunction
 
 function! jusi#notebook#parse_lines(lines, ...) abort
@@ -587,6 +613,7 @@ function! jusi#notebook#rebuild(...) abort
 
   call s:ensure_initial_delimiter(l:bufnr)
   let l:state = s:ensure_state(l:bufnr)
+  let l:prev_cells = copy(get(l:state, 'cells', []))
   call s:ensure_buffer_tracking(l:bufnr)
   let l:tick = getbufvar(l:bufnr, 'changedtick')
   if l:state.changedtick ==# l:tick
@@ -596,6 +623,7 @@ function! jusi#notebook#rebuild(...) abort
 
   let l:lines = getbufline(l:bufnr, 1, '$')
   let l:parsed = jusi#notebook#parse_lines(l:lines, l:state)
+  call s:shutdown_lost_cells(l:bufnr, l:prev_cells, l:parsed.cells, 'cell_deleted')
   let l:state.cells = l:parsed.cells
   let l:state.next_cell_id = max([l:state.next_cell_id, l:parsed.next_cell_id])
   let l:state.changedtick = l:tick
@@ -709,6 +737,20 @@ function! jusi#notebook#cleanup(...) abort
   if has_key(s:buffer_cache, l:bufnr)
     call remove(s:buffer_cache, l:bufnr)
   endif
+  if s:is_notebook_buffer(l:bufnr)
+    call jusi#session#shutdown_all_clients('frontend_unload', l:bufnr)
+    let l:state = getbufvar(l:bufnr, 'jusi_nb', {})
+    let l:prepared = get(get(l:state, 'session', {}), 'prepared', {})
+    if get(l:prepared, 'bufnr', -1) > 0
+      call jusi#client#destroy_buffer(l:prepared.bufnr)
+    endif
+    for l:cell in get(l:state, 'cells', [])
+      if get(l:cell, 'client_bufnr', -1) > 0
+        call jusi#client#destroy_buffer(l:cell.client_bufnr)
+      endif
+    endfor
+  endif
+  call jusi#transport#stop(l:bufnr)
   call jusi#syntax#cleanup(l:bufnr)
 endfunction
 

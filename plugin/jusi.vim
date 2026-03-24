@@ -33,6 +33,10 @@ if !exists('g:jusi_session_adapter')
   let g:jusi_session_adapter = {}
 endif
 
+if !exists('g:jusi_backend_cmd')
+  let g:jusi_backend_cmd = jusi#transport#default_backend_cmd()
+endif
+
 if !exists('g:jusi_sign_texts')
   let g:jusi_sign_texts = {
         \ 'initial': '#',
@@ -40,6 +44,7 @@ if !exists('g:jusi_sign_texts')
         \ 'busy': '#*',
         \ 'done': '#✔',
         \ 'error': '#✖',
+        \ 'interrupted': '#!',
         \ 'parked': '#~',
         \ }
 endif
@@ -59,6 +64,9 @@ command! -nargs=? JusiStartKernel call jusi#session#start(<q-args>)
 command! -nargs=1 JusiAttach call jusi#session#attach(<q-args>)
 command! JusiExecute call jusi#session#execute_current()
 command! JusiInterruptKernel call jusi#session#interrupt()
+command! JusiCloseClient call jusi#session#close_current_client()
+command! -nargs=? JusiDisconnect call jusi#session#disconnect(<q-args>)
+command! JusiReconnect call jusi#session#reconnect()
 command! JusiStopKernel call jusi#session#stop()
 command! JusiCellModeEnable call jusi#cellmode#enable()
 command! JusiCellModeDisable call jusi#cellmode#disable()

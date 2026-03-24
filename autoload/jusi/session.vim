@@ -57,6 +57,10 @@ function! s:update_prepared(bufnr, update) abort
   if has_key(l:state.session.prepared, 'client_bufnr') && !has_key(l:state.session.prepared, 'bufnr')
     let l:state.session.prepared.bufnr = l:state.session.prepared.client_bufnr
   endif
+  if get(l:prepared, 'bufnr', -1) > 0
+        \ && get(l:state.session.prepared, 'bufnr', -1) < 0
+    call jusi#client#destroy_buffer(l:prepared.bufnr)
+  endif
   return s:update_state(a:bufnr, l:state)
 endfunction
 
@@ -67,6 +71,9 @@ function! s:normalize_prepared_update(update) abort
   endif
   if has_key(l:update, 'client_bufnr') && !has_key(l:update, 'bufnr')
     let l:update.bufnr = l:update.client_bufnr
+  endif
+  if !has_key(l:update, 'client_state') && has_key(l:update, 'state')
+    let l:update.client_state = l:update.state ==# 'missing' ? 'shutdown' : 'active'
   endif
   return l:update
 endfunction
@@ -102,8 +109,26 @@ function! s:update_cell(bufnr, cell_id, update) abort
   endif
 
   let l:previous_status = get(l:state.cells[l:idx], 'status', '')
-  let l:state.cells[l:idx] = s:copy_update(l:state.cells[l:idx], a:update)
+  let l:previous_bufnr = get(l:state.cells[l:idx], 'client_bufnr', -1)
+  let l:update = copy(a:update)
+  if !has_key(l:update, 'client_state')
+        \ && has_key(l:update, 'client_bufnr')
+        \ && get(l:update, 'client_bufnr', -1) > 0
+    let l:update.client_state = 'active'
+  endif
+  let l:state.cells[l:idx] = s:copy_update(l:state.cells[l:idx], l:update)
+  if l:previous_bufnr > 0 && get(l:state.cells[l:idx], 'client_bufnr', -1) < 0
+    call jusi#client#destroy_buffer(l:previous_bufnr)
+  endif
   call s:update_state(a:bufnr, l:state)
+
+  if get(l:state.cells[l:idx], 'client_bufnr', -1) > 0
+    call jusi#client#mark_attached_buffer(
+          \ a:bufnr,
+          \ l:state.cells[l:idx].id,
+          \ get(l:state.cells[l:idx], 'client_id', ''),
+          \ l:state.cells[l:idx].client_bufnr)
+  endif
 
   if get(l:state.cells[l:idx], 'status', '') !=# l:previous_status
     call s:update_cell_sign(a:bufnr, l:state.cells[l:idx])
@@ -111,10 +136,160 @@ function! s:update_cell(bufnr, cell_id, update) abort
   return l:state.cells[l:idx]
 endfunction
 
+function! s:cell_close_reset_update() abort
+  return {
+        \ 'client_state': 'shutdown',
+        \ 'client_bufnr': -1,
+        \ 'close_requested': 0,
+        \ }
+endfunction
+
+function! s:prepared_shutdown_update() abort
+  return {
+        \ 'state': 'missing',
+        \ 'client_state': 'shutdown',
+        \ 'bufnr': -1,
+        \ }
+endfunction
+
+function! s:is_retained_cell_status(status) abort
+  return index(['busy', 'parked', 'follow-up'], a:status) >= 0
+endfunction
+
+function! s:release_disposable_cell_clients(bufnr) abort
+  let l:state = s:notebook_state(a:bufnr)
+  if empty(l:state)
+    return {}
+  endif
+
+  for l:cell in copy(l:state.cells)
+    if get(l:cell, 'client_bufnr', -1) < 0
+      continue
+    endif
+    if s:is_retained_cell_status(get(l:cell, 'status', ''))
+      continue
+    endif
+    if s:has_trustworthy_client_identity(get(l:state, 'session', {}), get(l:cell, 'client_id', ''))
+      call s:request_shutdown_client(
+            \ a:bufnr,
+            \ get(l:state, 'session', {}),
+            \ l:cell.id,
+            \ get(l:cell, 'client_id', ''),
+            \ 'healthcheck')
+    endif
+    call jusi#client#destroy_buffer(l:cell.client_bufnr)
+    call s:update_cell(a:bufnr, l:cell.id, s:cell_close_reset_update())
+  endfor
+
+  return jusi#notebook#state(a:bufnr)
+endfunction
+
+function! s:maybe_finalize_closed_cell(bufnr, cell) abort
+  if empty(a:cell) || !get(a:cell, 'close_requested', 0)
+    return a:cell
+  endif
+  if get(a:cell, 'client_state', '') !=# 'shutdown'
+    return a:cell
+  endif
+  return s:update_cell(a:bufnr, a:cell.id, s:cell_close_reset_update())
+endfunction
+
+function! s:refresh_stale_prepared(bufnr) abort
+  let l:session = jusi#session#state(a:bufnr)
+  let l:prepared = get(l:session, 'prepared', jusi#session#default_prepared_state())
+  if get(l:prepared, 'bufnr', -1) < 0
+    return l:prepared
+  endif
+
+  let l:validation = jusi#client#validate_prepared_binding(
+        \ a:bufnr,
+        \ get(l:prepared, 'id', ''),
+        \ l:prepared.bufnr)
+  if get(l:validation, 'ok', 0)
+    return l:prepared
+  endif
+
+  if s:has_trustworthy_client_identity(l:session, get(l:prepared, 'id', ''))
+    call s:request_shutdown_client(a:bufnr, l:session, 0, get(l:prepared, 'id', ''), 'healthcheck')
+  endif
+  call s:update_prepared(a:bufnr, s:prepared_shutdown_update())
+  call s:update_session(a:bufnr, {
+        \ 'last_action': s:has_trustworthy_client_identity(l:session, get(l:prepared, 'id', ''))
+        \   ? 'shutdown_client'
+        \   : 'clear_client_binding',
+        \ 'last_error': get(l:validation, 'message', 'Prepared client binding became inconsistent locally'),
+        \ })
+  return jusi#session#prepared(a:bufnr)
+endfunction
+
+function! s:refresh_stale_cells(bufnr) abort
+  let l:state = s:notebook_state(a:bufnr)
+  if empty(l:state)
+    return {}
+  endif
+
+  for l:cell in copy(get(l:state, 'cells', []))
+    if get(l:cell, 'client_bufnr', -1) < 0
+      continue
+    endif
+    let l:validation = jusi#client#validate_attached_binding(
+          \ a:bufnr,
+          \ l:cell.id,
+          \ get(l:cell, 'client_id', ''),
+          \ l:cell.client_bufnr)
+    if get(l:validation, 'ok', 0)
+      continue
+    endif
+    if s:has_trustworthy_client_identity(get(l:state, 'session', {}), get(l:cell, 'client_id', ''))
+      call s:request_shutdown_client(
+            \ a:bufnr,
+            \ get(l:state, 'session', {}),
+            \ l:cell.id,
+            \ get(l:cell, 'client_id', ''),
+            \ 'healthcheck')
+    endif
+    call s:update_cell(a:bufnr, l:cell.id, s:cell_close_reset_update())
+    call s:update_session(a:bufnr, {
+          \ 'last_action': s:has_trustworthy_client_identity(get(l:state, 'session', {}), get(l:cell, 'client_id', ''))
+          \   ? 'shutdown_client'
+          \   : 'clear_client_binding',
+          \ 'last_error': get(l:validation, 'message', 'Client binding became inconsistent locally') . ' for cell ' . l:cell.id,
+          \ })
+  endfor
+
+  return jusi#notebook#state(a:bufnr)
+endfunction
+
 function! s:echo_error(message) abort
   echohl ErrorMsg
   echom a:message
   echohl None
+endfunction
+
+function! s:can_shutdown_client(session) abort
+  return get(a:session, 'state', 'idle') ==# 'connected' && jusi#adapter#has('shutdown_client')
+endfunction
+
+function! s:has_trustworthy_client_identity(session, client_id) abort
+  return !empty(get(a:session, 'id', '')) && !empty(a:client_id)
+endfunction
+
+function! s:request_shutdown_client(bufnr, session, cell_id, client_id, reason) abort
+  if !s:can_shutdown_client(a:session)
+    return {'ok': 0, 'error': 'Shutdown support is unavailable'}
+  endif
+  let l:response = jusi#adapter#call_async('shutdown_client', a:bufnr, {
+        \ 'cell': {'id': a:cell_id},
+        \ 'client_id': a:client_id,
+        \ 'reason': a:reason,
+        \ })
+  if !get(l:response, 'ok', 0)
+    call s:update_session(a:bufnr, {
+          \ 'last_action': 'shutdown_client',
+          \ 'last_error': get(l:response, 'error', 'Failed to shutdown client'),
+          \ })
+  endif
+  return l:response
 endfunction
 
 function! s:connected_session_state(session) abort
@@ -169,6 +344,7 @@ function! jusi#session#default_prepared_state() abort
   return {
         \ 'id': '',
         \ 'state': 'missing',
+        \ 'client_state': 'shutdown',
         \ 'bufnr': -1,
         \ }
 endfunction
@@ -238,10 +414,17 @@ endfunction
 
 function! jusi#session#callback_prepared(update, ...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  call s:refresh_stale_prepared(l:bufnr)
   let l:update = s:normalize_prepared_update(a:update)
   let l:state = s:update_prepared(l:bufnr, l:update)
   if empty(l:state)
     return {}
+  endif
+  if get(l:state.session.prepared, 'bufnr', -1) > 0
+    call jusi#client#mark_prepared_buffer(
+          \ l:bufnr,
+          \ get(l:state.session.prepared, 'id', ''),
+          \ l:state.session.prepared.bufnr)
   endif
   if get(l:state.session.prepared, 'state', '') ==# 'binding'
         \ && get(l:state.session.prepared, 'bufnr', -1) < 0
@@ -254,7 +437,9 @@ endfunction
 
 function! jusi#session#callback_cell(cell_id, update, ...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
-  return s:update_cell(l:bufnr, a:cell_id, a:update)
+  call s:refresh_stale_cells(l:bufnr)
+  let l:cell = s:update_cell(l:bufnr, a:cell_id, a:update)
+  return s:maybe_finalize_closed_cell(l:bufnr, l:cell)
 endfunction
 
 function! jusi#session#callback_response(response, ...) abort
@@ -328,6 +513,9 @@ function! jusi#session#start(...) abort
         \ })
   let l:response = jusi#adapter#call('start', l:bufnr, l:request)
   if get(l:response, 'ok', 0)
+    if get(l:response, '_transport', 0)
+      return jusi#notebook#state(l:bufnr)
+    endif
     return s:apply_response(l:bufnr, l:response, {'state': 'connected'}, jusi#session#default_prepared_state())
   endif
   return s:fail_session(l:bufnr, {
@@ -359,6 +547,9 @@ function! jusi#session#attach(target) abort
         \ })
   let l:response = jusi#adapter#call('attach', l:bufnr, l:request)
   if get(l:response, 'ok', 0)
+    if get(l:response, '_transport', 0)
+      return jusi#notebook#state(l:bufnr)
+    endif
     return s:apply_response(l:bufnr, l:response, {'state': 'connected', 'connection': a:target}, jusi#session#default_prepared_state())
   endif
   return s:fail_session(l:bufnr, {
@@ -373,6 +564,9 @@ function! jusi#session#execute_current() abort
   if !s:require_notebook_buffer(l:bufnr, 'execute')
     return {}
   endif
+
+  call s:refresh_stale_prepared(l:bufnr)
+  call s:refresh_stale_cells(l:bufnr)
 
   let l:session = jusi#session#state(l:bufnr)
   if get(l:session, 'state', 'idle') !=# 'connected'
@@ -395,11 +589,7 @@ function! jusi#session#execute_current() abort
         \ 'last_error': '',
         \ 'request': {'cell_id': l:cell.id},
         \ })
-  call s:update_prepared(l:bufnr, jusi#session#default_prepared_state())
-  call s:update_cell(l:bufnr, l:cell.id, {
-        \ 'status': 'busy',
-        \ 'client_bufnr': get(l:prepared, 'bufnr', -1),
-        \ })
+  call s:release_disposable_cell_clients(l:bufnr)
 
   let l:response = jusi#adapter#call('execute', l:bufnr, {
         \ 'cell': {
@@ -411,6 +601,14 @@ function! jusi#session#execute_current() abort
         \ 'prepared': copy(l:prepared),
         \ })
   if get(l:response, 'ok', 0)
+    if get(l:response, '_transport', 0)
+      return jusi#notebook#state(l:bufnr)
+    endif
+    call s:update_prepared(l:bufnr, jusi#session#default_prepared_state())
+    call s:update_cell(l:bufnr, l:cell.id, {
+          \ 'status': 'busy',
+          \ 'client_bufnr': get(l:prepared, 'bufnr', -1),
+          \ })
     return s:apply_response(
           \ l:bufnr,
           \ l:response,
@@ -420,11 +618,9 @@ function! jusi#session#execute_current() abort
           \ l:cell.id)
   endif
 
-  call s:update_cell(l:bufnr, l:cell.id, {'status': 'error', 'client_bufnr': -1})
   return s:fail_session(l:bufnr, {
         \ 'last_action': 'execute',
         \ 'request': {'cell_id': l:cell.id},
-        \ 'prepared': jusi#session#default_prepared_state(),
         \ }, get(l:response, 'error', 'Failed to execute cell'))
 endfunction
 
@@ -440,12 +636,15 @@ function! jusi#session#interrupt_current() abort
   endif
 
   let l:cell = jusi#notebook#cell_at_line(l:bufnr, line('.'))
-  if empty(l:cell) || get(l:cell, 'status', '') !=# 'busy'
-    return s:fail_session(l:bufnr, {'last_action': 'interrupt'}, 'Cannot interrupt the current cell unless it is busy')
+  if empty(l:cell) || index(['busy', 'follow-up'], get(l:cell, 'status', '')) < 0
+    return s:fail_session(l:bufnr, {'last_action': 'interrupt'}, 'Cannot interrupt the current cell unless it is busy or in follow-up')
   endif
 
   let l:response = jusi#adapter#call('interrupt', l:bufnr, {'cell': copy(l:cell)})
   if get(l:response, 'ok', 0)
+    if get(l:response, '_transport', 0)
+      return jusi#notebook#state(l:bufnr)
+    endif
     return s:apply_response(l:bufnr, l:response, {'state': 'connected'}, get(l:session, 'prepared', jusi#session#default_prepared_state()))
   endif
   return s:fail_session(l:bufnr, {
@@ -455,6 +654,224 @@ endfunction
 
 function! jusi#session#interrupt() abort
   return jusi#session#interrupt_current()
+endfunction
+
+function! jusi#session#close_current_client() abort
+  let l:bufnr = s:normalize_bufnr(bufnr('%'))
+  if !s:require_notebook_buffer(l:bufnr, 'close client')
+    return {}
+  endif
+
+  let l:cell = jusi#notebook#cell_at_line(l:bufnr, line('.'))
+  if empty(l:cell) || get(l:cell, 'client_bufnr', -1) < 0
+    return s:fail_session(l:bufnr, {'last_action': 'close_client'}, 'Cannot close client without an attached client buffer')
+  endif
+
+  let l:session = jusi#session#state(l:bufnr)
+  if get(l:session, 'state', 'idle') !=# 'connected'
+        \ || !jusi#adapter#has('shutdown_client')
+    if index(['busy', 'follow-up'], get(l:cell, 'status', '')) >= 0
+      return s:fail_session(l:bufnr, {'last_action': 'close_client'}, 'Cannot close an active client without shutdown support')
+    endif
+    call jusi#client#destroy_buffer(l:cell.client_bufnr)
+    call s:update_session(l:bufnr, {
+          \ 'last_action': 'close_client',
+          \ 'last_error': '',
+          \ 'request': {'cell_id': l:cell.id},
+          \ })
+    return s:update_cell(l:bufnr, l:cell.id, s:cell_close_reset_update())
+  endif
+
+  call s:update_session(l:bufnr, {
+        \ 'last_action': 'close_client',
+        \ 'last_error': '',
+        \ 'request': {'cell_id': l:cell.id},
+        \ })
+  call s:update_cell(l:bufnr, l:cell.id, {
+        \ 'close_requested': 1,
+        \ 'client_state': 'shutting_down',
+        \ })
+  let l:response = jusi#adapter#call('shutdown_client', l:bufnr, {
+        \ 'cell': copy(l:cell),
+        \ 'client_id': get(l:cell, 'client_id', ''),
+        \ 'reason': 'user_close',
+        \ })
+  if get(l:response, 'ok', 0)
+    if get(l:response, '_transport', 0)
+      return jusi#notebook#state(l:bufnr)
+    endif
+    if has_key(l:response, 'cell') || has_key(l:response, 'prepared')
+      call jusi#session#callback_response({
+            \ 'session': extend({'state': 'connected', 'last_action': 'close_client'}, get(l:response, 'session', {})),
+            \ 'prepared': has_key(l:response, 'prepared')
+            \   ? get(l:response, 'prepared', {})
+            \   : get(l:session, 'prepared', jusi#session#default_prepared_state()),
+            \ 'cell': has_key(l:response, 'cell')
+            \   ? get(l:response, 'cell', {})
+            \   : {'id': l:cell.id},
+            \ }, l:bufnr)
+    endif
+    let l:current = jusi#notebook#cell_at_line(l:bufnr, line('.'))
+    return s:maybe_finalize_closed_cell(l:bufnr, l:current)
+  endif
+
+  call s:update_cell(l:bufnr, l:cell.id, {'close_requested': 0, 'client_state': 'active'})
+  return s:fail_session(l:bufnr, {
+        \ 'last_action': 'close_client',
+        \ }, get(l:response, 'error', 'Failed to close client'))
+endfunction
+
+function! jusi#session#shutdown_cell_client(cell_id, reason, ...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if !s:require_notebook_buffer(l:bufnr, 'shutdown client')
+    return {}
+  endif
+
+  let l:state = s:notebook_state(l:bufnr)
+  let l:idx = s:find_cell_index(l:state, a:cell_id)
+  if l:idx < 0
+    return {}
+  endif
+  let l:cell = l:state.cells[l:idx]
+  if empty(get(l:cell, 'client_id', '')) && get(l:cell, 'client_bufnr', -1) < 0
+    return {}
+  endif
+
+  if s:can_shutdown_client(get(l:state, 'session', {}))
+    call s:request_shutdown_client(
+          \ l:bufnr,
+          \ get(l:state, 'session', {}),
+          \ a:cell_id,
+          \ get(l:cell, 'client_id', ''),
+          \ a:reason)
+  endif
+
+  if get(l:cell, 'client_bufnr', -1) > 0
+    call jusi#client#destroy_buffer(l:cell.client_bufnr)
+  endif
+  return s:update_cell(l:bufnr, a:cell_id, {
+        \ 'client_state': 'shutdown',
+        \ 'client_bufnr': -1,
+        \ 'close_requested': 0,
+        \ })
+endfunction
+
+function! jusi#session#shutdown_prepared_client(reason, ...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if !s:require_notebook_buffer(l:bufnr, 'shutdown prepared client')
+    return {}
+  endif
+
+  let l:session = jusi#session#state(l:bufnr)
+  let l:prepared = get(l:session, 'prepared', jusi#session#default_prepared_state())
+  if empty(get(l:prepared, 'id', '')) && get(l:prepared, 'bufnr', -1) < 0
+    return {}
+  endif
+
+  if s:can_shutdown_client(l:session)
+    call s:request_shutdown_client(
+          \ l:bufnr,
+          \ l:session,
+          \ 0,
+          \ get(l:prepared, 'id', ''),
+          \ a:reason)
+  endif
+
+  if get(l:prepared, 'bufnr', -1) > 0
+    call jusi#client#destroy_buffer(l:prepared.bufnr)
+  endif
+  return s:update_prepared(l:bufnr, s:prepared_shutdown_update())
+endfunction
+
+function! jusi#session#shutdown_all_clients(reason, ...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if !s:require_notebook_buffer(l:bufnr, 'shutdown clients')
+    return {}
+  endif
+
+  let l:state = s:notebook_state(l:bufnr)
+  for l:cell in copy(get(l:state, 'cells', []))
+    call jusi#session#shutdown_cell_client(l:cell.id, a:reason, l:bufnr)
+  endfor
+  call jusi#session#shutdown_prepared_client(a:reason, l:bufnr)
+  return jusi#notebook#state(l:bufnr)
+endfunction
+
+function! jusi#session#disconnect(...) abort
+  let l:bufnr = s:normalize_bufnr(bufnr('%'))
+  if !s:require_notebook_buffer(l:bufnr, 'disconnect')
+    return {}
+  endif
+
+  let l:session = jusi#session#state(l:bufnr)
+  if !get(l:session, 'attachable', 0)
+    return s:fail_session(l:bufnr, {'last_action': 'disconnect'}, 'Cannot disconnect a non-attachable session')
+  endif
+  if get(l:session, 'state', 'idle') !=# 'connected'
+    return s:fail_session(l:bufnr, {'last_action': 'disconnect'}, 'Cannot disconnect unless the session is connected')
+  endif
+
+  let l:reason = a:0 >= 1 && !empty(a:1) ? a:1 : 'user_requested'
+  call s:update_session(l:bufnr, {
+        \ 'last_action': 'disconnect',
+        \ 'last_error': '',
+        \ 'request': {'reason': l:reason},
+        \ })
+  call s:update_prepared(l:bufnr, jusi#session#default_prepared_state())
+
+  let l:response = jusi#adapter#call('disconnect', l:bufnr, {
+        \ 'reason': l:reason,
+        \ 'session': copy(l:session),
+        \ })
+  if get(l:response, 'ok', 0)
+    if get(l:response, '_transport', 0)
+      return jusi#notebook#state(l:bufnr)
+    endif
+    return s:apply_response(l:bufnr, l:response, {
+          \ 'state': 'disconnected',
+          \ 'last_error': l:reason,
+          \ 'request': {},
+          \ }, jusi#session#default_prepared_state())
+  endif
+
+  return s:fail_session(l:bufnr, {
+        \ 'last_action': 'disconnect',
+        \ }, get(l:response, 'error', 'Failed to disconnect session'))
+endfunction
+
+function! jusi#session#reconnect() abort
+  let l:bufnr = s:normalize_bufnr(bufnr('%'))
+  if !s:require_notebook_buffer(l:bufnr, 'reconnect')
+    return {}
+  endif
+
+  let l:session = jusi#session#state(l:bufnr)
+  if !get(l:session, 'attachable', 0)
+    return s:fail_session(l:bufnr, {'last_action': 'reconnect'}, 'Cannot reconnect a non-attachable session')
+  endif
+  if get(l:session, 'state', 'idle') !=# 'disconnected'
+    return s:fail_session(l:bufnr, {'last_action': 'reconnect'}, 'Can only reconnect a disconnected session')
+  endif
+
+  call s:update_session(l:bufnr, {
+        \ 'state': 'starting',
+        \ 'last_action': 'reconnect',
+        \ 'last_error': '',
+        \ 'request': {'session_id': get(l:session, 'id', '')},
+        \ 'prepared': jusi#session#default_prepared_state(),
+        \ })
+  let l:response = jusi#adapter#call('reconnect', l:bufnr, {'session': copy(l:session)})
+  if get(l:response, 'ok', 0)
+    if get(l:response, '_transport', 0)
+      return jusi#notebook#state(l:bufnr)
+    endif
+    return s:apply_response(l:bufnr, l:response, {'state': 'connected'}, jusi#session#default_prepared_state())
+  endif
+
+  return s:fail_session(l:bufnr, {
+        \ 'last_action': 'reconnect',
+        \ 'prepared': jusi#session#default_prepared_state(),
+        \ }, get(l:response, 'error', 'Failed to reconnect session'))
 endfunction
 
 function! jusi#session#bind_prepared_client(...) abort
@@ -483,7 +900,7 @@ function! jusi#session#bind_prepared_client(...) abort
     return jusi#notebook#state(l:bufnr)
   endif
 
-  let l:response = jusi#adapter#call('bind_prepared_client', l:bufnr, {
+  let l:response = jusi#adapter#call_async('bind_prepared_client', l:bufnr, {
         \ 'client_id': l:prepared.id,
         \ 'client_bufnr': l:client_bufnr,
         \ 'prepared': copy(l:prepared),
@@ -509,14 +926,18 @@ function! jusi#session#stop() abort
     return s:fail_session(l:bufnr, {'last_action': 'stop'}, 'Cannot stop a session that is not active')
   endif
 
+  call jusi#session#shutdown_all_clients('session_stop', l:bufnr)
   call s:update_session(l:bufnr, {
         \ 'state': 'stopping',
         \ 'last_action': 'stop',
         \ 'last_error': '',
         \ })
-  call s:update_prepared(l:bufnr, {'state': 'missing', 'bufnr': -1})
+  call s:update_prepared(l:bufnr, {'state': 'missing', 'client_state': 'shutdown', 'bufnr': -1})
   let l:response = jusi#adapter#call('stop', l:bufnr, {'session': copy(l:session)})
   if get(l:response, 'ok', 0)
+    if get(l:response, '_transport', 0)
+      return jusi#notebook#state(l:bufnr)
+    endif
     return s:apply_response(l:bufnr, l:response, {'state': 'stopped', 'request': {}}, jusi#session#default_prepared_state())
   endif
   return s:fail_session(l:bufnr, {
