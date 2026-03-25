@@ -459,6 +459,19 @@ function! s:mark_syntax_dirty(bufnr, state, start_idx) abort
   call setbufvar(a:bufnr, 'jusi_nb', a:state)
 endfunction
 
+function! s:shift_cell_lines(cell, delta) abort
+  let a:cell.start += a:delta
+  let a:cell.end += a:delta
+  let a:cell.body_end += a:delta
+  if get(a:cell, 'history_start', 0) > 0
+    let a:cell.history_start += a:delta
+  endif
+  if get(a:cell, 'history_end', 0) > 0
+    let a:cell.history_end += a:delta
+  endif
+  return a:cell
+endfunction
+
 function! s:maybe_resize_cell(bufnr, state) abort
   let l:change = s:last_change(a:bufnr)
   if empty(l:change)
@@ -525,8 +538,7 @@ function! s:maybe_resize_cell(bufnr, state) abort
 
   let l:i = l:idx + 1
   while l:i < len(a:state.cells)
-    let a:state.cells[l:i].start += l:delta
-    let a:state.cells[l:i].end += l:delta
+    call s:shift_cell_lines(a:state.cells[l:i], l:delta)
     let l:i += 1
   endwhile
 

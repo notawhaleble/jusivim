@@ -335,6 +335,7 @@ let s:last_bound_prepared = {}
 let s:shutdown_requests = []
 let s:inspect_client_response = {}
 let s:inspect_client_calls = 0
+let s:inspect_client_sequence = []
 
 function! s:test_session_adapter_bind_prepared(bufnr, payload) abort
   let s:last_bound_prepared = copy(a:payload)
@@ -348,10 +349,15 @@ endfunction
 
 function! s:test_session_adapter_inspect_client(bufnr, payload) abort
   let s:inspect_client_calls += 1
+  if !empty(s:inspect_client_sequence)
+    let l:view = remove(s:inspect_client_sequence, 0)
+  else
+    let l:view = copy(s:inspect_client_response)
+  endif
   return {
         \ 'ok': 1,
         \ 'payload': {
-        \   'client': copy(s:inspect_client_response),
+        \   'client': l:view,
         \   },
         \ }
 endfunction
@@ -1044,6 +1050,74 @@ function! Test_cell_callback_schedules_client_view_refresh() abort
     call assert_true(s:inspect_client_calls >= 1)
   finally
     let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_busy_client_polling_advances_output_before_terminal_update() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_poll_ms = get(g:, 'jusi_client_poll_ms', 150)
+  try
+    let g:jusi_session_adapter = {'inspect_client': function('s:test_session_adapter_inspect_client')}
+    let g:jusi_client_poll_ms = 20
+    let s:inspect_client_calls = 0
+    let s:inspect_client_sequence = [
+          \ {
+          \   'revision': 1,
+          \   'title': 'cell 1: busy',
+          \   'lines': ['started cell 1 [code:python]'],
+          \   'execution_status': 'busy',
+          \ },
+          \ {
+          \   'revision': 2,
+          \   'title': 'cell 1: busy',
+          \   'lines': ['started cell 1 [code:python]', 'stdout> 1'],
+          \   'execution_status': 'busy',
+          \ },
+          \ {
+          \   'revision': 3,
+          \   'title': 'cell 1: busy',
+          \   'lines': ['started cell 1 [code:python]', 'stdout> 1', 'stdout> 2'],
+          \   'execution_status': 'busy',
+          \ },
+          \ ]
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    let l:notebook = bufnr('%')
+    let l:cell_id = b:jusi_nb.cells[0].id
+    let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.state = 'connected'
+
+    call jusi#session#callback_cell(l:cell_id, {
+          \ 'status': 'busy',
+          \ 'client_id': 'client-1',
+          \ 'client_state': 'active',
+          \ 'client_bufnr': l:client,
+          \ })
+
+    call Test_wait_until({-> getbufline(l:client, 1, '$') == ['started cell 1 [code:python]', 'stdout> 1', 'stdout> 2']}, 500)
+    call assert_equal(['started cell 1 [code:python]', 'stdout> 1', 'stdout> 2'], getbufline(l:client, 1, '$'))
+    call assert_true(s:inspect_client_calls >= 3)
+
+    let l:calls_before_done = s:inspect_client_calls
+    let s:inspect_client_response = {
+          \ 'revision': 4,
+          \ 'title': 'cell 1: done',
+          \ 'lines': ['started cell 1 [code:python]', 'stdout> 1', 'stdout> 2', 'finished: done'],
+          \ 'execution_status': 'done',
+          \ }
+    call jusi#session#callback_cell(l:cell_id, {'status': 'done'})
+    call Test_wait_until({-> getbufline(l:client, 1, '$') == ['started cell 1 [code:python]', 'stdout> 1', 'stdout> 2', 'finished: done']}, 500)
+    call assert_equal(['started cell 1 [code:python]', 'stdout> 1', 'stdout> 2', 'finished: done'], getbufline(l:client, 1, '$'))
+
+    sleep 80m
+    call assert_true(s:inspect_client_calls <= l:calls_before_done + 1)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_client_poll_ms = l:save_poll_ms
+    let s:inspect_client_sequence = []
   endtry
 endfunction
 
@@ -2116,4 +2190,45 @@ function! Test_resize_fast_path_flush_keeps_model_consistent() abort
   call assert_equal(4, b:jusi_nb.cells[1].start)
   call jusi#notebook#flush_deferred()
   call assert_equal(0, b:jusi_nb.syntax_dirty)
+endfunction
+
+function! Test_resize_fast_path_keeps_navigation_on_cell_entry_lines() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'top',
+        \ '##',
+        \ 'middle',
+        \ '##',
+        \ 'bottom',
+        \ ])
+  call cursor(4, 1)
+  call append(4, 'middle more')
+  call jusi#notebook#handle_text_changed()
+
+  call cursor(2, 1)
+  call jusi#notebook#goto_next()
+  call assert_equal(3, b:jusi_nb.cells[1].start)
+  call assert_equal(4, line('.'))
+  call jusi#notebook#goto_next()
+  call assert_equal(6, b:jusi_nb.cells[2].start)
+  call assert_equal(7, line('.'))
+endfunction
+
+function! Test_resize_fast_path_shifts_body_ranges_for_following_cells() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'one',
+        \ '##',
+        \ 'two',
+        \ '##',
+        \ 'three',
+        \ ])
+  call append(4, 'two more')
+  call jusi#notebook#handle_text_changed()
+
+  call assert_equal(5, b:jusi_nb.cells[1].end)
+  call assert_equal(5, b:jusi_nb.cells[1].body_end)
+  call assert_equal(6, b:jusi_nb.cells[2].start)
+  call assert_equal(7, b:jusi_nb.cells[2].end)
+  call assert_equal(7, b:jusi_nb.cells[2].body_end)
 endfunction

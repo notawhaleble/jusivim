@@ -66,6 +66,7 @@ call Test_cell_callback_places_attached_client_in_default_split_and_returns_focu
 call Test_cell_callback_places_attached_client_in_tab_layout()
 call Test_client_refresh_attached_view_renders_inspect_snapshot()
 call Test_cell_callback_schedules_client_view_refresh()
+call Test_busy_client_polling_advances_output_before_terminal_update()
 call Test_session_callback_updates_prepared_state()
 call Test_session_callback_updates_cell_state()
 call Test_cell_shutdown_event_keeps_status_and_clears_binding()
@@ -97,6 +98,8 @@ call Test_normal_mode_same_line_edit_uses_fast_path()
 call Test_normal_mode_line_insert_inside_cell_updates_ranges_without_full_rebuild()
 call Test_delimiter_insert_falls_back_to_full_rebuild()
 call Test_resize_fast_path_flush_keeps_model_consistent()
+call Test_resize_fast_path_keeps_navigation_on_cell_entry_lines()
+call Test_resize_fast_path_shifts_body_ranges_for_following_cells()
 
 if empty(v:errors)
   cquit 0
