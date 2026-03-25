@@ -47,6 +47,7 @@ function! s:request_type(op) abort
         \ 'start': 'start_session',
         \ 'attach': 'attach_session',
         \ 'execute': 'execute_cell',
+        \ 'inspect_client': 'inspect_client',
         \ 'interrupt': 'interrupt_cell',
         \ 'shutdown_client': 'shutdown_client',
         \ 'stop': 'stop_session',
@@ -101,6 +102,14 @@ function! s:request_payload(op, bufnr, payload) abort
           \ 'notebook_id': l:notebook_id,
           \ 'session_id': l:session_id,
           \ 'cell_id': get(l:cell, 'id', 0),
+          \ }
+  endif
+
+  if a:op ==# 'inspect_client'
+    return {
+          \ 'notebook_id': l:notebook_id,
+          \ 'session_id': l:session_id,
+          \ 'client_id': get(a:payload, 'client_id', ''),
           \ }
   endif
 

@@ -28,6 +28,7 @@ function! s:map_normal_mode() abort
   nnoremap <silent> <buffer> C :JusiCellEdit<CR>
   nnoremap <silent> <buffer> Y :JusiCellCopy<CR>
   nnoremap <silent> <buffer> P :JusiCellPasteBelow<CR>
+  nnoremap <silent> <buffer> S :JusiTogglePark<CR>
   nnoremap <silent> <buffer> Q :JusiCloseClient<CR>
   nnoremap <silent> <buffer> R :JusiRebuild<CR>
 endfunction
@@ -41,6 +42,7 @@ function! s:unmap_normal_mode() abort
   silent! nunmap <buffer> C
   silent! nunmap <buffer> Y
   silent! nunmap <buffer> P
+  silent! nunmap <buffer> S
   silent! nunmap <buffer> Q
   silent! nunmap <buffer> R
 endfunction

@@ -119,8 +119,29 @@ Required properties:
 - switching focus between notebook and client buffers is reliable
 - follow-up workflows remain coherent
 - broken or missing client buffers are detected and handled explicitly
+- attached client buffers are placed predictably when they become active
+- attached client buffers can reflect backend-provided output content
+- client placement defaults to a bottom split and remains configurable
 
 Client buffer creation, binding, and loss of binding must not appear as mysterious failures.
+
+Current placement compatibility:
+
+- default layout is `bsplit`
+- configurable through `g:jusi_client_layout`
+- supported layout names are:
+  - `asplit`
+  - `Asplit`
+  - `bsplit`
+  - `Bsplit`
+  - `rsplit`
+  - `lsplit`
+  - `tab`
+
+Current output refresh compatibility:
+
+- attached client buffers currently refresh content through backend inspection rather than push-streamed editor updates
+- refresh timing is configurable through `g:jusi_client_poll_ms`
 
 ## Kernel Sessions
 

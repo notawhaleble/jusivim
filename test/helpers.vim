@@ -1,4 +1,9 @@
 function! Test_open_scratch(lines) abort
+  for l:info in getbufinfo()
+    if fnamemodify(get(l:info, 'name', ''), ':t') ==# 'test.vipynb'
+      execute 'silent! bwipeout! ' . l:info.bufnr
+    endif
+  endfor
   enew!
   setlocal buftype=
   setlocal bufhidden=wipe
@@ -29,4 +34,18 @@ function! Test_sign_lines(bufnr) abort
     call add(l:result, [l:item.id, l:item.lnum, l:item.name])
   endfor
   return l:result
+endfunction
+
+function! Test_wait_until(Fn, timeout_ms) abort
+  if exists('*wait')
+    return wait(a:timeout_ms, a:Fn)
+  endif
+  let l:start = reltime()
+  while reltimefloat(reltime(l:start)) * 1000.0 < a:timeout_ms
+    if call(a:Fn, [])
+      return 0
+    endif
+    sleep 10m
+  endwhile
+  return -1
 endfunction

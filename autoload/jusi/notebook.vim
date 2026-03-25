@@ -202,6 +202,7 @@ function! s:init_runtime_cell(parsed, state) abort
   let l:cell = copy(a:parsed)
   let l:cell.id = s:new_cell_id(a:state)
   let l:cell.status = 'initial'
+  let l:cell.parked_status = ''
   let l:cell.sign_id = 0
   let l:cell.client_id = ''
   let l:cell.client_state = 'shutdown'
@@ -216,6 +217,7 @@ function! s:merge_runtime_cell(prev, parsed) abort
   let l:cell = copy(a:parsed)
   let l:cell.id = get(a:prev, 'id', 0)
   let l:cell.status = get(a:prev, 'status', 'initial')
+  let l:cell.parked_status = get(a:prev, 'parked_status', '')
   let l:cell.sign_id = get(a:prev, 'sign_id', 0)
   let l:cell.client_id = get(a:prev, 'client_id', '')
   let l:cell.client_state = get(a:prev, 'client_state', 'shutdown')
@@ -778,6 +780,20 @@ function! jusi#notebook#cell_at_line(...) abort
   return l:state.cells[l:idx]
 endfunction
 
+function! jusi#notebook#cell_by_id(cell_id, ...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  let l:state = jusi#notebook#rebuild(l:bufnr)
+  if empty(l:state)
+    return {}
+  endif
+  for l:cell in get(l:state, 'cells', [])
+    if get(l:cell, 'id', 0) == a:cell_id
+      return l:cell
+    endif
+  endfor
+  return {}
+endfunction
+
 function! s:cell_index_at_line(state, lnum) abort
   let l:low = 0
   let l:high = len(a:state.cells) - 1
@@ -836,6 +852,19 @@ function! jusi#notebook#goto_prev() abort
     return l:cell
   endif
   return {}
+endfunction
+
+function! jusi#notebook#goto_cell_id(cell_id, ...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  let l:cell = jusi#notebook#cell_by_id(a:cell_id, l:bufnr)
+  if empty(l:cell)
+    return {}
+  endif
+  if l:bufnr != bufnr('%')
+    execute 'buffer ' . l:bufnr
+  endif
+  call s:goto_cell(l:cell)
+  return l:cell
 endfunction
 
 function! s:insert_cell_at(lnum) abort

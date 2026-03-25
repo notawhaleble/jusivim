@@ -37,6 +37,10 @@ if !exists('g:jusi_backend_cmd')
   let g:jusi_backend_cmd = jusi#transport#default_backend_cmd()
 endif
 
+if !exists('g:jusi_client_layout')
+  let g:jusi_client_layout = 'bsplit'
+endif
+
 if !exists('g:jusi_sign_texts')
   let g:jusi_sign_texts = {
         \ 'initial': '#',
@@ -65,6 +69,8 @@ command! -nargs=1 JusiAttach call jusi#session#attach(<q-args>)
 command! JusiExecute call jusi#session#execute_current()
 command! JusiInterruptKernel call jusi#session#interrupt()
 command! JusiCloseClient call jusi#session#close_current_client()
+command! JusiTogglePark call jusi#session#toggle_park_current_client()
+command! JusiToggleFocus call jusi#focus#toggle()
 command! -nargs=? JusiDisconnect call jusi#session#disconnect(<q-args>)
 command! JusiReconnect call jusi#session#reconnect()
 command! JusiStopKernel call jusi#session#stop()

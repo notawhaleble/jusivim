@@ -240,6 +240,8 @@ function! s:start_job(bufnr) abort
         \ 'in_io': 'pipe',
         \ 'out_io': 'pipe',
         \ 'err_io': 'pipe',
+        \ 'out_mode': 'raw',
+        \ 'err_mode': 'raw',
         \ 'out_cb': function('s:vim_out', [a:bufnr]),
         \ 'err_cb': function('s:vim_out', [a:bufnr]),
         \ 'close_cb': function('s:vim_close', [a:bufnr]),
