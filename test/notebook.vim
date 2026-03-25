@@ -2232,3 +2232,180 @@ function! Test_resize_fast_path_shifts_body_ranges_for_following_cells() abort
   call assert_equal(7, b:jusi_nb.cells[2].end)
   call assert_equal(7, b:jusi_nb.cells[2].body_end)
 endfunction
+
+function! Test_resize_fast_path_keeps_navigation_after_deleting_first_body_line() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'top',
+        \ '##',
+        \ 'middle one',
+        \ 'middle two',
+        \ '##',
+        \ 'bottom',
+        \ ])
+  call deletebufline(bufnr('%'), 4)
+  call jusi#notebook#handle_text_changed()
+
+  call assert_equal(3, b:jusi_nb.cells[1].start)
+  call assert_equal(4, b:jusi_nb.cells[1].end)
+  call assert_equal(5, b:jusi_nb.cells[2].start)
+
+  call cursor(2, 1)
+  call jusi#notebook#goto_next()
+  call assert_equal(4, line('.'))
+  call jusi#notebook#goto_next()
+  call assert_equal(6, line('.'))
+endfunction
+
+function! Test_linewise_put_into_new_cell_then_delete_keeps_navigation_and_ranges() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'top',
+        \ '##',
+        \ 'bottom',
+        \ ])
+  call cursor(2, 1)
+  call jusi#notebook#insert_below()
+  stopinsert
+
+  call setreg('"', ['one', 'two', 'three', 'four', 'five', 'six'], 'l')
+  call cursor(4, 1)
+  normal! p
+  call jusi#notebook#handle_text_changed()
+
+  call cursor(2, 1)
+  call jusi#notebook#goto_next()
+  call jusi#notebook#goto_prev()
+  call jusi#notebook#goto_next()
+  call assert_equal(4, line('.'))
+
+  call cursor(5, 1)
+  normal! dd
+  call jusi#notebook#handle_text_changed()
+
+  call assert_equal(3, b:jusi_nb.cells[1].start)
+  call assert_equal(9, b:jusi_nb.cells[1].end)
+  call assert_equal(10, b:jusi_nb.cells[2].start)
+
+  call cursor(2, 1)
+  call jusi#notebook#goto_next()
+  call assert_equal(4, line('.'))
+  call jusi#notebook#goto_next()
+  call assert_equal(11, line('.'))
+endfunction
+
+function! Test_autocmd_resize_sequence_after_linewise_put_keeps_ranges_and_syntax() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'top',
+        \ '##',
+        \ 'bottom one',
+        \ 'bottom two',
+        \ ])
+  call cursor(2, 1)
+  call jusi#notebook#insert_below()
+  stopinsert
+
+  call setreg('"', ['one', 'two', 'three', 'four', 'five', 'six'], 'l')
+  call cursor(4, 1)
+  normal! p
+
+  call cursor(2, 1)
+  call jusi#notebook#goto_next()
+  call jusi#notebook#goto_prev()
+  call jusi#notebook#goto_next()
+  call cursor(5, 1)
+  normal! dd
+
+  call jusi#notebook#refresh_if_changed()
+
+  call assert_equal(3, b:jusi_nb.cells[1].start)
+  call assert_equal(9, b:jusi_nb.cells[1].end)
+  call assert_equal(10, b:jusi_nb.cells[2].start)
+  call assert_equal(12, b:jusi_nb.cells[2].end)
+
+  call cursor(2, 1)
+  call jusi#notebook#goto_next()
+  call assert_equal(4, line('.'))
+  call jusi#notebook#goto_next()
+  call assert_equal(11, line('.'))
+endfunction
+
+function! Test_refresh_if_changed_repairs_missed_normal_mode_resize_update() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'top',
+        \ '##',
+        \ 'bottom one',
+        \ 'bottom two',
+        \ ])
+  call cursor(2, 1)
+  call jusi#notebook#insert_below()
+  stopinsert
+
+  call setreg('"', ['one', 'two', 'three', 'four', 'five', 'six'], 'l')
+  call cursor(4, 1)
+  call feedkeys("p", 'xt')
+  call cursor(5, 1)
+  call feedkeys("dd", 'xt')
+
+  call assert_notequal(b:jusi_nb.changedtick, getbufvar(bufnr('%'), 'changedtick'))
+  call jusi#notebook#refresh_if_changed()
+
+  call assert_equal(b:jusi_nb.changedtick, getbufvar(bufnr('%'), 'changedtick'))
+  call assert_equal(3, b:jusi_nb.cells[1].start)
+  call assert_equal(9, b:jusi_nb.cells[1].end)
+  call assert_equal(10, b:jusi_nb.cells[2].start)
+  call assert_equal(12, b:jusi_nb.cells[2].end)
+endfunction
+
+function! Test_cursor_move_refresh_repairs_missed_normal_mode_resize_update() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'top',
+        \ '##',
+        \ 'bottom one',
+        \ 'bottom two',
+        \ ])
+  call cursor(2, 1)
+  call jusi#notebook#insert_below()
+  stopinsert
+
+  call setreg('"', ['one', 'two', 'three', 'four', 'five', 'six'], 'l')
+  call cursor(4, 1)
+  call feedkeys("p", 'xt')
+  call cursor(5, 1)
+  call feedkeys("dd", 'xt')
+
+  call assert_notequal(b:jusi_nb.changedtick, getbufvar(bufnr('%'), 'changedtick'))
+  call cursor(6, 1)
+  doautocmd <nomodeline> CursorMoved
+
+  call assert_equal(b:jusi_nb.changedtick, getbufvar(bufnr('%'), 'changedtick'))
+  call assert_equal(3, b:jusi_nb.cells[1].start)
+  call assert_equal(9, b:jusi_nb.cells[1].end)
+  call assert_equal(10, b:jusi_nb.cells[2].start)
+  call assert_equal(12, b:jusi_nb.cells[2].end)
+endfunction
+
+function! Test_refresh_if_changed_rebuilds_inconsistent_state_even_when_changedtick_matches() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'top',
+        \ '##',
+        \ 'middle',
+        \ '##',
+        \ 'bottom',
+        \ ])
+  let b:jusi_nb.cells[1].end = 99
+  let b:jusi_nb.cells[1].body_end = 99
+  let b:jusi_nb.changedtick = getbufvar(bufnr('%'), 'changedtick')
+  let b:jusi_nb.consistency_check_pending = 1
+
+  call jusi#notebook#refresh_if_changed()
+
+  call assert_equal(4, b:jusi_nb.cells[1].end)
+  call assert_equal(4, b:jusi_nb.cells[1].body_end)
+  call assert_equal(5, b:jusi_nb.cells[2].start)
+  call assert_equal(6, b:jusi_nb.cells[2].end)
+endfunction

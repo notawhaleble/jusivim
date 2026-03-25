@@ -142,6 +142,7 @@ Current output refresh compatibility:
 
 - attached client buffers currently refresh content through backend inspection rather than push-streamed editor updates
 - refresh timing is configurable through `g:jusi_client_poll_ms`
+- long-running managed executions may update client buffers incrementally while the cell remains `busy`
 
 ## Kernel Sessions
 
@@ -177,6 +178,11 @@ Expected properties:
 - structural edits remain responsive in notebooks around and above 1,000 lines
 - cells with substantial execution history remain usable
 - rendering and bookkeeping work should scale with the affected region rather than the whole buffer whenever practical
+
+Current known limitation:
+
+- large multi-cell notebooks can still feel slower than expected during normal-mode navigation and edits
+- the current visible-cell syntax and repair model is functionally correct but not yet performance-tuned for notebooks around and above 1,000 cells
 
 ## Compatibility Priorities
 

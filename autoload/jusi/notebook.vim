@@ -30,6 +30,58 @@ function! s:is_notebook_buffer(bufnr) abort
   return bufexists(a:bufnr) && getbufvar(a:bufnr, '&filetype') ==# 'jusinb'
 endfunction
 
+function! s:is_valid_cell_range(cell) abort
+  if get(a:cell, 'start', 0) <= 0 || get(a:cell, 'end', 0) < get(a:cell, 'start', 0)
+    return 0
+  endif
+  let l:body_end = get(a:cell, 'body_end', get(a:cell, 'end', 0))
+  if l:body_end < get(a:cell, 'start', 0) || l:body_end > get(a:cell, 'end', 0)
+    return 0
+  endif
+  let l:history_start = get(a:cell, 'history_start', 0)
+  let l:history_end = get(a:cell, 'history_end', 0)
+  if l:history_start > 0
+    if l:history_start < get(a:cell, 'start', 0) || l:history_start > get(a:cell, 'end', 0)
+      return 0
+    endif
+  endif
+  if l:history_end > 0
+    if l:history_end < get(a:cell, 'start', 0) || l:history_end > get(a:cell, 'end', 0)
+      return 0
+    endif
+  endif
+  return 1
+endfunction
+
+function! s:state_consistent(bufnr, state) abort
+  let l:cells = get(a:state, 'cells', [])
+  if empty(l:cells)
+    return 0
+  endif
+  let l:line_count = line('$')
+  if get(l:cells[0], 'start', 0) != 1
+    return 0
+  endif
+  if get(l:cells[-1], 'end', 0) != l:line_count
+    return 0
+  endif
+
+  let l:prev_end = 0
+  for l:cell in l:cells
+    if !s:is_valid_cell_range(l:cell)
+      return 0
+    endif
+    if get(l:cell, 'start', 0) != l:prev_end + 1
+      return 0
+    endif
+    if getline(l:cell.start) !~# s:delimiter_pattern
+      return 0
+    endif
+    let l:prev_end = l:cell.end
+  endfor
+  return 1
+endfunction
+
 function! s:ensure_initial_delimiter(bufnr) abort
   let l:lines = getbufline(a:bufnr, 1, '$')
   if len(l:lines) == 1 && l:lines[0] ==# ''
@@ -48,6 +100,7 @@ function! s:ensure_state(bufnr) abort
       \ 'dirty_insert': 0,
       \ 'syntax_dirty': 0,
       \ 'syntax_dirty_from': 0,
+      \ 'consistency_check_pending': 0,
           \ })
   elseif !has_key(getbufvar(a:bufnr, 'jusi_nb'), 'session')
     let l:state = getbufvar(a:bufnr, 'jusi_nb')
@@ -459,6 +512,11 @@ function! s:mark_syntax_dirty(bufnr, state, start_idx) abort
   call setbufvar(a:bufnr, 'jusi_nb', a:state)
 endfunction
 
+function! s:mark_consistency_check_pending(bufnr, state) abort
+  let a:state.consistency_check_pending = 1
+  call setbufvar(a:bufnr, 'jusi_nb', a:state)
+endfunction
+
 function! s:shift_cell_lines(cell, delta) abort
   let a:cell.start += a:delta
   let a:cell.end += a:delta
@@ -544,6 +602,7 @@ function! s:maybe_resize_cell(bufnr, state) abort
 
   let a:state.changedtick = getbufvar(a:bufnr, 'changedtick')
   let a:state.dirty_insert = 0
+  let a:state.consistency_check_pending = 1
   call setbufvar(a:bufnr, 'jusi_nb', a:state)
   call s:update_buffer_cache_lines(a:bufnr, l:new_lines)
   call s:mark_syntax_dirty(a:bufnr, a:state, l:idx)
@@ -609,6 +668,7 @@ function! s:maybe_fast_update(bufnr, state) abort
   let a:state.cells[l:idx] = l:updated
   let a:state.changedtick = getbufvar(a:bufnr, 'changedtick')
   let a:state.dirty_insert = 0
+  let a:state.consistency_check_pending = 1
   call setbufvar(a:bufnr, 'jusi_nb', a:state)
   call s:update_buffer_cache_lines(a:bufnr, l:lines)
 
@@ -630,7 +690,7 @@ function! jusi#notebook#rebuild(...) abort
   let l:prev_cells = copy(get(l:state, 'cells', []))
   call s:ensure_buffer_tracking(l:bufnr)
   let l:tick = getbufvar(l:bufnr, 'changedtick')
-  if l:state.changedtick ==# l:tick
+  if l:state.changedtick ==# l:tick && s:state_consistent(l:bufnr, l:state)
     call s:perf_log('rebuild-skip', l:perf_start, 'buf=' . l:bufnr)
     return l:state
   endif
@@ -644,6 +704,7 @@ function! jusi#notebook#rebuild(...) abort
   let l:state.dirty_insert = 0
   let l:state.syntax_dirty = 0
   let l:state.syntax_dirty_from = 0
+  let l:state.consistency_check_pending = 0
 
   call setbufvar(l:bufnr, 'jusi_nb', l:state)
   call s:update_buffer_cache_lines(l:bufnr, l:lines)
@@ -740,6 +801,27 @@ function! jusi#notebook#flush_deferred(...) abort
   let l:state.syntax_dirty_from = 0
   call setbufvar(l:bufnr, 'jusi_nb', l:state)
   return l:state
+endfunction
+
+function! jusi#notebook#refresh_if_changed(...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if !s:is_notebook_buffer(l:bufnr)
+    return {}
+  endif
+  let l:state = s:ensure_state(l:bufnr)
+  let l:tick = getbufvar(l:bufnr, 'changedtick')
+  if get(l:state, 'changedtick', -1) !=# l:tick
+    return jusi#notebook#rebuild(l:bufnr)
+  endif
+  if !get(l:state, 'consistency_check_pending', 0)
+    return l:state
+  endif
+  if s:state_consistent(l:bufnr, l:state)
+    let l:state.consistency_check_pending = 0
+    call setbufvar(l:bufnr, 'jusi_nb', l:state)
+    return l:state
+  endif
+  return jusi#notebook#rebuild(l:bufnr)
 endfunction
 
 function! jusi#notebook#cleanup(...) abort
