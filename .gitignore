@@ -1,1 +1,18 @@
 .local/
+.nvimlog
+
+# Vim / Neovim local state
+.netrwhist
+Session.vim
+tags
+doc/tags
+
+# Vim / Neovim transient files
+*.swp
+*.swo
+*.swn
+*.un~
+*~
+
+# OS noise
+.DS_Store

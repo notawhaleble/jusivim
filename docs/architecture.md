@@ -245,6 +245,7 @@ Adapter responsibilities:
 - start kernel
 - attach to kernel
 - execute cell
+- reply to pending execution input
 - interrupt execution
 - request completion
 - receive execution status and results
@@ -258,6 +259,15 @@ Prepared-client lifecycle should also remain explicit:
 - `spawning`
 - `binding`
 - `ready`
+
+Prepared-client invariants:
+
+- one session has at most one authoritative prepared client at a time
+- the prepared client is a session-level resource, not a cell-level one
+- executing a cell consumes the prepared client into a cell-owned active client
+- once consumed, that client remains attached to that cell and is never rebound to another cell
+- the replacement prepared client starts only after the previous prepared client has been consumed
+- prepared buffer identity is tied to prepared client identity and must not be reused across different prepared client ids
 
 The frontend owns Vim buffer creation and must acknowledge prepared binding before the backend can treat the client as `ready`.
 
@@ -275,8 +285,17 @@ Responsibilities:
 The plugin should maintain explicit ownership rules:
 
 - notebook owns cells
+- session owns the current prepared client
 - cell may reference a client buffer
 - session may own process-level resources
+
+Binding rules:
+
+- session prepared buffer and cell-attached buffers are separate lifecycles
+- at most one prepared buffer is authoritative for a session
+- a prepared buffer belongs to a single backend prepared client id
+- an attached client buffer belongs to a single cell attachment
+- stale local buffers left behind by failure handling are cleanup targets, not alternate sources of truth
 
 Failure to create or reuse a client buffer must produce a clear state transition and user-visible error.
 

@@ -126,6 +126,21 @@ function! s:update_cell(bufnr, cell_id, update) abort
         \ && !has_key(l:update, 'parked_status')
     let l:update.parked_status = ''
   endif
+  if has_key(l:update, 'status')
+        \ && get(l:update, 'status', '') !=# 'busy'
+        \ && !has_key(l:update, 'pending_input')
+    let l:update.pending_input = {}
+  endif
+  if has_key(l:update, 'client_state')
+        \ && get(l:update, 'client_state', '') !=# 'active'
+        \ && !has_key(l:update, 'pending_input')
+    let l:update.pending_input = {}
+  endif
+  if has_key(l:update, 'client_bufnr')
+        \ && get(l:update, 'client_bufnr', -1) < 0
+        \ && !has_key(l:update, 'pending_input')
+    let l:update.pending_input = {}
+  endif
   if !has_key(l:update, 'client_state')
         \ && has_key(l:update, 'client_bufnr')
         \ && get(l:update, 'client_bufnr', -1) > 0
@@ -167,6 +182,7 @@ function! s:cell_close_reset_update() abort
         \ 'client_state': 'shutdown',
         \ 'client_bufnr': -1,
         \ 'close_requested': 0,
+        \ 'pending_input': {},
         \ 'parked_status': '',
         \ }
 endfunction
@@ -192,6 +208,7 @@ endfunction
 function! s:execute_cell_start_update(cell, prepared) abort
   return {
         \ 'status': 'busy',
+        \ 'pending_input': {},
         \ 'client_id': get(a:prepared, 'id', ''),
         \ 'client_state': 'active',
         \ 'client_bufnr': get(a:prepared, 'bufnr', -1),
@@ -211,6 +228,7 @@ endfunction
 function! s:restore_cell_update(cell) abort
   return {
         \ 'status': get(a:cell, 'status', 'initial'),
+        \ 'pending_input': copy(get(a:cell, 'pending_input', {})),
         \ 'client_id': get(a:cell, 'client_id', ''),
         \ 'client_state': get(a:cell, 'client_state', 'shutdown'),
         \ 'client_bufnr': get(a:cell, 'client_bufnr', -1),
@@ -347,6 +365,50 @@ function! s:echo_error(message) abort
   echohl ErrorMsg
   echom a:message
   echohl None
+endfunction
+
+function! s:pending_input_equal(left, right) abort
+  return string(type(a:left) == type({}) ? a:left : {}) ==# string(type(a:right) == type({}) ? a:right : {})
+endfunction
+
+function! s:pending_input_from_view(view) abort
+  if get(a:view, 'execution_status', '') !=# 'busy'
+    return {}
+  endif
+  let l:lines = get(a:view, 'lines', [])
+  if empty(l:lines)
+    return {}
+  endif
+  let l:last = l:lines[-1]
+  if l:last =~# '^input>\s*'
+    return {
+          \ 'prompt': matchstr(l:last, '^input>\s*\zs.*$'),
+          \ 'password': 0,
+          \ }
+  endif
+  if l:last =~# '^password>\s*'
+    return {
+          \ 'prompt': matchstr(l:last, '^password>\s*\zs.*$'),
+          \ 'password': 1,
+          \ }
+  endif
+  return {}
+endfunction
+
+function! s:reply_input_prompt(pending_input) abort
+  let l:prompt = get(a:pending_input, 'prompt', '')
+  if empty(l:prompt)
+    let l:prompt = get(a:pending_input, 'password', 0) ? 'password> ' : 'input> '
+  endif
+  call inputsave()
+  try
+    if get(a:pending_input, 'password', 0)
+      return inputsecret(l:prompt)
+    endif
+    return input(l:prompt)
+  finally
+    call inputrestore()
+  endtry
 endfunction
 
 function! s:can_shutdown_client(session) abort
@@ -523,6 +585,28 @@ function! jusi#session#callback_cell(cell_id, update, ...) abort
   call s:refresh_stale_cells(l:bufnr)
   let l:cell = s:update_cell(l:bufnr, a:cell_id, a:update)
   return s:maybe_finalize_closed_cell(l:bufnr, l:cell)
+endfunction
+
+function! jusi#session#sync_client_view(bufnr, cell_id, client_id, view) abort
+  let l:bufnr = s:normalize_bufnr(a:bufnr)
+  let l:state = s:notebook_state(l:bufnr)
+  if empty(l:state)
+    return {}
+  endif
+  let l:idx = s:find_cell_index(l:state, a:cell_id)
+  if l:idx < 0
+    return {}
+  endif
+  let l:cell = l:state.cells[l:idx]
+  if get(l:cell, 'client_id', '') !=# a:client_id
+    return l:cell
+  endif
+
+  let l:pending_input = s:pending_input_from_view(a:view)
+  if s:pending_input_equal(get(l:cell, 'pending_input', {}), l:pending_input)
+    return l:cell
+  endif
+  return s:update_cell(l:bufnr, a:cell_id, {'pending_input': l:pending_input})
 endfunction
 
 function! jusi#session#callback_response(response, ...) abort
@@ -740,6 +824,67 @@ endfunction
 
 function! jusi#session#interrupt() abort
   return jusi#session#interrupt_current()
+endfunction
+
+function! jusi#session#reply_input_current(...) abort
+  let l:bufnr = s:normalize_bufnr(bufnr('%'))
+  if !s:require_notebook_buffer(l:bufnr, 'reply to input')
+    return {}
+  endif
+
+  let l:session = jusi#session#state(l:bufnr)
+  if get(l:session, 'state', 'idle') !=# 'connected'
+    return s:fail_session(l:bufnr, {'last_action': 'input_reply'}, 'Cannot reply to input without a connected session')
+  endif
+
+  let l:cell = jusi#notebook#cell_at_line(l:bufnr, line('.'))
+  if empty(l:cell) || get(l:cell, 'status', '') !=# 'busy'
+    return s:fail_session(l:bufnr, {'last_action': 'input_reply'}, 'Cannot reply to input unless the current cell is busy')
+  endif
+
+  let l:pending_input = copy(get(l:cell, 'pending_input', {}))
+  if empty(l:pending_input)
+    return s:fail_session(l:bufnr, {'last_action': 'input_reply'}, 'Current cell is not waiting for input')
+  endif
+  if empty(get(l:cell, 'client_id', ''))
+    return s:fail_session(l:bufnr, {'last_action': 'input_reply'}, 'Cannot reply to input without a tracked client id')
+  endif
+
+  if a:0 >= 1
+    let l:value = a:1
+  else
+    try
+      let l:value = s:reply_input_prompt(l:pending_input)
+    catch /^Vim:Interrupt$/
+      return jusi#notebook#state(l:bufnr)
+    endtry
+  endif
+
+  let l:response = jusi#adapter#call('input_reply', l:bufnr, {
+        \ 'cell': copy(l:cell),
+        \ 'client_id': get(l:cell, 'client_id', ''),
+        \ 'value': l:value,
+        \ })
+  if get(l:response, 'ok', 0)
+    call s:update_session(l:bufnr, {
+          \ 'state': 'connected',
+          \ 'last_action': 'input_reply',
+          \ 'last_error': '',
+          \ 'request': {'cell_id': l:cell.id},
+          \ })
+    call s:update_cell(l:bufnr, l:cell.id, {'pending_input': {}})
+    if get(l:cell, 'client_bufnr', -1) > 0
+      call jusi#client#schedule_attached_refresh(
+            \ l:bufnr,
+            \ l:cell.id,
+            \ get(l:cell, 'client_id', ''),
+            \ l:cell.client_bufnr)
+    endif
+    return jusi#notebook#state(l:bufnr)
+  endif
+  return s:fail_session(l:bufnr, {
+        \ 'last_action': 'input_reply',
+        \ }, get(l:response, 'error', 'Failed to reply to input'))
 endfunction
 
 function! jusi#session#close_current_client() abort

@@ -404,6 +404,11 @@ function! s:test_session_adapter_interrupt(bufnr, payload) abort
         \ }
 endfunction
 
+function! s:test_session_adapter_input_reply(bufnr, payload) abort
+  let s:last_input_reply_payload = copy(a:payload)
+  return {'ok': 1}
+endfunction
+
 function! s:test_session_adapter_shutdown_client(bufnr, payload) abort
   return {
         \ 'ok': 1,
@@ -662,6 +667,35 @@ function! Test_prepared_binding_event_creates_local_buffer_and_sends_bind_ack() 
     call assert_match('^client-1$', get(s:last_bound_prepared, 'client_id', ''))
     call assert_true(get(s:last_bound_prepared, 'client_bufnr', -1) > 0)
     call assert_equal(s:last_bound_prepared.client_bufnr, b:jusi_nb.session.prepared.bufnr)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_prepared_replacement_allocates_new_local_buffer_and_keeps_client_identity() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'start': function('s:test_session_adapter_start'),
+          \ 'bind_prepared_client': function('s:test_session_adapter_bind_prepared'),
+          \ }
+    let s:last_bound_prepared = {}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#start('python3')
+    let l:prepared = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+    call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:prepared})
+    call jusi#session#callback_prepared({'id': 'client-2', 'state': 'binding', 'bufnr': -1})
+    call assert_equal('client-2', b:jusi_nb.session.prepared.id)
+    call assert_equal('binding', b:jusi_nb.session.prepared.state)
+    call assert_true(b:jusi_nb.session.prepared.bufnr > 0)
+    call assert_notequal(l:prepared, b:jusi_nb.session.prepared.bufnr)
+    call assert_false(bufexists(l:prepared))
+    call assert_equal(b:jusi_nb.session.prepared.bufnr, get(s:last_bound_prepared, 'client_bufnr', -1))
+    call assert_equal('client-2', get(s:last_bound_prepared, 'client_id', ''))
+    call assert_equal('client-2', getbufvar(b:jusi_nb.session.prepared.bufnr, 'jusi_client_id', ''))
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
@@ -1121,6 +1155,80 @@ function! Test_busy_client_polling_advances_output_before_terminal_update() abor
   endtry
 endfunction
 
+function! Test_client_refresh_tracks_pending_input_from_inspect_snapshot() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {'inspect_client': function('s:test_session_adapter_inspect_client')}
+    let s:inspect_client_response = {
+          \ 'revision': 1,
+          \ 'title': 'cell 1: busy',
+          \ 'lines': ['started cell 1 [code:python]', 'input> value: '],
+          \ 'execution_status': 'busy',
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    let l:notebook = bufnr('%')
+    let l:cell_id = b:jusi_nb.cells[0].id
+    let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.state = 'connected'
+    let b:jusi_nb.cells[0].status = 'busy'
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = l:client
+    call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+
+    call jusi#client#refresh_attached_view(l:notebook, l:cell_id, 'client-1', l:client)
+    call assert_equal({'prompt': 'value: ', 'password': 0}, get(b:jusi_nb.cells[0], 'pending_input', {}))
+    call assert_equal({'prompt': 'value: ', 'password': 0}, getbufvar(l:client, 'jusi_client_pending_input', {}))
+
+    let s:inspect_client_response = {
+          \ 'revision': 2,
+          \ 'title': 'cell 1: done',
+          \ 'lines': ['started cell 1 [code:python]', 'input> value: ', "execute[7]> input('value: ')", 'stdout> typed: answer', 'finished: done'],
+          \ 'execution_status': 'done',
+          \ }
+    call jusi#client#refresh_attached_view(l:notebook, l:cell_id, 'client-1', l:client)
+    call assert_equal({}, get(b:jusi_nb.cells[0], 'pending_input', {}))
+    call assert_equal({}, getbufvar(l:client, 'jusi_client_pending_input', {}))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_reply_input_current_sends_input_reply_request_and_clears_pending_input() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {'input_reply': function('s:test_session_adapter_input_reply')}
+    let s:last_input_reply_payload = {}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    let l:client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.state = 'connected'
+    let b:jusi_nb.cells[0].status = 'busy'
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = l:client
+    let b:jusi_nb.cells[0].pending_input = {'prompt': 'value: ', 'password': 0}
+
+    call jusi#session#reply_input_current('answer')
+
+    call assert_equal(b:jusi_nb.cells[0].id, get(get(s:last_input_reply_payload, 'cell', {}), 'id', 0))
+    call assert_equal('client-1', get(s:last_input_reply_payload, 'client_id', ''))
+    call assert_equal('answer', get(s:last_input_reply_payload, 'value', ''))
+    call assert_equal('input_reply', b:jusi_nb.session.last_action)
+    call assert_equal({'cell_id': b:jusi_nb.cells[0].id}, b:jusi_nb.session.request)
+    call assert_equal({}, get(b:jusi_nb.cells[0], 'pending_input', {}))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
 function! Test_close_client_requires_attached_buffer() abort
   call Test_open_scratch([
         \ '##',
@@ -1253,6 +1361,7 @@ function! Test_stop_kernel_moves_attachable_session_to_stopped() abort
     let g:jusi_session_adapter = l:save_adapter
   endtry
 endfunction
+
 
 function! Test_session_callback_updates_prepared_state() abort
   call Test_open_scratch([
@@ -2130,6 +2239,18 @@ function! Test_insert_mode_line_insert_updates_ranges_incrementally() abort
   call jusi#notebook#handle_text_changed_insert()
   call assert_equal(3, b:jusi_nb.cells[0].end)
   call assert_equal(4, b:jusi_nb.cells[1].start)
+  call assert_equal(0, b:jusi_nb.dirty_insert)
+endfunction
+
+function! Test_insert_mode_o_from_single_delimiter_cell_does_not_crash() abort
+  call Test_open_scratch([])
+  call append(1, '')
+  call jusi#notebook#handle_text_changed_insert()
+  call assert_equal(['##', ''], getline(1, '$'))
+  call assert_equal(1, len(b:jusi_nb.cells))
+  call assert_equal(1, b:jusi_nb.cells[0].start)
+  call jusi#notebook#handle_insert_exit()
+  call assert_equal(2, b:jusi_nb.cells[0].end)
   call assert_equal(0, b:jusi_nb.dirty_insert)
 endfunction
 

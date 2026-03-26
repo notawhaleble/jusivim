@@ -46,6 +46,7 @@ function! jusi#client#create_prepared_buffer(notebook_bufnr, client_id) abort
   call setbufvar(l:bufnr, 'jusi_client_revision', -1)
   call setbufvar(l:bufnr, 'jusi_client_title', '')
   call setbufvar(l:bufnr, 'jusi_client_execution_status', '')
+  call setbufvar(l:bufnr, 'jusi_client_pending_input', {})
   call s:set_managed_vars(l:bufnr, a:notebook_bufnr, a:client_id, 'prepared')
   return l:bufnr
 endfunction
@@ -135,6 +136,35 @@ function! s:normalize_client_view(response) abort
   return get(a:response, 'client', {})
 endfunction
 
+function! s:pending_input_from_view(view) abort
+  if get(a:view, 'execution_status', '') !=# 'busy'
+    return {}
+  endif
+  let l:lines = get(a:view, 'lines', [])
+  let l:idx = len(l:lines) - 1
+  while l:idx >= 0
+    let l:line = l:lines[l:idx]
+    if empty(l:line)
+      let l:idx -= 1
+      continue
+    endif
+    if l:line =~# '^input>\s*'
+      return {
+            \ 'prompt': matchstr(l:line, '^input>\s*\zs.*$'),
+            \ 'password': 0,
+            \ }
+    endif
+    if l:line =~# '^password>\s*'
+      return {
+            \ 'prompt': matchstr(l:line, '^password>\s*\zs.*$'),
+            \ 'password': 1,
+            \ }
+    endif
+    return {}
+  endwhile
+  return {}
+endfunction
+
 function! s:replace_buffer_lines(bufnr, lines) abort
   if !s:is_valid_bufnr(a:bufnr)
     return 0
@@ -215,6 +245,8 @@ function! s:refresh_attached_now(notebook_bufnr, cell_id, client_id, client_bufn
     call setbufvar(a:client_bufnr, 'jusi_client_title', get(l:view, 'title', ''))
     call setbufvar(a:client_bufnr, 'jusi_client_execution_status', get(l:view, 'execution_status', ''))
   endif
+  call setbufvar(a:client_bufnr, 'jusi_client_pending_input', s:pending_input_from_view(l:view))
+  call jusi#session#sync_client_view(a:notebook_bufnr, a:cell_id, a:client_id, l:view)
 
   if s:client_should_poll(l:ctx.cell) && exists('*timer_start')
     let l:timer = timer_start(s:refresh_delay_ms(), function('s:refresh_timer', [a:notebook_bufnr, a:cell_id, a:client_id, a:client_bufnr]))

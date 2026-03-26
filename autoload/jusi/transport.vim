@@ -1,5 +1,33 @@
 let s:transport = {}
 
+function! s:debug_log_enabled() abort
+  return type(get(g:, 'jusi_transport_debug_log', 0)) == type('')
+        \ && !empty(get(g:, 'jusi_transport_debug_log', ''))
+endfunction
+
+function! s:debug_string(value) abort
+  if type(a:value) == type('')
+    return a:value
+  endif
+  try
+    return string(a:value)
+  catch
+    return '<unprintable>'
+  endtry
+endfunction
+
+function! s:debug_log(bufnr, message, ...) abort
+  if !s:debug_log_enabled()
+    return
+  endif
+  let l:path = get(g:, 'jusi_transport_debug_log', '')
+  let l:parts = [strftime('%Y-%m-%d %H:%M:%S'), 'bufnr=' . a:bufnr, a:message]
+  for l:item in a:000
+    call add(l:parts, s:debug_string(l:item))
+  endfor
+  call writefile([join(l:parts, ' | ')], l:path, 'a')
+endfunction
+
 function! s:normalize_bufnr(bufnr) abort
   if a:bufnr is# 0 || a:bufnr is# ''
     return bufnr('%')
@@ -99,6 +127,7 @@ function! s:job_is_running(bufnr) abort
 endfunction
 
 function! s:on_message(bufnr, envelope) abort
+  call s:debug_log(a:bufnr, 'parsed-envelope', a:envelope)
   if type(a:envelope) != type({})
     return
   endif
@@ -117,7 +146,10 @@ function! s:on_message(bufnr, envelope) abort
             \     : '',
             \   },
             \ }
+      call s:debug_log(a:bufnr, 'response-matched', l:request_id, l:state.pending[l:request_id])
       call s:set_state(a:bufnr, l:state)
+    else
+      call s:debug_log(a:bufnr, 'response-unmatched', l:request_id)
     endif
     return
   endif
@@ -148,9 +180,11 @@ function! s:parse_lines(bufnr, lines) abort
     if empty(l:line)
       continue
     endif
+    call s:debug_log(a:bufnr, 'raw-line', l:line)
     try
       let l:envelope = json_decode(l:line)
     catch
+      call s:debug_log(a:bufnr, 'json-decode-failed', l:line)
       continue
     endtry
     call s:on_message(a:bufnr, l:envelope)
@@ -161,6 +195,7 @@ function! s:parse_nvim_chunks(bufnr, chunks) abort
   if empty(a:chunks)
     return
   endif
+  call s:debug_log(a:bufnr, 'nvim-chunks', a:chunks)
   let l:state = s:ensure_state(a:bufnr)
   let l:parts = copy(a:chunks)
   let l:parts[0] = get(l:state, 'stdout_tail', '') . l:parts[0]
@@ -178,6 +213,7 @@ function! s:parse_nvim_chunks(bufnr, chunks) abort
 endfunction
 
 function! s:parse_vim_chunk(bufnr, msg) abort
+  call s:debug_log(a:bufnr, 'vim-chunk', a:msg)
   let l:state = s:ensure_state(a:bufnr)
   let l:text = get(l:state, 'stdout_tail', '') . a:msg
   let l:parts = split(l:text, "\n", 1)
@@ -195,6 +231,7 @@ function! s:nvim_stdout(bufnr, jobid, data, event) abort
 endfunction
 
 function! s:nvim_exit(bufnr, jobid, code, event) abort
+  call s:debug_log(a:bufnr, 'nvim-exit', 'job=' . a:jobid, 'code=' . a:code)
   let l:state = s:ensure_state(a:bufnr)
   let l:state.job = 0
   call s:set_state(a:bufnr, l:state)
@@ -204,7 +241,8 @@ function! s:vim_out(bufnr, channel, msg) abort
   call s:parse_vim_chunk(a:bufnr, a:msg)
 endfunction
 
-function! s:vim_close(bufnr, channel) abort
+function! s:vim_exit(bufnr, job, status) abort
+  call s:debug_log(a:bufnr, 'vim-exit', 'status=' . a:status)
   let l:state = s:ensure_state(a:bufnr)
   let l:state.job = 0
   let l:state.channel = 0
@@ -213,13 +251,16 @@ endfunction
 
 function! s:start_job(bufnr) abort
   if s:job_is_running(a:bufnr)
+    call s:debug_log(a:bufnr, 'start-job-skip-already-running')
     return 1
   endif
   if !s:has_backend_cmd()
+    call s:debug_log(a:bufnr, 'start-job-no-backend-cmd')
     return 0
   endif
 
   let l:state = s:ensure_state(a:bufnr)
+  call s:debug_log(a:bufnr, 'start-job', s:backend_cmd())
   if has('nvim')
     let l:job = jobstart(s:backend_cmd(), {
           \ 'on_stdout': function('s:nvim_stdout', [a:bufnr]),
@@ -229,10 +270,12 @@ function! s:start_job(bufnr) abort
           \ 'stderr_buffered': v:false,
           \ })
     if l:job <= 0
+      call s:debug_log(a:bufnr, 'start-job-failed', l:job)
       return 0
     endif
     let l:state.job = l:job
     call s:set_state(a:bufnr, l:state)
+    call s:debug_log(a:bufnr, 'start-job-ok', 'job=' . l:job)
     return 1
   endif
 
@@ -244,14 +287,16 @@ function! s:start_job(bufnr) abort
         \ 'err_mode': 'raw',
         \ 'out_cb': function('s:vim_out', [a:bufnr]),
         \ 'err_cb': function('s:vim_out', [a:bufnr]),
-        \ 'close_cb': function('s:vim_close', [a:bufnr]),
+        \ 'exit_cb': function('s:vim_exit', [a:bufnr]),
         \ })
   if type(l:job) == type(0) && (l:job == 0 || l:job == -1)
+    call s:debug_log(a:bufnr, 'start-job-failed', l:job)
     return 0
   endif
   let l:state.job = l:job
   let l:state.channel = job_getchannel(l:job)
   call s:set_state(a:bufnr, l:state)
+  call s:debug_log(a:bufnr, 'start-job-ok', 'channel=' . string(l:state.channel))
   return 1
 endfunction
 
@@ -264,12 +309,16 @@ endfunction
 
 function! jusi#transport#request(bufnr, envelope) abort
   let l:bufnr = s:normalize_bufnr(a:bufnr)
+  call s:debug_log(l:bufnr, 'request-begin', a:envelope)
   let l:Handler = s:handler_funcref()
   if type(l:Handler) == type(function('tr'))
-    return call(l:Handler, [l:bufnr, a:envelope])
+    let l:result = call(l:Handler, [l:bufnr, a:envelope])
+    call s:debug_log(l:bufnr, 'request-handler-result', l:result)
+    return l:result
   endif
 
   if !s:start_job(l:bufnr)
+    call s:debug_log(l:bufnr, 'request-no-transport')
     return {'ok': 0, 'error': 'Transport is not configured'}
   endif
 
@@ -277,9 +326,11 @@ function! jusi#transport#request(bufnr, envelope) abort
   let l:request_id = get(a:envelope, 'request_id', '')
   let l:state.pending[l:request_id] = {'done': 0, 'response': {}}
   call s:set_state(l:bufnr, l:state)
+  call s:debug_log(l:bufnr, 'request-pending', l:request_id, get(a:envelope, 'type', ''))
   call s:channel_send(l:bufnr, json_encode(a:envelope) . "\n")
+  call s:debug_log(l:bufnr, 'request-sent', l:request_id)
 
-  let l:timeout = get(g:, 'jusi_transport_timeout_ms', 1000)
+  let l:timeout = get(g:, 'jusi_transport_timeout_ms', 5000)
   if exists('*wait')
     call wait(l:timeout, {-> get(get(s:transport, l:bufnr, {'pending': {}}).pending, l:request_id, {'done': 0}).done})
   else
@@ -299,23 +350,30 @@ function! jusi#transport#request(bufnr, envelope) abort
     call s:set_state(l:bufnr, l:state)
   endif
   if !get(l:pending, 'done', 0)
+    call s:debug_log(l:bufnr, 'request-timeout', l:request_id, 'timeout_ms=' . l:timeout)
     return {'ok': 0, 'error': 'Timed out waiting for backend response'}
   endif
+  call s:debug_log(l:bufnr, 'request-complete', l:request_id, l:pending.response)
   return l:pending.response
 endfunction
 
 function! jusi#transport#notify(bufnr, envelope) abort
   let l:bufnr = s:normalize_bufnr(a:bufnr)
+  call s:debug_log(l:bufnr, 'notify-begin', a:envelope)
   let l:Handler = s:handler_funcref()
   if type(l:Handler) == type(function('tr'))
-    return call(l:Handler, [l:bufnr, a:envelope])
+    let l:result = call(l:Handler, [l:bufnr, a:envelope])
+    call s:debug_log(l:bufnr, 'notify-handler-result', l:result)
+    return l:result
   endif
 
   if !s:start_job(l:bufnr)
+    call s:debug_log(l:bufnr, 'notify-no-transport')
     return {'ok': 0, 'error': 'Transport is not configured'}
   endif
 
   call s:channel_send(l:bufnr, json_encode(a:envelope) . "\n")
+  call s:debug_log(l:bufnr, 'notify-sent', get(a:envelope, 'request_id', ''), get(a:envelope, 'type', ''))
   return {'ok': 1}
 endfunction
 

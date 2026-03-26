@@ -167,8 +167,13 @@ function! s:assign_sign_id(cell) abort
 endfunction
 
 function! s:first_content_line(lines, start_idx, end_idx) abort
-  let l:i = a:start_idx
-  while l:i <= a:end_idx
+  let l:line_count = len(a:lines)
+  if l:line_count == 0
+    return ''
+  endif
+  let l:i = max([1, a:start_idx])
+  let l:last = min([a:end_idx, l:line_count])
+  while l:i <= l:last
     let l:line = a:lines[l:i - 1]
     if l:line !~# '^\s*$'
       return l:line
@@ -255,6 +260,7 @@ function! s:init_runtime_cell(parsed, state) abort
   let l:cell = copy(a:parsed)
   let l:cell.id = s:new_cell_id(a:state)
   let l:cell.status = 'initial'
+  let l:cell.pending_input = {}
   let l:cell.parked_status = ''
   let l:cell.sign_id = 0
   let l:cell.client_id = ''
@@ -270,6 +276,7 @@ function! s:merge_runtime_cell(prev, parsed) abort
   let l:cell = copy(a:parsed)
   let l:cell.id = get(a:prev, 'id', 0)
   let l:cell.status = get(a:prev, 'status', 'initial')
+  let l:cell.pending_input = copy(get(a:prev, 'pending_input', {}))
   let l:cell.parked_status = get(a:prev, 'parked_status', '')
   let l:cell.sign_id = get(a:prev, 'sign_id', 0)
   let l:cell.client_id = get(a:prev, 'client_id', '')

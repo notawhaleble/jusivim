@@ -37,6 +37,10 @@ if !exists('g:jusi_backend_cmd')
   let g:jusi_backend_cmd = jusi#transport#default_backend_cmd()
 endif
 
+if !exists('g:jusi_transport_timeout_ms')
+  let g:jusi_transport_timeout_ms = 5000
+endif
+
 if !exists('g:jusi_client_layout')
   let g:jusi_client_layout = 'bsplit'
 endif
@@ -67,6 +71,7 @@ command! JusiCellPasteBelow call jusi#notebook#paste_below()
 command! -nargs=? JusiStartKernel call jusi#session#start(<q-args>)
 command! -nargs=1 JusiAttach call jusi#session#attach(<q-args>)
 command! JusiExecute call jusi#session#execute_current()
+command! -nargs=? JusiReplyInput call jusi#session#reply_input_current(<q-args>)
 command! JusiInterruptKernel call jusi#session#interrupt()
 command! JusiCloseClient call jusi#session#close_current_client()
 command! JusiTogglePark call jusi#session#toggle_park_current_client()
