@@ -26,6 +26,12 @@ function! s:normalize_bufnr(bufnr) abort
   return str2nr(a:bufnr)
 endfunction
 
+function! s:echo_error(message) abort
+  echohl ErrorMsg
+  echom a:message
+  echohl None
+endfunction
+
 function! s:is_notebook_buffer(bufnr) abort
   return bufexists(a:bufnr) && getbufvar(a:bufnr, '&filetype') ==# 'jusinb'
 endfunction
@@ -831,6 +837,61 @@ function! jusi#notebook#refresh_if_changed(...) abort
   return jusi#notebook#rebuild(l:bufnr)
 endfunction
 
+function! s:notebook_has_active_session(bufnr) abort
+  if !s:is_notebook_buffer(a:bufnr)
+    return 0
+  endif
+  return jusi#session#is_active(get(getbufvar(a:bufnr, 'jusi_nb', {}), 'session', {}))
+endfunction
+
+function! s:active_notebook_buffers() abort
+  let l:bufnrs = []
+  for l:info in getbufinfo()
+    if s:notebook_has_active_session(l:info.bufnr)
+      call add(l:bufnrs, l:info.bufnr)
+    endif
+  endfor
+  return l:bufnrs
+endfunction
+
+function! s:mark_skip_cleanup(bufnrs) abort
+  for l:bufnr in a:bufnrs
+    call setbufvar(l:bufnr, 'jusi_skip_cleanup_once', 1)
+  endfor
+endfunction
+
+function! s:forced_close() abort
+  return exists('v:cmdbang') && v:cmdbang
+endfunction
+
+function! jusi#notebook#guard_quit(...) abort
+  let l:forced = a:0 >= 1 ? a:1 : s:forced_close()
+  let l:active = s:active_notebook_buffers()
+  if empty(l:active)
+    return 1
+  endif
+  if l:forced
+    call s:mark_skip_cleanup(l:active)
+    return 1
+  endif
+  call s:echo_error('Cannot quit while a Jusi session is active; use :q! or stop/disconnect it first')
+  throw 'jusi-quit-blocked'
+endfunction
+
+function! jusi#notebook#guard_wipeout(...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  let l:forced = a:0 >= 2 ? a:2 : s:forced_close()
+  if !s:notebook_has_active_session(l:bufnr)
+    return 1
+  endif
+  if l:forced
+    call s:mark_skip_cleanup([l:bufnr])
+    return 1
+  endif
+  call s:echo_error('Cannot wipe a notebook buffer while a Jusi session is active; use :bwipeout! or stop/disconnect it first')
+  throw 'jusi-wipeout-blocked'
+endfunction
+
 function! jusi#notebook#cleanup(...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
   if has_key(s:buffer_listener, l:bufnr)
@@ -840,7 +901,11 @@ function! jusi#notebook#cleanup(...) abort
   if has_key(s:buffer_cache, l:bufnr)
     call remove(s:buffer_cache, l:bufnr)
   endif
-  if s:is_notebook_buffer(l:bufnr)
+  let l:skip_cleanup = getbufvar(l:bufnr, 'jusi_skip_cleanup_once', 0)
+  if l:skip_cleanup
+    call setbufvar(l:bufnr, 'jusi_skip_cleanup_once', 0)
+  endif
+  if s:is_notebook_buffer(l:bufnr) && !l:skip_cleanup
     call jusi#session#shutdown_all_clients('frontend_unload', l:bufnr)
     let l:state = getbufvar(l:bufnr, 'jusi_nb', {})
     let l:prepared = get(get(l:state, 'session', {}), 'prepared', {})
@@ -853,7 +918,9 @@ function! jusi#notebook#cleanup(...) abort
       endif
     endfor
   endif
-  call jusi#transport#stop(l:bufnr)
+  if !l:skip_cleanup
+    call jusi#transport#stop(l:bufnr)
+  endif
   call jusi#syntax#cleanup(l:bufnr)
 endfunction
 
@@ -992,7 +1059,12 @@ function! s:cell_lines(cell) abort
 endfunction
 
 function! s:cell_main_lines(cell) abort
-  return getline(a:cell.start, a:cell.body_end)
+  let l:start = a:cell.start + 1
+  let l:end = get(a:cell, 'body_end', a:cell.end)
+  if l:start > l:end
+    return []
+  endif
+  return getline(l:start, l:end)
 endfunction
 
 function! s:cell_history_lines(cell) abort

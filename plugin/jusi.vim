@@ -33,6 +33,10 @@ if !exists('g:jusi_session_adapter')
   let g:jusi_session_adapter = {}
 endif
 
+if !exists('g:jusi_kernel_targets')
+  let g:jusi_kernel_targets = {}
+endif
+
 if !exists('g:jusi_backend_cmd')
   let g:jusi_backend_cmd = jusi#transport#default_backend_cmd()
 endif
@@ -85,6 +89,7 @@ command! JusiCellModeToggle call jusi#cellmode#toggle()
 
 augroup jusi_notebook
   au!
+  au QuitPre * call jusi#notebook#guard_quit()
   au BufReadPost,BufNewFile *.vipynb call jusi#notebook#rebuild(expand('<abuf>'))
   au TextChanged *.vipynb call jusi#notebook#handle_text_changed(expand('<abuf>'))
   au TextChangedI *.vipynb call jusi#notebook#handle_text_changed_insert(expand('<abuf>'))
@@ -97,6 +102,7 @@ augroup jusi_notebook
     au WinScrolled *.vipynb call jusi#syntax#request_refresh(expand('<abuf>'))
   endif
   au VimResized *.vipynb call jusi#syntax#request_refresh(expand('<abuf>'))
+  au BufWipeout *.vipynb call jusi#notebook#guard_wipeout(expand('<abuf>'))
   au BufUnload *.vipynb call jusi#notebook#cleanup(expand('<abuf>'))
   au BufEnter,InsertEnter,InsertLeave *.vipynb call jusi#cellmode#update_indicator()
   au BufLeave *.vipynb call jusi#cellmode#update_indicator(v:true)

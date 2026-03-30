@@ -219,6 +219,8 @@ Suggested session fields:
   'state': 'connected',
   'kernel_id': '...',
   'connection': '...',
+  'target': {...},
+  'expires_at': '...',
   'backend': '...',
   'last_error': ''
 }
@@ -236,6 +238,16 @@ Session states should be explicit, for example:
 
 Exact labels may change, but state transitions must be deliberate and observable.
 
+Target identity should be explicit and separate from transient connection state. The frontend should be able to record what target a notebook was started or attached against without baking teardown policy directly into that target description.
+
+Backend session payloads currently keep only explicit target metadata. Durable-session behavior, disconnect expiry, and reconnect failure handling should be modeled from backend session state and response codes rather than from a frontend-only link classification. Frontend-local `link` or `ownership` guesses should not become an alternate source of session truth. A disconnected session may also time out and disappear on the backend before any reconnect attempt, so reconnect should keep treating backend failure codes as authoritative rather than as a prompt for frontend-local recovery heuristics.
+
+For attached `connection_file` sessions, frontend may also persist a local alias registry so user-facing attach UX does not depend on remembering raw connection-file paths. That registry is a frontend convenience layer over explicit target identity, not a replacement for backend session ids or reconnect behavior.
+
+While a session is `connected`, backend may also emit explicit `healthcheck` events. Frontend should answer those with `healthcheck_reply` for the matching connected session only. Missed replies are backend-owned liveness decisions and should feed the ordinary backend-driven `disconnected` timeout path rather than a separate frontend timeout model.
+
+Fresh session establishment in an already-open notebook should clear stale cell runtime bindings before the new session becomes authoritative. Old cell-local `client_id` / `client_bufnr` state must not be allowed to collide with a newly prepared client after reconnect failure or transport loss.
+
 ## Backend Boundary
 
 The Vim plugin should interact with the backend through a narrow adapter layer.
@@ -245,6 +257,7 @@ Adapter responsibilities:
 - start kernel
 - attach to kernel
 - execute cell
+- reply to backend healthchecks
 - reply to pending execution input
 - interrupt execution
 - request completion
@@ -317,6 +330,12 @@ Cleanup logic should attempt to:
 - clear buffer-local bindings
 - detach UI state from dead sessions
 - avoid orphaned long-lived processes
+
+Exit policy should distinguish ordinary and forced user actions:
+
+- ordinary quit and notebook wipeout should be blocked while active sessions exist
+- forced quit or wipeout should bypass graceful frontend cleanup instead of manufacturing teardown state
+- forced exit should preserve local recovery metadata where practical, but reconnectability remains a backend fact rather than a frontend guarantee
 
 No cleanup path should depend on a single fragile autocmd alone.
 

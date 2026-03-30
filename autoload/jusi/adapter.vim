@@ -48,6 +48,7 @@ function! s:request_type(op) abort
         \ 'attach': 'attach_session',
         \ 'execute': 'execute_cell',
         \ 'inspect_client': 'inspect_client',
+        \ 'healthcheck_reply': 'healthcheck_reply',
         \ 'interrupt': 'interrupt_cell',
         \ 'input_reply': 'input_reply',
         \ 'shutdown_client': 'shutdown_client',
@@ -65,6 +66,19 @@ function! s:new_request_id() abort
   return l:id
 endfunction
 
+function! s:normalize_result(result) abort
+  let l:result = type(a:result) == type({}) ? copy(a:result) : {}
+  let l:payload = get(l:result, 'payload', {})
+  if type(l:payload) == type({})
+    for [l:key, l:value] in items(l:payload)
+      if !has_key(l:result, l:key)
+        let l:result[l:key] = l:value
+      endif
+    endfor
+  endif
+  return l:result
+endfunction
+
 function! s:request_payload(op, bufnr, payload) abort
   let l:notebook_id = s:notebook_id(a:bufnr)
   let l:session_id = s:session_id(a:bufnr)
@@ -73,6 +87,7 @@ function! s:request_payload(op, bufnr, payload) abort
     return {
           \ 'notebook_id': l:notebook_id,
           \ 'kernel_name': get(a:payload, 'kernel_name', ''),
+          \ 'target': get(a:payload, 'target', {}),
           \ }
   endif
 
@@ -122,6 +137,14 @@ function! s:request_payload(op, bufnr, payload) abort
           \ 'notebook_id': l:notebook_id,
           \ 'session_id': l:session_id,
           \ 'client_id': get(a:payload, 'client_id', ''),
+          \ }
+  endif
+
+  if a:op ==# 'healthcheck_reply'
+    return {
+          \ 'notebook_id': l:notebook_id,
+          \ 'session_id': get(a:payload, 'session_id', l:session_id),
+          \ 'healthcheck_id': get(a:payload, 'healthcheck_id', ''),
           \ }
   endif
 
@@ -184,7 +207,7 @@ function! jusi#adapter#call(op, bufnr, payload) abort
   let l:Request = s:request_funcref()
   if type(l:Request) == type(function('tr'))
     let l:envelope = jusi#adapter#build_request(a:op, a:bufnr, a:payload)
-    let l:result = call(l:Request, [a:bufnr, l:envelope])
+    let l:result = s:normalize_result(call(l:Request, [a:bufnr, l:envelope]))
     if type(l:result) != type({})
       return {'ok': 0, 'error': 'Session adapter returned invalid response for ' . a:op}
     endif
@@ -196,7 +219,7 @@ function! jusi#adapter#call(op, bufnr, payload) abort
 
   let l:Handler = s:adapter_funcref(a:op)
   if type(l:Handler) == type(function('tr'))
-    let l:result = call(l:Handler, [a:bufnr, a:payload])
+    let l:result = s:normalize_result(call(l:Handler, [a:bufnr, a:payload]))
     if type(l:result) != type({})
       return {'ok': 0, 'error': 'Session adapter returned invalid response for ' . a:op}
     endif
@@ -208,7 +231,7 @@ function! jusi#adapter#call(op, bufnr, payload) abort
 
   if jusi#transport#can_request(a:bufnr)
     let l:envelope = jusi#adapter#build_request(a:op, a:bufnr, a:payload)
-    let l:result = jusi#transport#request(a:bufnr, l:envelope)
+    let l:result = s:normalize_result(jusi#transport#request(a:bufnr, l:envelope))
     if type(l:result) != type({})
       return {'ok': 0, 'error': 'Transport returned invalid response for ' . a:op}
     endif
@@ -226,7 +249,7 @@ function! jusi#adapter#call_async(op, bufnr, payload) abort
   let l:Request = s:request_funcref()
   if type(l:Request) == type(function('tr'))
     let l:envelope = jusi#adapter#build_request(a:op, a:bufnr, a:payload)
-    let l:result = call(l:Request, [a:bufnr, l:envelope])
+    let l:result = s:normalize_result(call(l:Request, [a:bufnr, l:envelope]))
     if type(l:result) != type({})
       return {'ok': 0, 'error': 'Session adapter returned invalid response for ' . a:op}
     endif
@@ -238,7 +261,7 @@ function! jusi#adapter#call_async(op, bufnr, payload) abort
 
   let l:Handler = s:adapter_funcref(a:op)
   if type(l:Handler) == type(function('tr'))
-    let l:result = call(l:Handler, [a:bufnr, a:payload])
+    let l:result = s:normalize_result(call(l:Handler, [a:bufnr, a:payload]))
     if type(l:result) != type({})
       return {'ok': 0, 'error': 'Session adapter returned invalid response for ' . a:op}
     endif

@@ -1,7 +1,20 @@
 function! Test_open_scratch(lines) abort
   for l:info in getbufinfo()
-    if fnamemodify(get(l:info, 'name', ''), ':t') ==# 'test.vipynb'
-      execute 'silent! bwipeout! ' . l:info.bufnr
+    if getbufvar(l:info.bufnr, '&filetype') ==# 'jusinb'
+          \ || getbufvar(l:info.bufnr, 'jusi_client_managed', 0)
+          \ || getbufvar(l:info.bufnr, 'jusi_client_notebook_bufnr', 0) > 0
+      call setbufvar(l:info.bufnr, 'jusi_skip_cleanup_once', 1)
+    endif
+  endfor
+  silent! noautocmd tabonly!
+  silent! noautocmd only!
+  for l:info in getbufinfo()
+    if getbufvar(l:info.bufnr, '&filetype') ==# 'jusinb'
+          \ || getbufvar(l:info.bufnr, 'jusi_client_managed', 0)
+          \ || getbufvar(l:info.bufnr, 'jusi_client_notebook_bufnr', 0) > 0
+      call jusi#transport#stop(l:info.bufnr)
+      call setbufvar(l:info.bufnr, 'jusi_skip_cleanup_once', 1)
+      execute 'silent! noautocmd bwipeout! ' . l:info.bufnr
     endif
   endfor
   enew!

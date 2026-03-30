@@ -165,7 +165,7 @@ function! Test_edit_current_preserves_magic_history_region() abort
   call cursor(3, 1)
   call jusi#notebook#edit_current()
   call assert_equal(['##', '', '##<<', '###', 'select 0', '##>>'], getline(1, '$'))
-  call assert_equal(['##', ''], jusi#notebook#cell_main_lines())
+  call assert_equal([''], jusi#notebook#cell_main_lines())
   call assert_equal(['##<<', '###', 'select 0', '##>>'], jusi#notebook#cell_history_lines())
 endfunction
 
@@ -318,10 +318,48 @@ function! s:test_session_adapter_start(bufnr, payload) abort
   return {
         \ 'ok': 1,
         \ 'session': {
+        \   'id': 'sess-start-1',
+        \   'kernel_id': 'kernel-start-1',
         \   'state': 'connected',
         \   'backend': 'mock',
         \   'kernel_name': get(a:payload, 'kernel_name', ''),
         \   'connection': 'mock://kernel/' . get(a:payload, 'kernel_name', ''),
+        \   },
+        \ 'prepared': {
+        \   'id': 'client-1',
+        \   'state': 'binding',
+        \   'bufnr': -1,
+        \   },
+        \ }
+endfunction
+
+function! s:test_session_adapter_attach(bufnr, payload) abort
+  let l:target = get(a:payload, 'target', {})
+  return {
+        \ 'ok': 1,
+        \ 'session': {
+        \   'id': 'sess-attach-1',
+        \   'kernel_id': 'kernel-attach-1',
+        \   'state': 'connected',
+        \   'backend': 'mock',
+        \   'connection': type(l:target) == type({}) ? get(l:target, 'value', '') : l:target,
+        \   },
+        \ 'prepared': {
+        \   'id': 'client-1',
+        \   'state': 'binding',
+        \   'bufnr': -1,
+        \   },
+        \ }
+endfunction
+
+function! s:test_session_adapter_attach_without_ids(bufnr, payload) abort
+  let l:target = get(a:payload, 'target', {})
+  return {
+        \ 'ok': 1,
+        \ 'session': {
+        \   'state': 'connected',
+        \   'backend': 'mock',
+        \   'connection': type(l:target) == type({}) ? get(l:target, 'value', '') : l:target,
         \   },
         \ 'prepared': {
         \   'id': 'client-1',
@@ -367,6 +405,66 @@ let s:last_request_envelope = {}
 function! s:test_request_adapter(bufnr, envelope) abort
   let s:last_request_envelope = copy(a:envelope)
   return {'ok': 1}
+endfunction
+
+function! s:test_transport_like_request_adapter(bufnr, envelope) abort
+  let s:last_request_envelope = copy(a:envelope)
+  if get(a:envelope, 'type', '') ==# 'start_session'
+    return {
+          \ 'ok': 1,
+          \ '_transport': 1,
+          \ 'payload': {
+          \   'session': {
+          \     'id': 'sess-1',
+          \     'state': 'connected',
+          \     'backend': 'mock',
+          \     'kernel_name': get(get(a:envelope, 'payload', {}), 'kernel_name', ''),
+          \     'connection': 'mock://kernel/' . get(get(a:envelope, 'payload', {}), 'kernel_name', ''),
+          \     },
+          \   'prepared': {
+          \     'id': 'client-1',
+          \     'state': 'binding',
+          \     'bufnr': -1,
+          \     },
+          \   },
+          \ }
+  endif
+  if get(a:envelope, 'type', '') ==# 'disconnect_session'
+    return {
+          \ 'ok': 1,
+          \ '_transport': 1,
+          \ 'payload': {
+          \   'session': {
+          \     'state': 'disconnected',
+          \     'expires_at': '2030-01-01T00:00:00Z',
+          \     'last_action': 'disconnect',
+          \     },
+          \   'prepared': {
+          \     'state': 'missing',
+          \     'bufnr': -1,
+          \     },
+          \   },
+          \ }
+  endif
+  if get(a:envelope, 'type', '') ==# 'reconnect_session'
+    return {
+          \ 'ok': 1,
+          \ '_transport': 1,
+          \ 'payload': {
+          \   'session': {
+          \     'state': 'connected',
+          \     'last_action': 'reconnect',
+          \     'expires_at': '',
+          \     },
+          \   'prepared': {
+          \     'id': 'client-2',
+          \     'state': 'binding',
+          \     'bufnr': -1,
+          \     },
+          \   },
+          \ }
+  endif
+  return {'ok': 1, '_transport': 1, 'payload': {}}
 endfunction
 
 function! s:test_transport_handler(bufnr, envelope) abort
@@ -441,7 +539,7 @@ function! s:test_session_adapter_disconnect(bufnr, payload) abort
         \ 'ok': 1,
         \ 'session': {
         \   'state': 'disconnected',
-        \   'attachable': 1,
+        \   'expires_at': '2030-01-01T00:00:00Z',
         \   'last_action': 'disconnect',
         \   },
         \ 'prepared': {
@@ -456,7 +554,7 @@ function! s:test_session_adapter_reconnect(bufnr, payload) abort
         \ 'ok': 1,
         \ 'session': {
         \   'state': 'connected',
-        \   'attachable': 1,
+        \   'expires_at': '',
         \   'last_action': 'reconnect',
         \   },
         \ 'prepared': {
@@ -465,6 +563,10 @@ function! s:test_session_adapter_reconnect(bufnr, payload) abort
         \   'bufnr': -1,
         \   },
         \ }
+endfunction
+
+function! s:test_session_adapter_reconnect_error(bufnr, payload) abort
+  return {'ok': 0, 'error': 'Session expired', 'error_code': 'session_expired'}
 endfunction
 
 function! Test_default_session_state_is_initialized_for_notebook() abort
@@ -476,6 +578,12 @@ function! Test_default_session_state_is_initialized_for_notebook() abort
   call assert_equal('idle', l:session.state)
   call assert_equal('', l:session.backend)
   call assert_equal('', l:session.last_error)
+  call assert_false(has_key(l:session, 'attachable'))
+  call assert_false(has_key(l:session, 'link'))
+  call assert_equal('', get(l:session, 'expires_at', ''))
+  call assert_equal('', get(l:session, 'last_error_code', ''))
+  call assert_equal('', get(l:session.target, 'source', ''))
+  call assert_equal('', get(l:session.target, 'alias', ''))
   call assert_equal('', l:session.prepared.id)
   call assert_equal('missing', l:session.prepared.state)
   call assert_equal('shutdown', l:session.prepared.client_state)
@@ -487,13 +595,25 @@ function! Test_adapter_builds_start_session_request_envelope() abort
         \ '##',
         \ 'print("hello")',
         \ ])
-  let l:request = jusi#adapter#build_request('start', bufnr('%'), {'kernel_name': 'python3'})
+  let l:request = jusi#adapter#build_request('start', bufnr('%'), {
+        \ 'kernel_name': 'python3',
+        \ 'target': {
+        \   'source': 'start',
+        \   'alias': 'python3',
+        \   'kind': 'kernel',
+        \   'value': '',
+        \   'config': {},
+        \   },
+        \ })
   call assert_equal(1, l:request.version)
   call assert_equal('request', l:request.kind)
   call assert_equal('start_session', l:request.type)
   call assert_match('^req-', l:request.request_id)
   call assert_equal('nb-' . bufnr('%'), l:request.payload.notebook_id)
   call assert_equal('python3', l:request.payload.kernel_name)
+  call assert_equal('start', l:request.payload.target.source)
+  call assert_equal('python3', l:request.payload.target.alias)
+  call assert_equal('kernel', l:request.payload.target.kind)
 endfunction
 
 function! Test_adapter_builds_execute_cell_request_without_history_lines() abort
@@ -520,8 +640,17 @@ function! Test_adapter_builds_execute_cell_request_without_history_lines() abort
   call assert_equal('nb-' . bufnr('%'), l:request.payload.notebook_id)
   call assert_equal('sess-1', l:request.payload.session_id)
   call assert_equal(l:cell.id, l:request.payload.cell.id)
-  call assert_equal(['##', '%%sql main', 'select 1'], l:request.payload.cell.main_lines)
+  call assert_equal(['%%sql main', 'select 1'], l:request.payload.cell.main_lines)
   call assert_false(has_key(l:request.payload.cell, 'history_lines'))
+endfunction
+
+function! Test_cell_main_lines_excludes_opening_delimiter() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  let l:cell = jusi#notebook#cell_at_line(bufnr('%'), 2)
+  call assert_equal(['print("hello")'], jusi#notebook#cell_main_lines(l:cell))
 endfunction
 
 function! Test_adapter_builds_shutdown_client_request_envelope() abort
@@ -606,9 +735,14 @@ function! Test_start_kernel_uses_adapter_and_records_connected_session() abort
     call jusi#session#start('python3')
     let l:session = jusi#session#state()
     call assert_equal('connected', l:session.state)
+    call assert_equal('sess-start-1', l:session.id)
     call assert_equal('mock', l:session.backend)
     call assert_equal('python3', l:session.kernel_name)
     call assert_equal('mock://kernel/python3', l:session.connection)
+    call assert_equal('start', l:session.target.source)
+    call assert_equal('python3', l:session.target.alias)
+    call assert_equal('kernel', l:session.target.kind)
+    call assert_equal('', l:session.target.value)
     call assert_equal('start', l:session.last_action)
     call assert_equal('', l:session.last_error)
     call assert_equal('client-1', l:session.prepared.id)
@@ -617,6 +751,277 @@ function! Test_start_kernel_uses_adapter_and_records_connected_session() abort
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
+endfunction
+
+function! Test_start_kernel_request_includes_resolved_target() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_targets = get(g:, 'jusi_kernel_targets', {})
+  try
+    let g:jusi_session_adapter = {'request': function('s:test_request_adapter')}
+    let g:jusi_kernel_targets = {
+          \ 'py': {
+          \   'kind': 'venv',
+          \   'connection': 'venv://myenv1',
+          \   'label': 'local venv',
+          \   },
+          \ }
+    let s:last_request_envelope = {}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#start('py')
+    call assert_equal('start_session', get(s:last_request_envelope, 'type', ''))
+    call assert_equal('py', get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'alias', ''))
+    call assert_equal('venv', get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'kind', ''))
+    call assert_equal('venv://myenv1', get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'value', ''))
+    call assert_equal('local venv', get(get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'config', {}), 'label', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_kernel_targets = l:save_targets
+  endtry
+endfunction
+
+function! Test_start_kernel_alias_resolves_explicit_target_state() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_targets = get(g:, 'jusi_kernel_targets', {})
+  try
+    let g:jusi_session_adapter = {'start': function('s:test_session_adapter_start')}
+    let g:jusi_kernel_targets = {'py': 'venv://myenv1'}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#start('py')
+    let l:target = jusi#session#target()
+    call assert_equal('start', l:target.source)
+    call assert_equal('py', l:target.alias)
+    call assert_equal('venv', l:target.kind)
+    call assert_equal('venv://myenv1', l:target.value)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_kernel_targets = l:save_targets
+  endtry
+endfunction
+
+function! Test_start_kernel_alias_preserves_dict_target_config() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_targets = get(g:, 'jusi_kernel_targets', {})
+  try
+    let g:jusi_session_adapter = {'start': function('s:test_session_adapter_start')}
+    let g:jusi_kernel_targets = {
+          \ 'py': {
+          \   'kind': 'docker+ssh',
+          \   'connection': 'docker+ssh://user@host2/container3',
+          \   'label': 'remote container',
+          \   },
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#start('py')
+    let l:target = jusi#session#target()
+    call assert_equal('docker+ssh', l:target.kind)
+    call assert_equal('docker+ssh://user@host2/container3', l:target.value)
+    call assert_equal('remote container', get(l:target.config, 'label', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_kernel_targets = l:save_targets
+  endtry
+endfunction
+
+function! Test_start_kernel_persists_attach_registry_entry_for_durable_session() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_registry = get(g:, 'jusi_attach_registry_file', '')
+  try
+    let g:jusi_session_adapter = {'start': function('s:test_session_adapter_start')}
+    let g:jusi_attach_registry_file = tempname()
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    file project-start.vipynb
+    call jusi#session#start('python3')
+    let l:registry = jusi#session#attach_registry()
+    call assert_true(has_key(l:registry, 'project-start-kernel-start-1'))
+    call assert_equal('sess-start-1', get(l:registry['project-start-kernel-start-1'], 'session_id', ''))
+    call assert_equal('kernel', get(get(l:registry['project-start-kernel-start-1'], 'target', {}), 'kind', ''))
+    call assert_equal('project-start-kernel-start-1', get(jusi#session#state(), 'attach_name', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_attach_registry_file = l:save_registry
+  endtry
+endfunction
+
+function! Test_attach_records_explicit_target_state() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {'attach': function('s:test_session_adapter_attach')}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#attach('ssh://user@host1')
+    let l:session = jusi#session#state()
+    call assert_equal('connected', l:session.state)
+    call assert_equal('attach', l:session.target.source)
+    call assert_equal('ssh', l:session.target.kind)
+    call assert_equal('ssh://user@host1', l:session.target.value)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_attach_connection_file_uses_explicit_target_kind() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_registry = get(g:, 'jusi_attach_registry_file', '')
+  try
+    let g:jusi_session_adapter = {'request': function('s:test_request_adapter')}
+    let g:jusi_attach_registry_file = tempname()
+    let s:last_request_envelope = {}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#attach('/tmp/kernel-123.json')
+    call assert_equal('attach_session', get(s:last_request_envelope, 'type', ''))
+    call assert_equal('attach', get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'source', ''))
+    call assert_equal('connection_file', get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'kind', ''))
+    call assert_equal('/tmp/kernel-123.json', get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'value', ''))
+    call assert_equal('connection_file', get(get(b:jusi_nb.session, 'target', {}), 'kind', ''))
+    call assert_equal('/tmp/kernel-123.json', get(get(b:jusi_nb.session, 'target', {}), 'value', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_attach_registry_file = l:save_registry
+  endtry
+endfunction
+
+function! Test_attach_connection_file_persists_generated_registry_alias() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_registry = get(g:, 'jusi_attach_registry_file', '')
+  try
+    let g:jusi_session_adapter = {'attach': function('s:test_session_adapter_attach')}
+    let g:jusi_attach_registry_file = tempname()
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    file project-a.vipynb
+    call jusi#session#attach('/tmp/kernel-abc.json')
+    let l:target = jusi#session#target()
+    let l:registry = jusi#session#attach_registry()
+    call assert_true(has_key(l:registry, 'project-a-kernel-attach-1'))
+    call assert_equal('sess-attach-1', get(l:registry['project-a-kernel-attach-1'], 'session_id', ''))
+    call assert_equal('kernel-attach-1', get(l:registry['project-a-kernel-attach-1'], 'kernel_id', ''))
+    call assert_equal('/tmp/kernel-abc.json', get(get(l:registry['project-a-kernel-attach-1'], 'target', {}), 'value', ''))
+    call assert_equal('connection_file', get(get(l:registry['project-a-kernel-attach-1'], 'target', {}), 'kind', ''))
+    call assert_equal('attach', l:target.source)
+    call assert_equal('project-a-kernel-attach-1', get(jusi#session#state(), 'attach_name', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_attach_registry_file = l:save_registry
+  endtry
+endfunction
+
+function! Test_attach_connection_file_does_not_persist_registry_alias_without_session_id() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_registry = get(g:, 'jusi_attach_registry_file', '')
+  try
+    let g:jusi_session_adapter = {'attach': function('s:test_session_adapter_attach_without_ids')}
+    let g:jusi_attach_registry_file = tempname()
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    file project-b.vipynb
+    call jusi#session#attach('/tmp/kernel-noid.json')
+    let l:registry = jusi#session#attach_registry()
+    call assert_equal({}, l:registry)
+    call assert_equal('', get(jusi#session#state(), 'attach_name', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_attach_registry_file = l:save_registry
+  endtry
+endfunction
+
+function! Test_attach_connection_file_does_not_persist_registry_alias_before_backend_success() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_registry = get(g:, 'jusi_attach_registry_file', '')
+  try
+    let g:jusi_session_adapter = {'attach': function('s:test_session_adapter_reconnect_error')}
+    let g:jusi_attach_registry_file = tempname()
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#attach('/tmp/kernel-persist.json')
+    let l:registry = jusi#session#attach_registry()
+    call assert_equal({}, l:registry)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_attach_registry_file = l:save_registry
+  endtry
+endfunction
+
+function! Test_attach_registry_alias_resolves_to_connection_file_target() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_registry = get(g:, 'jusi_attach_registry_file', '')
+  try
+    let g:jusi_session_adapter = {'request': function('s:test_request_adapter')}
+    let g:jusi_attach_registry_file = tempname()
+    call writefile(['{"py-remote":{"session_id":"sess-1","kernel_id":"kernel-1","target":{"source":"attach","kind":"connection_file","value":"/tmp/kernel-remote.json","alias":"external-kernel"}}}'], g:jusi_attach_registry_file)
+    let s:last_request_envelope = {}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#attach('py-remote')
+    call assert_equal('reconnect_session', get(s:last_request_envelope, 'type', ''))
+    call assert_equal('sess-1', get(get(s:last_request_envelope, 'payload', {}), 'session_id', ''))
+    call assert_equal('py-remote', get(jusi#session#state(), 'attach_name', ''))
+    call assert_equal('connection_file', get(jusi#session#target(), 'kind', ''))
+    call assert_equal('/tmp/kernel-remote.json', get(jusi#session#target(), 'value', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_attach_registry_file = l:save_registry
+  endtry
+endfunction
+
+function! Test_reconnect_terminal_failure_removes_attach_registry_entry() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_registry = get(g:, 'jusi_attach_registry_file', '')
+  try
+    let g:jusi_session_adapter = {
+          \ 'reconnect': function('s:test_session_adapter_reconnect_error'),
+          \ }
+    let g:jusi_attach_registry_file = tempname()
+    call writefile(['{"py-remote":{"session_id":"sess-1","kernel_id":"kernel-1","target":{"kind":"connection_file","value":"/tmp/kernel-remote.json","alias":"py-remote"}}}'], g:jusi_attach_registry_file)
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.target = {'source': 'attach', 'alias': 'py-remote', 'kind': 'connection_file', 'value': '/tmp/kernel-remote.json', 'config': {}}
+    call jusi#session#set_disconnected()
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.target = {'source': 'attach', 'alias': 'py-remote', 'kind': 'connection_file', 'value': '/tmp/kernel-remote.json', 'config': {}}
+    call jusi#session#reconnect()
+    call assert_equal({}, jusi#session#attach_registry())
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_attach_registry_file = l:save_registry
+  endtry
+endfunction
+
+function! Test_session_callback_updates_expires_at() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  call jusi#session#callback_session({'state': 'disconnected', 'expires_at': '2030-01-01T00:00:00Z'})
+  call assert_equal('disconnected', b:jusi_nb.session.state)
+  call assert_equal('2030-01-01T00:00:00Z', b:jusi_nb.session.expires_at)
 endfunction
 
 function! Test_execute_requires_connected_session() abort
@@ -1271,18 +1676,102 @@ function! Test_disconnect_uses_disconnected_state_for_recoverable_link_loss() ab
   call assert_equal('missing', b:jusi_nb.session.prepared.state)
 endfunction
 
-function! Test_disconnect_requires_attachable_session() abort
+function! Test_notebook_quit_guard_allows_exit_without_active_sessions() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  call assert_equal(1, jusi#notebook#guard_quit(0))
+endfunction
+
+function! Test_notebook_quit_guard_blocks_normal_exit_with_active_session() abort
   call Test_open_scratch([
         \ '##',
         \ 'print("hello")',
         \ ])
   call jusi#session#set_connected()
-  call jusi#session#disconnect()
-  call assert_equal('failed', b:jusi_nb.session.state)
-  call assert_match('Cannot disconnect a non-attachable session', b:jusi_nb.session.last_error)
+  try
+    call jusi#notebook#guard_quit(0)
+    call assert_false(1)
+  catch /^jusi-quit-blocked$/
+  endtry
 endfunction
 
-function! Test_disconnect_attachable_session_uses_adapter_and_clears_prepared() abort
+function! Test_notebook_quit_guard_marks_skip_cleanup_for_forced_exit() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  call jusi#session#set_connected()
+  call assert_equal(1, jusi#notebook#guard_quit(1))
+  call assert_equal(1, getbufvar(bufnr('%'), 'jusi_skip_cleanup_once', 0))
+endfunction
+
+function! Test_notebook_wipeout_guard_blocks_normal_wipe_with_active_session() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  call jusi#session#set_connected()
+  try
+    call jusi#notebook#guard_wipeout(bufnr('%'), 0)
+    call assert_false(1)
+  catch /^jusi-wipeout-blocked$/
+  endtry
+endfunction
+
+function! Test_notebook_wipeout_guard_marks_skip_cleanup_for_forced_wipe() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  call jusi#session#set_connected()
+  call assert_equal(1, jusi#notebook#guard_wipeout(bufnr('%'), 1))
+  call assert_equal(1, getbufvar(bufnr('%'), 'jusi_skip_cleanup_once', 0))
+endfunction
+
+function! Test_cleanup_skips_transport_and_client_shutdown_when_marked_for_abandon() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_handler = get(g:, 'jusi_transport_handler', 0)
+  try
+    let s:shutdown_requests = []
+    let g:jusi_session_adapter = {
+          \ 'shutdown_client': function('s:test_session_adapter_shutdown_client_record'),
+          \ }
+    let g:jusi_transport_handler = 'TestTransportHandler'
+    let s:last_request_envelope = {}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#set_connected()
+    let b:jusi_nb.session.id = 'sess-1'
+    let l:client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = l:client
+    call jusi#client#mark_attached_buffer(bufnr('%'), b:jusi_nb.cells[0].id, 'client-1', l:client)
+    call setbufvar(bufnr('%'), 'jusi_skip_cleanup_once', 1)
+    call jusi#notebook#cleanup(bufnr('%'))
+    call assert_equal([], s:shutdown_requests)
+    call assert_true(bufexists(l:client))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_transport_handler = l:save_handler
+  endtry
+endfunction
+
+function! Test_disconnect_requires_connected_session() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  call jusi#session#disconnect()
+  call assert_equal('failed', b:jusi_nb.session.state)
+  call assert_match('Cannot disconnect unless the session is connected', b:jusi_nb.session.last_error)
+endfunction
+
+function! Test_disconnect_connected_session_uses_adapter_and_clears_prepared() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   try
     let g:jusi_session_adapter = {
@@ -1294,11 +1783,11 @@ function! Test_disconnect_attachable_session_uses_adapter_and_clears_prepared() 
           \ 'print("hello")',
           \ ])
     call jusi#session#start('python3')
-    let b:jusi_nb.session.attachable = 1
     call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'bufnr': 91})
     call jusi#session#disconnect()
     call assert_equal('disconnected', b:jusi_nb.session.state)
     call assert_equal('disconnect', b:jusi_nb.session.last_action)
+    call assert_equal('2030-01-01T00:00:00Z', b:jusi_nb.session.expires_at)
     call assert_equal('missing', b:jusi_nb.session.prepared.state)
     call assert_equal(-1, b:jusi_nb.session.prepared.bufnr)
   finally
@@ -1312,13 +1801,12 @@ function! Test_reconnect_requires_disconnected_session() abort
         \ 'print("hello")',
         \ ])
   call jusi#session#set_connected()
-  let b:jusi_nb.session.attachable = 1
   call jusi#session#reconnect()
   call assert_equal('failed', b:jusi_nb.session.state)
   call assert_match('Can only reconnect a disconnected session', b:jusi_nb.session.last_error)
 endfunction
 
-function! Test_reconnect_attachable_session_restores_binding_state() abort
+function! Test_reconnect_disconnected_session_restores_binding_state() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   try
     let g:jusi_session_adapter = {
@@ -1330,7 +1818,6 @@ function! Test_reconnect_attachable_session_restores_binding_state() abort
           \ ])
     call jusi#session#set_disconnected()
     let b:jusi_nb.session.id = 'sess-1'
-    let b:jusi_nb.session.attachable = 1
     call jusi#session#reconnect()
     call assert_equal('connected', b:jusi_nb.session.state)
     call assert_equal('reconnect', b:jusi_nb.session.last_action)
@@ -1341,7 +1828,7 @@ function! Test_reconnect_attachable_session_restores_binding_state() abort
   endtry
 endfunction
 
-function! Test_stop_kernel_moves_attachable_session_to_stopped() abort
+function! Test_stop_kernel_moves_disconnected_capable_session_to_stopped() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   try
     let g:jusi_session_adapter = {
@@ -1353,10 +1840,204 @@ function! Test_stop_kernel_moves_attachable_session_to_stopped() abort
           \ 'print("hello")',
           \ ])
     call jusi#session#start('python3')
-    let b:jusi_nb.session.attachable = 1
     call jusi#session#stop()
     call assert_equal('stopped', b:jusi_nb.session.state)
     call assert_equal('missing', b:jusi_nb.session.prepared.state)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_reconnect_failure_preserves_backend_error_code() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'reconnect': function('s:test_session_adapter_reconnect_error'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#set_disconnected()
+    let b:jusi_nb.session.id = 'sess-1'
+    call jusi#session#reconnect()
+    call assert_equal('failed', b:jusi_nb.session.state)
+    call assert_equal('session_expired', b:jusi_nb.session.last_error_code)
+    call assert_equal('Session expired', b:jusi_nb.session.last_error)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_restart_after_reconnect_failure_rebinds_prepared_and_executes_cleanly() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'start': function('s:test_session_adapter_start'),
+          \ 'disconnect': function('s:test_session_adapter_disconnect'),
+          \ 'reconnect': function('s:test_session_adapter_reconnect_error'),
+          \ 'execute': function('s:test_session_adapter_execute'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+
+    call jusi#session#start('python3')
+    call jusi#session#callback_prepared({'id': 'client-1', 'state': 'binding', 'bufnr': -1})
+    let l:first_prepared = b:jusi_nb.session.prepared.bufnr
+    call jusi#session#callback_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:first_prepared})
+    call jusi#session#execute_current()
+    call jusi#session#callback_prepared({'id': 'client-2', 'state': 'binding', 'bufnr': -1})
+    let l:next_prepared = b:jusi_nb.session.prepared.bufnr
+    call jusi#session#callback_prepared({'id': 'client-2', 'state': 'ready', 'client_state': 'active', 'bufnr': l:next_prepared})
+    call assert_true(bufexists(l:next_prepared))
+
+    call jusi#session#disconnect()
+    call assert_false(bufexists(l:next_prepared))
+
+    let b:jusi_nb.session.id = 'sess-1'
+    call jusi#session#reconnect()
+    call assert_equal('failed', b:jusi_nb.session.state)
+    call assert_equal('session_expired', b:jusi_nb.session.last_error_code)
+    call assert_equal('client-1', get(b:jusi_nb.cells[0], 'client_id', ''))
+    call assert_true(get(b:jusi_nb.cells[0], 'client_bufnr', -1) > 0)
+
+    call jusi#session#start('python3')
+    call assert_equal('', get(b:jusi_nb.cells[0], 'client_id', ''))
+    call assert_equal(-1, get(b:jusi_nb.cells[0], 'client_bufnr', -1))
+    call jusi#session#callback_prepared({'id': 'client-1', 'state': 'binding', 'bufnr': -1})
+    let l:restarted_prepared = b:jusi_nb.session.prepared.bufnr
+    call jusi#session#callback_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:restarted_prepared})
+    call jusi#session#execute_current()
+
+    call assert_equal('connected', b:jusi_nb.session.state)
+    call assert_equal('execute', b:jusi_nb.session.last_action)
+    call assert_equal('busy', b:jusi_nb.cells[0].status)
+    call assert_equal('client-1', b:jusi_nb.cells[0].client_id)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_disconnect_transport_response_updates_state_without_separate_event() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'request': function('s:test_transport_like_request_adapter'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#start('python3')
+    call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'bufnr': 91})
+    call jusi#session#disconnect()
+    call assert_equal('disconnected', b:jusi_nb.session.state)
+    call assert_equal('2030-01-01T00:00:00Z', b:jusi_nb.session.expires_at)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_reconnect_transport_response_updates_state_without_separate_event() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'request': function('s:test_transport_like_request_adapter'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#start('python3')
+    call jusi#session#disconnect()
+    call jusi#session#reconnect()
+    call assert_equal('connected', b:jusi_nb.session.state)
+    call assert_equal('reconnect', b:jusi_nb.session.last_action)
+    call assert_equal('client-2', b:jusi_nb.session.prepared.id)
+    call assert_equal('binding', b:jusi_nb.session.prepared.state)
+    call assert_equal('sess-1', get(get(s:last_request_envelope, 'payload', {}), 'session_id', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_transport_healthcheck_event_sends_reply_for_connected_session() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'request': function('s:test_request_adapter'),
+          \ }
+    let s:last_request_envelope = {}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#apply({
+          \ 'state': 'connected',
+          \ 'id': 'sess-1',
+          \ })
+    call jusi#transport#receive(bufnr('%'), {
+          \ 'kind': 'event',
+          \ 'type': 'healthcheck',
+          \ 'version': 1,
+          \ 'payload': {
+          \   'notebook_id': 'nb-' . bufnr('%'),
+          \   'session_id': 'sess-1',
+          \   'healthcheck_id': 'hc-1',
+          \   },
+          \ })
+    call assert_equal('healthcheck_reply', get(s:last_request_envelope, 'type', ''))
+    call assert_equal('sess-1', get(get(s:last_request_envelope, 'payload', {}), 'session_id', ''))
+    call assert_equal('hc-1', get(get(s:last_request_envelope, 'payload', {}), 'healthcheck_id', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_transport_healthcheck_event_ignores_unknown_or_inactive_session() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'request': function('s:test_request_adapter'),
+          \ }
+    let s:last_request_envelope = {}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#apply({
+          \ 'state': 'disconnected',
+          \ 'id': 'sess-1',
+          \ })
+    call jusi#transport#receive(bufnr('%'), {
+          \ 'kind': 'event',
+          \ 'type': 'healthcheck',
+          \ 'version': 1,
+          \ 'payload': {
+          \   'notebook_id': 'nb-' . bufnr('%'),
+          \   'session_id': 'sess-1',
+          \   'healthcheck_id': 'hc-1',
+          \   },
+          \ })
+    call assert_equal({}, s:last_request_envelope)
+
+    call jusi#session#apply({
+          \ 'state': 'connected',
+          \ 'id': 'sess-1',
+          \ })
+    call jusi#transport#receive(bufnr('%'), {
+          \ 'kind': 'event',
+          \ 'type': 'healthcheck',
+          \ 'version': 1,
+          \ 'payload': {
+          \   'notebook_id': 'nb-' . bufnr('%'),
+          \   'session_id': 'sess-2',
+          \   'healthcheck_id': 'hc-2',
+          \   },
+          \ })
+    call assert_equal({}, s:last_request_envelope)
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry

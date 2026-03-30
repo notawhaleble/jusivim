@@ -170,11 +170,43 @@ The plugin supports local kernel startup and kernel attachment workflows.
 Required properties:
 
 - a notebook can bind to a kernel session
+- a notebook can record the explicit target it was started or attached against
+- kernel aliases can be configured so `:JusiStartKernel <alias>` remains the primary start UX
 - a buffer can accurately reflect whether it is connected
 - attach workflows report clear success or failure
 - stopping a kernel or leaving the editor must not leave orphaned helper processes behind
+- ordinary quit and wipeout actions are blocked while active Jusi sessions still exist
+- forced quit and forced wipeout bypass graceful frontend cleanup instead of pretending teardown succeeded
 
 Session state must be explicit enough to recover from broken transport or broken backend conditions without leaving the editor in an unclear state.
+
+Current target-alias compatibility:
+
+- `g:jusi_kernel_targets` may map an alias to a raw target string such as `venv://myenv1`
+- it may also map an alias to a dict with target fields such as:
+  - `kind`
+  - `value` or `connection`
+  - `config`
+- current attach compatibility is intentionally narrower:
+  - `:JusiAttach {path}` treats a plain path as `target.kind=connection_file`
+  - a successful `connection_file` attach persists a readable alias in the frontend attach registry
+  - later `:JusiAttach {alias}` may resolve through that persisted registry instead of requiring the raw path again
+  - `:JusiAttach {scheme}://...` keeps using the explicit scheme-derived `kind`
+  - the registry file may be overridden with `g:jusi_attach_registry_file`
+
+Current durable-session compatibility:
+
+- frontend treats backend sessions as durable/reconnectable by default
+- disconnected sessions may carry `expires_at`
+- a disconnected session may already be fully timed out and gone by the time the user tries to reconnect
+- reconnect failures may surface backend error codes such as:
+  - `session_not_found`
+  - `session_stopped`
+  - `session_expired`
+- while a session is `connected`, backend may emit `healthcheck`
+- frontend answers `healthcheck` with `healthcheck_reply` only for the matching connected session
+- missed replies may move the backend session into the ordinary `disconnected` timeout path
+- suspended Vim may still look like link loss to backend healthchecks for now
 
 ## Failure Handling
 
@@ -186,6 +218,8 @@ This means:
 - no hidden requirement to call repair functions during normal use
 - no unclear half-connected state between cell, client buffer, and kernel
 - no orphaned background processes after normal exit, abnormal exit, or session shutdown
+- forced exit may preserve local recovery metadata such as attach aliases, but it does not guarantee backend session reconnectability
+- a fresh `:JusiStartKernel` or `:JusiAttach` in an existing notebook clears stale cell-runtime bindings before the new session becomes authoritative
 
 ## Performance Expectations
 

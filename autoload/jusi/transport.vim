@@ -141,6 +141,9 @@ function! s:on_message(bufnr, envelope) abort
             \ 'response': {
             \   'ok': get(a:envelope, 'ok', v:false) ? 1 : 0,
             \   'payload': get(a:envelope, 'payload', {}),
+            \   'error_code': has_key(a:envelope, 'error')
+            \     ? (type(a:envelope.error) == type({}) ? get(a:envelope.error, 'code', '') : '')
+            \     : '',
             \   'error': has_key(a:envelope, 'error')
             \     ? (type(a:envelope.error) == type({}) ? get(a:envelope.error, 'message', '') : a:envelope.error)
             \     : '',
@@ -171,6 +174,10 @@ function! s:on_message(bufnr, envelope) abort
   if l:type ==# 'cell_updated'
     let l:cell = get(l:payload, 'cell', {})
     call jusi#session#callback_cell(get(l:cell, 'id', 0), l:cell, a:bufnr)
+    return
+  endif
+  if l:type ==# 'healthcheck'
+    call jusi#session#callback_healthcheck(l:payload, a:bufnr)
     return
   endif
 endfunction
