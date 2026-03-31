@@ -49,6 +49,7 @@ function! s:request_type(op) abort
         \ 'execute': 'execute_cell',
         \ 'inspect_client': 'inspect_client',
         \ 'healthcheck_reply': 'healthcheck_reply',
+        \ 'handler_message': 'handler_message',
         \ 'interrupt': 'interrupt_cell',
         \ 'input_reply': 'input_reply',
         \ 'shutdown_client': 'shutdown_client',
@@ -145,6 +146,17 @@ function! s:request_payload(op, bufnr, payload) abort
           \ 'notebook_id': l:notebook_id,
           \ 'session_id': get(a:payload, 'session_id', l:session_id),
           \ 'healthcheck_id': get(a:payload, 'healthcheck_id', ''),
+          \ }
+  endif
+
+  if a:op ==# 'handler_message'
+    return {
+          \ 'notebook_id': l:notebook_id,
+          \ 'session_id': get(a:payload, 'session_id', l:session_id),
+          \ 'client_id': get(a:payload, 'client_id', ''),
+          \ 'handler_id': get(a:payload, 'handler_id', ''),
+          \ 'message_type': get(a:payload, 'message_type', ''),
+          \ 'payload': get(a:payload, 'payload', {}),
           \ }
   endif
 

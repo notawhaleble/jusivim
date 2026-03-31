@@ -150,6 +150,11 @@ function! s:update_cell_sign(bufnr, cell) abort
         \ . ' buffer=' . a:bufnr
 endfunction
 
+function! s:is_pty_handler_cell(cell) abort
+  return get(get(a:cell, 'owner', {}), 'kind', '') ==# 'handler'
+        \ && get(get(get(a:cell, 'handler', {}), 'snapshot', {}), 'transport', '') ==# 'pty'
+endfunction
+
 function! s:update_cell(bufnr, cell_id, update) abort
   let l:state = s:notebook_state(a:bufnr)
   if empty(l:state)
@@ -209,11 +214,15 @@ function! s:update_cell(bufnr, cell_id, update) abort
     if get(l:state.cells[l:idx], 'client_state', '') ==# 'active'
           \ && get(l:state.cells[l:idx], 'status', '') !=# 'initial'
       call jusi#focus#place_client_buffer(l:state.cells[l:idx].client_bufnr)
-      call jusi#client#schedule_attached_refresh(
-            \ a:bufnr,
-            \ l:state.cells[l:idx].id,
-            \ get(l:state.cells[l:idx], 'client_id', ''),
-            \ l:state.cells[l:idx].client_bufnr)
+      if s:is_pty_handler_cell(l:state.cells[l:idx])
+        call jusi#client#stop_refresh(l:state.cells[l:idx].client_bufnr)
+      else
+        call jusi#client#schedule_attached_refresh(
+              \ a:bufnr,
+              \ l:state.cells[l:idx].id,
+              \ get(l:state.cells[l:idx], 'client_id', ''),
+              \ l:state.cells[l:idx].client_bufnr)
+      endif
     endif
   endif
 
@@ -228,6 +237,7 @@ function! s:cell_close_reset_update() abort
         \ 'client_state': 'shutdown',
         \ 'client_bufnr': -1,
         \ 'close_requested': 0,
+        \ 'handler': {'id': '', 'last_message_type': '', 'payload': {}, 'snapshot': {}},
         \ 'pending_input': {},
         \ 'parked_status': '',
         \ }
@@ -236,6 +246,7 @@ endfunction
 function! s:cell_runtime_reset_update(cell) abort
   let l:update = extend(copy(s:cell_close_reset_update()), {
         \ 'client_id': '',
+        \ 'handler': {'id': '', 'last_message_type': '', 'payload': {}, 'snapshot': {}},
         \ 'owner': {'kind': ''},
         \ })
   let l:status = get(a:cell, 'status', 'initial')
@@ -1010,6 +1021,230 @@ function! jusi#session#callback_healthcheck(payload, ...) abort
   return l:session
 endfunction
 
+function! jusi#session#callback_client_updated(payload, ...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  let l:payload = type(a:payload) == type({}) ? a:payload : {}
+  let l:session = jusi#session#state(l:bufnr)
+  call s:debug_log(l:bufnr, 'callback-client-updated', l:payload, l:session)
+
+  if get(l:session, 'state', 'idle') !=# 'connected'
+    return l:session
+  endif
+  if empty(get(l:session, 'id', ''))
+        \ || get(l:payload, 'session_id', '') !=# get(l:session, 'id', '')
+        \ || empty(get(l:payload, 'client_id', ''))
+    return l:session
+  endif
+
+  let l:state = s:notebook_state(l:bufnr)
+  if empty(l:state)
+    return l:session
+  endif
+
+  for l:cell in copy(get(l:state, 'cells', []))
+    if get(l:cell, 'client_id', '') !=# get(l:payload, 'client_id', '')
+          \ || get(l:cell, 'client_bufnr', -1) < 0
+      continue
+    endif
+    if get(get(l:cell, 'owner', {}), 'kind', '') ==# 'handler'
+          \ && get(get(get(l:cell, 'handler', {}), 'snapshot', {}), 'transport', '') ==# 'pty'
+      return l:session
+    endif
+    let l:revision = get(l:payload, 'revision', -1)
+    if type(l:revision) == type(0)
+          \ && l:revision >= 0
+          \ && getbufvar(l:cell.client_bufnr, 'jusi_client_revision', -1) == l:revision
+      return l:session
+    endif
+    call jusi#client#schedule_attached_refresh(
+          \ l:bufnr,
+          \ l:cell.id,
+          \ get(l:cell, 'client_id', ''),
+          \ l:cell.client_bufnr)
+    return l:session
+  endfor
+
+  return l:session
+endfunction
+
+function! jusi#session#callback_handler_message(payload, ...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  let l:payload = type(a:payload) == type({}) ? a:payload : {}
+  let l:session = jusi#session#state(l:bufnr)
+  call s:debug_log(l:bufnr, 'callback-handler-message', l:payload, l:session)
+
+  if get(l:session, 'state', 'idle') !=# 'connected'
+    return l:session
+  endif
+  if empty(get(l:session, 'id', ''))
+        \ || get(l:payload, 'session_id', '') !=# get(l:session, 'id', '')
+        \ || empty(get(l:payload, 'client_id', ''))
+        \ || empty(get(l:payload, 'handler_id', ''))
+        \ || empty(get(l:payload, 'message_type', ''))
+    return l:session
+  endif
+
+  let l:state = s:notebook_state(l:bufnr)
+  if empty(l:state)
+    return l:session
+  endif
+
+  for l:cell in copy(get(l:state, 'cells', []))
+    if get(l:cell, 'client_id', '') !=# get(l:payload, 'client_id', '')
+      continue
+    endif
+    let l:handler_update = {
+          \ 'id': get(l:payload, 'handler_id', ''),
+          \ 'last_message_type': get(l:payload, 'message_type', ''),
+          \ 'payload': copy(get(l:payload, 'payload', {})),
+          \ 'snapshot': get(get(l:cell, 'handler', {}), 'snapshot', {}),
+          \ }
+    if get(l:payload, 'message_type', '') ==# 'handler_snapshot'
+      let l:handler_update.snapshot = copy(get(l:payload, 'payload', {}))
+    endif
+    if get(l:cell, 'client_bufnr', -1) > 0
+      if get(l:payload, 'message_type', '') ==# 'handler_snapshot'
+            \ && get(get(l:payload, 'payload', {}), 'transport', '') ==# 'pty'
+        call jusi#client#stop_refresh(l:cell.client_bufnr)
+      endif
+      if index(['terminal_input', 'terminal_output', 'terminal_prompt'], get(l:payload, 'message_type', '')) >= 0
+        call jusi#client#stop_refresh(l:cell.client_bufnr)
+      endif
+      call jusi#client#record_handler_message(
+            \ l:cell.client_bufnr,
+            \ get(l:payload, 'handler_id', ''),
+            \ get(l:payload, 'message_type', ''),
+            \ get(l:payload, 'payload', {}))
+      call jusi#client#apply_handler_terminal_message(
+            \ l:cell.client_bufnr,
+            \ get(l:payload, 'message_type', ''),
+            \ get(l:payload, 'payload', {}))
+    endif
+    call s:update_cell(l:bufnr, l:cell.id, {
+          \ 'handler': l:handler_update,
+          \ })
+    return jusi#notebook#state(l:bufnr)
+  endfor
+
+  let l:prepared = get(l:session, 'prepared', jusi#session#default_prepared_state())
+  if get(l:prepared, 'id', '') ==# get(l:payload, 'client_id', '')
+        \ && get(l:prepared, 'bufnr', -1) > 0
+    call jusi#client#record_handler_message(
+          \ l:prepared.bufnr,
+          \ get(l:payload, 'handler_id', ''),
+          \ get(l:payload, 'message_type', ''),
+          \ get(l:payload, 'payload', {}))
+    call jusi#client#apply_handler_terminal_message(
+          \ l:prepared.bufnr,
+          \ get(l:payload, 'message_type', ''),
+          \ get(l:payload, 'payload', {}))
+  endif
+
+  return l:session
+endfunction
+
+function! jusi#session#send_handler_message(client_id, handler_id, message_type, payload, ...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if !s:require_notebook_buffer(l:bufnr, 'send handler message')
+    return {}
+  endif
+
+  let l:session = jusi#session#state(l:bufnr)
+  if get(l:session, 'state', 'idle') !=# 'connected'
+    return s:fail_session(l:bufnr, {'last_action': 'handler_message'}, 'Cannot send handler message without a connected session')
+  endif
+  if empty(a:client_id) || empty(a:handler_id) || empty(a:message_type)
+    return s:fail_session(l:bufnr, {'last_action': 'handler_message'}, 'Handler message requires client_id, handler_id, and message_type')
+  endif
+
+  let l:response = jusi#adapter#call_async('handler_message', l:bufnr, {
+        \ 'client_id': a:client_id,
+        \ 'handler_id': a:handler_id,
+        \ 'message_type': a:message_type,
+        \ 'payload': type(a:payload) == type({}) ? copy(a:payload) : a:payload,
+        \ })
+  if get(l:response, 'ok', 0)
+    return l:response
+  endif
+  return s:fail_session(l:bufnr, {
+        \ 'last_action': 'handler_message',
+        \ }, get(l:response, 'error', 'Failed to send handler message'))
+endfunction
+
+function! s:current_handler_context(bufnr) abort
+  let l:session = jusi#session#state(a:bufnr)
+  if get(l:session, 'state', 'idle') !=# 'connected'
+    return {'ok': 0, 'error': 'Cannot send handler message without a connected session'}
+  endif
+
+  let l:cell = jusi#notebook#cell_at_line(a:bufnr, line('.'))
+  if empty(l:cell)
+    return {'ok': 0, 'error': 'Cannot send handler message without an active cell'}
+  endif
+  if get(get(l:cell, 'owner', {}), 'kind', '') !=# 'handler'
+    return {'ok': 0, 'error': 'Current cell is not handler-owned'}
+  endif
+
+  let l:handler = get(l:cell, 'handler', {})
+  let l:handler_id = get(l:handler, 'id', '')
+  if empty(l:handler_id)
+    return {'ok': 0, 'error': 'Current cell has no tracked handler id'}
+  endif
+  if empty(get(l:cell, 'client_id', ''))
+    return {'ok': 0, 'error': 'Current cell has no tracked handler client id'}
+  endif
+  if get(l:cell, 'client_bufnr', -1) < 0
+    return {'ok': 0, 'error': 'Current cell has no attached handler client buffer'}
+  endif
+
+  return {
+        \ 'ok': 1,
+        \ 'cell': l:cell,
+        \ 'handler_id': l:handler_id,
+        \ }
+endfunction
+
+function! jusi#session#bootstrap_handler_current() abort
+  let l:bufnr = s:normalize_bufnr(bufnr('%'))
+  if !s:require_notebook_buffer(l:bufnr, 'bootstrap handler')
+    return {}
+  endif
+
+  let l:ctx = s:current_handler_context(l:bufnr)
+  if !get(l:ctx, 'ok', 0)
+    return s:fail_session(l:bufnr, {'last_action': 'handler_message'}, get(l:ctx, 'error', 'Cannot bootstrap handler'))
+  endif
+
+  let l:cell = l:ctx.cell
+  return jusi#session#send_handler_message(
+        \ get(l:cell, 'client_id', ''),
+        \ get(l:ctx, 'handler_id', ''),
+        \ 'bootstrap_done',
+        \ {'bufnr': get(l:cell, 'client_bufnr', -1)},
+        \ l:bufnr)
+endfunction
+
+function! jusi#session#send_handler_input_current(...) abort
+  let l:bufnr = s:normalize_bufnr(bufnr('%'))
+  if !s:require_notebook_buffer(l:bufnr, 'send handler input')
+    return {}
+  endif
+
+  let l:ctx = s:current_handler_context(l:bufnr)
+  if !get(l:ctx, 'ok', 0)
+    return s:fail_session(l:bufnr, {'last_action': 'handler_message'}, get(l:ctx, 'error', 'Cannot send handler input'))
+  endif
+
+  let l:text = a:0 >= 1 && !empty(a:1) ? a:1 : input('handler> ')
+  let l:cell = l:ctx.cell
+  return jusi#session#send_handler_message(
+        \ get(l:cell, 'client_id', ''),
+        \ get(l:ctx, 'handler_id', ''),
+        \ 'send_input',
+        \ {'text': l:text},
+        \ l:bufnr)
+endfunction
+
 function! jusi#session#sync_client_view(bufnr, cell_id, client_id, view) abort
   let l:bufnr = s:normalize_bufnr(a:bufnr)
   let l:state = s:notebook_state(l:bufnr)
@@ -1371,11 +1606,22 @@ function! jusi#session#reply_input_current(...) abort
           \ })
     call s:update_cell(l:bufnr, l:cell.id, {'pending_input': {}})
     if get(l:cell, 'client_bufnr', -1) > 0
-      call jusi#client#schedule_attached_refresh(
-            \ l:bufnr,
-            \ l:cell.id,
-            \ get(l:cell, 'client_id', ''),
-            \ l:cell.client_bufnr)
+      let l:current_cell = {}
+      for l:item in get(getbufvar(l:bufnr, 'jusi_nb', {}), 'cells', [])
+        if get(l:item, 'id', 0) == l:cell.id
+          let l:current_cell = l:item
+          break
+        endif
+      endfor
+      if s:is_pty_handler_cell(l:current_cell)
+        call jusi#client#stop_refresh(l:cell.client_bufnr)
+      else
+        call jusi#client#schedule_attached_refresh(
+              \ l:bufnr,
+              \ l:cell.id,
+              \ get(l:cell, 'client_id', ''),
+              \ l:cell.client_bufnr)
+      endif
     endif
     return jusi#notebook#state(l:bufnr)
   endif

@@ -176,6 +176,14 @@ function! s:on_message(bufnr, envelope) abort
     call jusi#session#callback_cell(get(l:cell, 'id', 0), l:cell, a:bufnr)
     return
   endif
+  if l:type ==# 'client_updated'
+    call jusi#session#callback_client_updated(l:payload, a:bufnr)
+    return
+  endif
+  if l:type ==# 'handler_message'
+    call jusi#session#callback_handler_message(l:payload, a:bufnr)
+    return
+  endif
   if l:type ==# 'healthcheck'
     call jusi#session#callback_healthcheck(l:payload, a:bufnr)
     return

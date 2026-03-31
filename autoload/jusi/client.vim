@@ -17,6 +17,11 @@ function! s:stop_refresh_timer(bufnr) abort
   call setbufvar(a:bufnr, 'jusi_client_refresh_timer', -1)
 endfunction
 
+function! jusi#client#stop_refresh(bufnr) abort
+  call s:stop_refresh_timer(a:bufnr)
+  return getbufvar(a:bufnr, 'jusi_client_refresh_timer', -1)
+endfunction
+
 function! s:set_managed_vars(bufnr, notebook_bufnr, client_id, role, ...) abort
   if !s:is_valid_bufnr(a:bufnr)
     return
@@ -59,6 +64,87 @@ endfunction
 function! jusi#client#mark_attached_buffer(notebook_bufnr, cell_id, client_id, bufnr) abort
   call s:set_managed_vars(a:bufnr, a:notebook_bufnr, a:client_id, 'cell', a:cell_id)
   return a:bufnr
+endfunction
+
+function! jusi#client#record_handler_message(bufnr, handler_id, message_type, payload) abort
+  if !s:is_valid_bufnr(a:bufnr)
+    return 0
+  endif
+  call setbufvar(a:bufnr, 'jusi_handler_id', a:handler_id)
+  call setbufvar(a:bufnr, 'jusi_handler_last_message_type', a:message_type)
+  call setbufvar(a:bufnr, 'jusi_handler_last_payload', type(a:payload) == type({}) ? copy(a:payload) : a:payload)
+  return 1
+endfunction
+
+function! s:append_buffer_line(bufnr, line) abort
+  if !s:is_valid_bufnr(a:bufnr)
+    return 0
+  endif
+  let l:lines = getbufline(a:bufnr, 1, '$')
+  if empty(l:lines)
+    let l:lines = ['']
+  endif
+  if len(l:lines) == 1 && empty(l:lines[0])
+    call setbufvar(a:bufnr, '&modifiable', 1)
+    call setbufline(a:bufnr, 1, [a:line])
+    call setbufvar(a:bufnr, '&modified', 0)
+    call setbufvar(a:bufnr, '&modifiable', 0)
+    return 1
+  endif
+  call setbufvar(a:bufnr, '&modifiable', 1)
+  call appendbufline(a:bufnr, '$', [a:line])
+  call setbufvar(a:bufnr, '&modified', 0)
+  call setbufvar(a:bufnr, '&modifiable', 0)
+  return 1
+endfunction
+
+function! s:set_last_buffer_line(bufnr, line) abort
+  if !s:is_valid_bufnr(a:bufnr)
+    return 0
+  endif
+  call setbufvar(a:bufnr, '&modifiable', 1)
+  call setbufline(a:bufnr, '$', [a:line])
+  call setbufvar(a:bufnr, '&modified', 0)
+  call setbufvar(a:bufnr, '&modifiable', 0)
+  return 1
+endfunction
+
+function! jusi#client#apply_handler_terminal_message(bufnr, message_type, payload) abort
+  if !s:is_valid_bufnr(a:bufnr) || type(a:payload) != type({})
+    return 0
+  endif
+  let l:text = str2nr(0) is# 0 ? get(a:payload, 'text', '') : ''
+  let l:text = type(l:text) == type('') ? l:text : ''
+  if a:message_type ==# 'terminal_prompt'
+    if empty(l:text)
+      return 0
+    endif
+    let l:lines = getbufline(a:bufnr, 1, '$')
+    if len(l:lines) == 1 && empty(l:lines[0])
+      call s:set_last_buffer_line(a:bufnr, l:text)
+    elseif empty(l:lines) || l:lines[-1] !=# l:text
+      call s:append_buffer_line(a:bufnr, l:text)
+    endif
+    call setbufvar(a:bufnr, 'jusi_handler_terminal_prompt', l:text)
+    return 1
+  endif
+  if a:message_type ==# 'terminal_input'
+    let l:prompt = getbufvar(a:bufnr, 'jusi_handler_terminal_prompt', '')
+    if !empty(l:prompt) && getbufline(a:bufnr, '$')[0] ==# l:prompt
+      call s:set_last_buffer_line(a:bufnr, l:prompt . l:text)
+    elseif !empty(l:text)
+      call s:append_buffer_line(a:bufnr, l:text)
+    endif
+    call setbufvar(a:bufnr, 'jusi_handler_terminal_prompt', '')
+    return 1
+  endif
+  if a:message_type ==# 'terminal_output'
+    if !empty(l:text)
+      call s:append_buffer_line(a:bufnr, l:text)
+    endif
+    return 1
+  endif
+  return 0
 endfunction
 
 function! jusi#client#destroy_buffer(bufnr) abort
@@ -191,6 +277,10 @@ function! s:replace_buffer_lines(bufnr, lines) abort
 endfunction
 
 function! s:client_should_poll(cell) abort
+  if get(get(a:cell, 'owner', {}), 'kind', '') ==# 'handler'
+        \ && get(get(get(a:cell, 'handler', {}), 'snapshot', {}), 'transport', '') ==# 'pty'
+    return 0
+  endif
   return index(['busy', 'follow-up'], get(a:cell, 'status', '')) >= 0
         \ && get(a:cell, 'client_state', '') ==# 'active'
 endfunction

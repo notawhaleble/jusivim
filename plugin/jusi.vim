@@ -80,6 +80,8 @@ command! JusiInterruptKernel call jusi#session#interrupt()
 command! JusiCloseClient call jusi#session#close_current_client()
 command! JusiTogglePark call jusi#session#toggle_park_current_client()
 command! JusiToggleFocus call jusi#focus#toggle()
+command! JusiHandlerBootstrap call jusi#session#bootstrap_handler_current()
+command! -nargs=? JusiHandlerInput call jusi#session#send_handler_input_current(<q-args>)
 command! -nargs=? JusiDisconnect call jusi#session#disconnect(<q-args>)
 command! JusiReconnect call jusi#session#reconnect()
 command! JusiStopKernel call jusi#session#stop()
@@ -89,6 +91,7 @@ command! JusiCellModeToggle call jusi#cellmode#toggle()
 
 augroup jusi_notebook
   au!
+  au FileType jusinb runtime! ftplugin/jusinb.vim | call jusi#cellmode#refresh(expand('<abuf>'))
   au QuitPre * call jusi#notebook#guard_quit()
   au BufReadPost,BufNewFile *.vipynb call jusi#notebook#rebuild(expand('<abuf>'))
   au TextChanged *.vipynb call jusi#notebook#handle_text_changed(expand('<abuf>'))

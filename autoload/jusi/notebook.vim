@@ -267,6 +267,7 @@ function! s:init_runtime_cell(parsed, state) abort
   let l:cell.id = s:new_cell_id(a:state)
   let l:cell.status = 'initial'
   let l:cell.pending_input = {}
+  let l:cell.handler = {'id': '', 'last_message_type': '', 'payload': {}, 'snapshot': {}}
   let l:cell.parked_status = ''
   let l:cell.sign_id = 0
   let l:cell.client_id = ''
@@ -283,6 +284,7 @@ function! s:merge_runtime_cell(prev, parsed) abort
   let l:cell.id = get(a:prev, 'id', 0)
   let l:cell.status = get(a:prev, 'status', 'initial')
   let l:cell.pending_input = copy(get(a:prev, 'pending_input', {}))
+  let l:cell.handler = copy(get(a:prev, 'handler', {'id': '', 'last_message_type': '', 'payload': {}, 'snapshot': {}}))
   let l:cell.parked_status = get(a:prev, 'parked_status', '')
   let l:cell.sign_id = get(a:prev, 'sign_id', 0)
   let l:cell.client_id = get(a:prev, 'client_id', '')
