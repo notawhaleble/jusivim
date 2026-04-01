@@ -3,7 +3,7 @@ scriptencoding utf-8
 let s:sign_group = 'jusi_cells'
 let s:sign_specs = {
       \ 'initial': {'text': 'JusiSignInitial', 'line': 'JusiSignLineInitial', 'fg': 'Yellow', 'guifg': '#d7af00', 'bg': '#d7af00', 'ctermfg_active': 'Black', 'guifg_active': '#000000'},
-      \ 'follow-up': {'text': 'JusiSignFollowup', 'line': 'JusiSignLineFollowup', 'fg': 'LightMagenta', 'guifg': '#ff66cc', 'bg': '#ff66cc', 'ctermfg_active': 'White', 'guifg_active': '#ffffff'},
+      \ 'follow-up': {'text': 'JusiSignFollowup', 'line': 'JusiSignLineFollowup', 'fg': 'DarkCyan', 'guifg': '#0087af', 'bg': '#00b7d7', 'ctermfg_active': 'Black', 'guifg_active': '#000000'},
       \ 'busy': {'text': 'JusiSignBusy', 'line': 'JusiSignLineBusy', 'fg': 'Magenta', 'guifg': '#ff00ff', 'bg': '#ff00ff', 'ctermfg_active': 'White', 'guifg_active': '#ffffff'},
       \ 'done': {'text': 'JusiSignDone', 'line': 'JusiSignLineDone', 'fg': 'Green', 'guifg': '#00af00', 'bg': '#00ff00', 'ctermfg_active': 'Black', 'guifg_active': '#000000'},
       \ 'error': {'text': 'JusiSignError', 'line': 'JusiSignLineError', 'fg': 'Red', 'guifg': '#ff0000', 'bg': '#ff0000', 'ctermfg_active': 'White', 'guifg_active': '#ffffff'},

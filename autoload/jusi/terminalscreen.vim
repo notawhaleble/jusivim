@@ -18,6 +18,10 @@ function! s:blank_line(cols) abort
   return repeat(' ', max([1, a:cols]))
 endfunction
 
+function! s:scrollback_limit() abort
+  return max([0, get(g:, 'jusi_terminal_scrollback_lines', 1000)])
+endfunction
+
 function! s:default_state(bufnr) abort
   let l:rows = max([1, getbufvar(a:bufnr, 'jusi_terminal_rows', 24)])
   let l:cols = max([1, getbufvar(a:bufnr, 'jusi_terminal_cols', 80)])
@@ -31,6 +35,8 @@ function! s:default_state(bufnr) abort
         \ 'scroll_top': 0,
         \ 'scroll_bottom': l:rows - 1,
         \ 'cursor_visible': 1,
+        \ 'scrollback': [],
+        \ 'alt_active': 0,
         \ 'lines': [s:blank_line(l:cols)],
         \ 'esc_state': '',
         \ 'csi': '',
@@ -58,6 +64,8 @@ function! s:state(bufnr) abort
   let l:state.scroll_top = max([0, get(l:state, 'scroll_top', 0)])
   let l:state.scroll_bottom = min([l:state.rows - 1, max([l:state.scroll_top, get(l:state, 'scroll_bottom', l:state.rows - 1)])])
   let l:state.cursor_visible = get(l:state, 'cursor_visible', 1) ? 1 : 0
+  let l:state.scrollback = type(get(l:state, 'scrollback', [])) == type([]) ? get(l:state, 'scrollback', []) : []
+  let l:state.alt_active = get(l:state, 'alt_active', 0) ? 1 : 0
   if type(get(l:state, 'lines', [])) != type([])
     let l:state.lines = []
   endif
@@ -86,25 +94,98 @@ function! s:ensure_line(state, row) abort
   endwhile
 endfunction
 
+function! s:append_scrollback(state, line) abort
+  if get(a:state, 'alt_active', 0)
+    return
+  endif
+  let l:limit = s:scrollback_limit()
+  if l:limit <= 0
+    return
+  endif
+  call add(a:state.scrollback, a:line)
+  if len(a:state.scrollback) > l:limit
+    call remove(a:state.scrollback, 0, len(a:state.scrollback) - l:limit - 1)
+  endif
+endfunction
+
+function! s:visible_window_views(bufnr, line_count) abort
+  let l:current = win_getid()
+  let l:views = []
+  for l:info in getwininfo()
+    if get(l:info, 'bufnr', 0) != a:bufnr
+      continue
+    endif
+    if !win_gotoid(get(l:info, 'winid', 0))
+      continue
+    endif
+    let l:view = winsaveview()
+    let l:follow_tail = line('w$') >= max([1, a:line_count]) ? 1 : 0
+    call setwinvar(win_getid(), 'jusi_terminal_follow_tail', l:follow_tail)
+    call add(l:views, {
+          \ 'winid': win_getid(),
+          \ 'view': l:view,
+          \ 'follow_tail': l:follow_tail,
+          \ })
+  endfor
+  if l:current > 0
+    call win_gotoid(l:current)
+  endif
+  return l:views
+endfunction
+
+function! s:restore_visible_window_views(bufnr, views, line_count, follow_tail) abort
+  let l:current = win_getid()
+  for l:item in a:views
+    if !win_gotoid(get(l:item, 'winid', 0))
+      continue
+    endif
+    if a:follow_tail && get(l:item, 'follow_tail', 0)
+      let l:view = {
+            \ 'lnum': a:line_count,
+            \ 'col': 1,
+            \ 'curswant': 1,
+            \ 'leftcol': 0,
+            \ 'topline': max([1, a:line_count - winheight(0) + 1]),
+            \ }
+      call winrestview(l:view)
+      call setwinvar(win_getid(), 'jusi_terminal_follow_tail', 1)
+    else
+      call winrestview(get(l:item, 'view', {}))
+      call setwinvar(win_getid(), 'jusi_terminal_follow_tail', 0)
+    endif
+  endfor
+  if l:current > 0
+    call win_gotoid(l:current)
+  endif
+endfunction
+
 function! s:render(bufnr, state) abort
   if !s:is_valid_bufnr(a:bufnr)
     return 0
   endif
-  let l:lines = copy(a:state.lines)
-  while len(l:lines) < a:state.rows
-    call add(l:lines, s:blank_line(a:state.cols))
+  let l:existing = len(getbufline(a:bufnr, 1, '$'))
+  let l:window_views = s:is_visible_bufnr(a:bufnr)
+        \ ? s:visible_window_views(a:bufnr, l:existing)
+        \ : []
+  let l:screen_lines = copy(a:state.lines)
+  while len(l:screen_lines) < a:state.rows
+    call add(l:screen_lines, s:blank_line(a:state.cols))
   endwhile
-  if len(l:lines) > a:state.rows
-    call remove(l:lines, a:state.rows, -1)
+  if len(l:screen_lines) > a:state.rows
+    call remove(l:screen_lines, a:state.rows, -1)
   endif
-  if get(a:state, 'cursor_visible', 1) && s:is_visible_bufnr(a:bufnr)
-    let l:cursor_row = min([len(l:lines) - 1, max([0, get(a:state, 'cursor_row', 0)])])
+  let l:visible = s:is_visible_bufnr(a:bufnr)
+  let l:lines = l:visible && !get(a:state, 'alt_active', 0)
+        \ ? copy(get(a:state, 'scrollback', [])) + l:screen_lines
+        \ : copy(l:screen_lines)
+  if get(a:state, 'cursor_visible', 1) && l:visible
+    let l:cursor_offset = l:visible && !get(a:state, 'alt_active', 0) ? len(get(a:state, 'scrollback', [])) : 0
+    let l:cursor_row = min([len(l:lines) - 1, l:cursor_offset + max([0, get(a:state, 'cursor_row', 0)])])
     let l:cursor_col = min([a:state.cols - 1, max([0, get(a:state, 'cursor_col', 0)])])
     let l:chars = s:line_chars(l:lines[l:cursor_row], a:state.cols)
     let l:chars[l:cursor_col] = '█'
     let l:lines[l:cursor_row] = join(l:chars, '')
   endif
-  let l:existing = len(getbufline(a:bufnr, 1, '$'))
   call setbufvar(a:bufnr, '&modifiable', 1)
   call setbufline(a:bufnr, 1, l:lines)
   if l:existing > len(l:lines)
@@ -112,6 +193,9 @@ function! s:render(bufnr, state) abort
   endif
   call setbufvar(a:bufnr, '&modified', 0)
   call setbufvar(a:bufnr, '&modifiable', 0)
+  if !empty(l:window_views)
+    call s:restore_visible_window_views(a:bufnr, l:window_views, len(l:lines), !get(a:state, 'alt_active', 0))
+  endif
   return 1
 endfunction
 
@@ -221,6 +305,9 @@ function! s:newline(state) abort
   let l:bottom = min([a:state.rows - 1, max([l:top, get(a:state, 'scroll_bottom', a:state.rows - 1)])])
   if a:state.cursor_row ==# l:bottom
     if l:top < len(a:state.lines)
+      if l:top ==# 0 && l:bottom ==# a:state.rows - 1
+        call s:append_scrollback(a:state, a:state.lines[l:top])
+      endif
       call remove(a:state.lines, l:top)
       call insert(a:state.lines, s:blank_line(a:state.cols), l:bottom)
     endif
@@ -238,6 +325,9 @@ function! s:index(state) abort
   if a:state.cursor_row > l:bottom
     let a:state.cursor_row = l:bottom
     if l:top < len(a:state.lines)
+      if l:top ==# 0 && l:bottom ==# a:state.rows - 1
+        call s:append_scrollback(a:state, a:state.lines[l:top])
+      endif
       call remove(a:state.lines, l:top)
       call insert(a:state.lines, s:blank_line(a:state.cols), l:bottom)
     endif
@@ -531,6 +621,7 @@ function! s:handle_csi(state, seq) abort
         elseif index([47, 1047, 1049], l:mode) >= 0
           if l:enable
             let a:state.alt_screen = {
+                  \ 'scrollback': copy(get(a:state, 'scrollback', [])),
                   \ 'lines': copy(a:state.lines),
                   \ 'cursor_row': a:state.cursor_row,
                   \ 'cursor_col': a:state.cursor_col,
@@ -539,12 +630,15 @@ function! s:handle_csi(state, seq) abort
                   \ 'scroll_top': a:state.scroll_top,
                   \ 'scroll_bottom': a:state.scroll_bottom,
                   \ }
+            let a:state.alt_active = 1
             let a:state.lines = repeat([s:blank_line(a:state.cols)], a:state.rows)
             let a:state.cursor_row = 0
             let a:state.cursor_col = 0
             let a:state.scroll_top = 0
             let a:state.scroll_bottom = a:state.rows - 1
           elseif !empty(a:state.alt_screen)
+            let a:state.alt_active = 0
+            let a:state.scrollback = copy(get(a:state.alt_screen, 'scrollback', []))
             let a:state.lines = copy(get(a:state.alt_screen, 'lines', [s:blank_line(a:state.cols)]))
             let a:state.cursor_row = get(a:state.alt_screen, 'cursor_row', 0)
             let a:state.cursor_col = get(a:state.alt_screen, 'cursor_col', 0)
@@ -610,6 +704,15 @@ function! jusi#terminalscreen#resize(bufnr, rows, cols) abort
   return s:render(a:bufnr, l:state)
 endfunction
 
+function! jusi#terminalscreen#refresh(bufnr) abort
+  if !s:is_valid_bufnr(a:bufnr)
+    return 0
+  endif
+  let l:state = s:state(a:bufnr)
+  call s:save_state(a:bufnr, l:state)
+  return s:render(a:bufnr, l:state)
+endfunction
+
 function! jusi#terminalscreen#reset(bufnr, ...) abort
   if !s:is_valid_bufnr(a:bufnr)
     return 0
@@ -619,6 +722,8 @@ function! jusi#terminalscreen#reset(bufnr, ...) abort
   let l:state = s:default_state(a:bufnr)
   let l:state.rows = l:rows
   let l:state.cols = l:cols
+  let l:state.scrollback = []
+  let l:state.alt_active = 0
   let l:state.scroll_top = 0
   let l:state.scroll_bottom = l:rows - 1
   call s:clear_screen(l:state)
@@ -763,6 +868,7 @@ function! jusi#terminalscreen#debug_state(bufnr) abort
   return {
         \ 'rows': get(l:state, 'rows', 0),
         \ 'cols': get(l:state, 'cols', 0),
+        \ 'scrollback_len': len(get(l:state, 'scrollback', [])),
         \ 'cursor_row': get(l:state, 'cursor_row', 0),
         \ 'cursor_col': get(l:state, 'cursor_col', 0),
         \ 'scroll_top': get(l:state, 'scroll_top', 0),

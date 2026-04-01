@@ -8,6 +8,11 @@ function! s:apply_client_window_options() abort
     return 0
   endif
   setlocal nonumber norelativenumber
+  nnoremap <silent> <buffer> <C-\><C-\> :JusiToggleFocus<CR>
+  inoremap <silent> <buffer> <C-\><C-\> <C-R>=jusi#focus#toggle()<CR>
+  if exists('*jusi#terminalscreen#refresh')
+    call jusi#terminalscreen#refresh(bufnr('%'))
+  endif
   return 1
 endfunction
 

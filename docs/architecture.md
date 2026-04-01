@@ -312,6 +312,13 @@ Binding rules:
 
 Failure to create or reuse a client buffer must produce a clear state transition and user-visible error.
 
+PTY-backed handler clients should now be treated as screen projections rather than transcripts:
+
+- pushed `terminal_bytes` mutate a terminal screen model first
+- the client buffer is a redraw target for that model
+- visible non-alternate PTY clients may project scrollback above the current screen
+- notebook terminal-mode is only an input-routing mode; PTY geometry and redraw belong to the client buffer side
+
 ## Lifecycle And Cleanup
 
 Lifecycle behavior must be explicit and robust.

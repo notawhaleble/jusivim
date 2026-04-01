@@ -1,5 +1,25 @@
 source test/helpers.vim
 
+function! s:terminal_visible_line(line) abort
+  return substitute(a:line, '█', '', 'g')
+endfunction
+
+function! s:terminal_visible_trim(line) abort
+  return substitute(s:terminal_visible_line(a:line), '\s\+$', '', '')
+endfunction
+
+function! s:terminal_hide_cursor(bufnr) abort
+  let l:state = getbufvar(a:bufnr, 'jusi_terminal_screen', {})
+  if type(l:state) != type({})
+    return
+  endif
+  let l:state.cursor_visible = 0
+  call setbufvar(a:bufnr, 'jusi_terminal_screen', l:state)
+  if exists('*jusi#terminalscreen#refresh')
+    call jusi#terminalscreen#refresh(a:bufnr)
+  endif
+endfunction
+
 function! Test_parser_detects_cells_and_magic() abort
   let l:parsed = jusi#notebook#parse_lines([
         \ '##',
@@ -2207,11 +2227,12 @@ function! Test_handler_terminal_bytes_preserve_status_line_outside_scroll_region
         \   },
         \ })
 
+  call s:terminal_hide_cursor(l:client)
   let l:lines = getbufline(l:client, 1, '$')
-  call assert_equal('two', substitute(l:lines[0], '\s\+$', '', ''))
-  call assert_equal('three', substitute(l:lines[1], '\s\+$', '', ''))
-  call assert_equal('', substitute(l:lines[2], '\s\+$', '', ''))
-  call assert_equal(':', substitute(l:lines[3], '\s\+$', '', ''))
+  call assert_equal('two', s:terminal_visible_trim(l:lines[0]))
+  call assert_equal('three', s:terminal_visible_trim(l:lines[1]))
+  call assert_equal('', s:terminal_visible_trim(l:lines[2]))
+  call assert_equal(':', s:terminal_visible_trim(l:lines[3]))
 endfunction
 
 function! Test_handler_terminal_bytes_support_alternate_screen_restore() abort
@@ -2284,11 +2305,12 @@ function! Test_handler_terminal_bytes_support_clear_screen() abort
         \   },
         \ })
 
+  call s:terminal_hide_cursor(l:client)
   let l:lines = getbufline(l:client, 1, '$')
-  call assert_equal('clear-ok', substitute(l:lines[0], '\s\+$', '', ''))
-  call assert_equal('', substitute(l:lines[1], '\s\+$', '', ''))
-  call assert_equal('', substitute(l:lines[2], '\s\+$', '', ''))
-  call assert_equal('', substitute(l:lines[3], '\s\+$', '', ''))
+  call assert_equal('clear-ok', s:terminal_visible_trim(l:lines[0]))
+  call assert_equal('', s:terminal_visible_trim(l:lines[1]))
+  call assert_equal('', s:terminal_visible_trim(l:lines[2]))
+  call assert_equal('', s:terminal_visible_trim(l:lines[3]))
 endfunction
 
 function! Test_handler_terminal_bytes_support_cursor_home_before_clear_screen() abort
@@ -2324,11 +2346,12 @@ function! Test_handler_terminal_bytes_support_cursor_home_before_clear_screen() 
         \   },
         \ })
 
+  call s:terminal_hide_cursor(l:client)
   let l:lines = getbufline(l:client, 1, '$')
-  call assert_equal('clear-ok', substitute(l:lines[0], '\s\+$', '', ''))
-  call assert_equal('', substitute(l:lines[1], '\s\+$', '', ''))
-  call assert_equal('', substitute(l:lines[2], '\s\+$', '', ''))
-  call assert_equal('', substitute(l:lines[3], '\s\+$', '', ''))
+  call assert_equal('clear-ok', s:terminal_visible_trim(l:lines[0]))
+  call assert_equal('', s:terminal_visible_trim(l:lines[1]))
+  call assert_equal('', s:terminal_visible_trim(l:lines[2]))
+  call assert_equal('', s:terminal_visible_trim(l:lines[3]))
 endfunction
 
 function! Test_handler_terminal_bytes_render_utf8_cyrillic() abort
@@ -2364,8 +2387,9 @@ function! Test_handler_terminal_bytes_render_utf8_cyrillic() abort
         \   },
         \ })
 
+  call s:terminal_hide_cursor(l:client)
   let l:lines = getbufline(l:client, 1, '$')
-  call assert_equal('Привет', substitute(l:lines[0], '\s\+$', '', ''))
+  call assert_equal('Привет', s:terminal_visible_trim(l:lines[0]))
 endfunction
 
 function! Test_handler_terminal_bytes_render_visible_cursor_overlay() abort
@@ -2399,6 +2423,133 @@ function! Test_handler_terminal_bytes_render_visible_cursor_overlay() abort
         \ })
 
   call assert_equal(['ab█'], getbufline(l:client, 1, '$'))
+endfunction
+
+function! Test_handler_terminal_bytes_visible_client_renders_scrollback() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd pods',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+  call jusi#session#apply({'state': 'connected', 'id': 'sess-1'})
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  let b:jusi_nb.cells[0].handler = {'id': 'vd', 'last_message_type': 'handler_snapshot', 'payload': {}, 'snapshot': {'transport': 'pty'}}
+
+  call jusi#terminalscreen#resize(l:client, 2, 8)
+  call jusi#focus#place_client_buffer(l:client, 'bsplit', 0)
+  call cursor(1, 1)
+  call jusi#transport#receive(l:notebook, {
+        \ 'kind': 'event',
+        \ 'type': 'handler_message',
+        \ 'version': 1,
+        \ 'payload': {
+        \   'notebook_id': 'nb-' . l:notebook,
+        \   'session_id': 'sess-1',
+        \   'client_id': 'client-1',
+        \   'handler_id': 'vd',
+        \   'message_type': 'terminal_bytes',
+        \   'payload': {'hex': '6f6e650d0a74776f0d0a7468726565'},
+        \   },
+        \ })
+
+  call assert_equal(['one', 'two', 'three█'], getbufline(l:client, 1, '$'))
+  call win_gotoid(bufwinid(l:notebook))
+endfunction
+
+function! Test_handler_terminal_bytes_visible_client_follows_scrollback_tail() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd pods',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+  call jusi#session#apply({'state': 'connected', 'id': 'sess-1'})
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  let b:jusi_nb.cells[0].handler = {'id': 'vd', 'last_message_type': 'handler_snapshot', 'payload': {}, 'snapshot': {'transport': 'pty'}}
+
+  call jusi#terminalscreen#resize(l:client, 2, 8)
+  call jusi#focus#place_client_buffer(l:client, 'bsplit', 0)
+  resize 2
+  call jusi#transport#receive(l:notebook, {
+        \ 'kind': 'event',
+        \ 'type': 'handler_message',
+        \ 'version': 1,
+        \ 'payload': {
+        \   'notebook_id': 'nb-' . l:notebook,
+        \   'session_id': 'sess-1',
+        \   'client_id': 'client-1',
+        \   'handler_id': 'vd',
+        \   'message_type': 'terminal_bytes',
+        \   'payload': {'hex': '6f6e650d0a74776f0d0a74687265650d0a666f7572'},
+        \   },
+        \ })
+
+  let l:view = winsaveview()
+  call assert_equal(4, l:view.lnum)
+  call win_gotoid(bufwinid(l:notebook))
+endfunction
+
+function! Test_handler_terminal_bytes_visible_client_preserves_manual_scrollback_view() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd pods',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+  call jusi#session#apply({'state': 'connected', 'id': 'sess-1'})
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  let b:jusi_nb.cells[0].handler = {'id': 'vd', 'last_message_type': 'handler_snapshot', 'payload': {}, 'snapshot': {'transport': 'pty'}}
+
+  call jusi#terminalscreen#resize(l:client, 2, 8)
+  call jusi#focus#place_client_buffer(l:client, 'bsplit', 0)
+  call jusi#transport#receive(l:notebook, {
+        \ 'kind': 'event',
+        \ 'type': 'handler_message',
+        \ 'version': 1,
+        \ 'payload': {
+        \   'notebook_id': 'nb-' . l:notebook,
+        \   'session_id': 'sess-1',
+        \   'client_id': 'client-1',
+        \   'handler_id': 'vd',
+        \   'message_type': 'terminal_bytes',
+        \   'payload': {'hex': '6c30310d0a6c30320d0a6c30330d0a6c30340d0a6c30350d0a6c30360d0a6c30370d0a6c30380d0a6c30390d0a6c31300d0a6c31310d0a6c31320d0a6c31330d0a6c31340d0a6c31350d0a6c31360d0a6c31370d0a6c31380d0a6c31390d0a6c3230'},
+        \   },
+        \ })
+
+  call cursor(1, 1)
+  normal! zt
+
+  call jusi#transport#receive(l:notebook, {
+        \ 'kind': 'event',
+        \ 'type': 'handler_message',
+        \ 'version': 1,
+        \ 'payload': {
+        \   'notebook_id': 'nb-' . l:notebook,
+        \   'session_id': 'sess-1',
+        \   'client_id': 'client-1',
+        \   'handler_id': 'vd',
+        \   'message_type': 'terminal_bytes',
+        \   'payload': {'hex': '0d0a6c3231'},
+        \   },
+        \ })
+
+  let l:view = winsaveview()
+  call assert_equal(1, l:view.topline)
+  call assert_equal(1, l:view.lnum)
+  call win_gotoid(bufwinid(l:notebook))
 endfunction
 
 function! Test_handler_terminal_bytes_ignore_osc_and_charset_sequences() abort
@@ -4082,6 +4233,7 @@ function! Test_default_buffer_mappings_exist() abort
   call assert_equal(':JusiCellCopy<CR>', maparg('<leader>y', 'n', 0, 1).rhs)
   call assert_equal(':JusiCellPasteBelow<CR>', maparg('<leader>p', 'n', 0, 1).rhs)
   call assert_equal(':JusiTogglePark<CR>', maparg('<leader>s', 'n', 0, 1).rhs)
+  call assert_equal(':JusiTerminalModeToggle<CR>', maparg('<leader><Space>', 'n', 0, 1).rhs)
   call assert_equal(':JusiToggleFocus<CR>', maparg("\<C-\\>\<C-\\>", 'n', 0, 1).rhs)
   call assert_equal('', maparg(']]', 'n'))
   call assert_equal('', maparg('[[', 'n'))
@@ -4105,7 +4257,8 @@ function! Test_cell_mode_toggle_maps_navigation_keys() abort
   call assert_equal(1, get(b:, 'jusi_cell_mode', 0))
   call assert_equal(':<C-U>execute "JusiCellNext"<CR>', maparg('j', 'n', 0, 1).rhs)
   call assert_equal(':<C-U>execute "JusiCellPrev"<CR>', maparg('k', 'n', 0, 1).rhs)
-  call assert_equal(':JusiTerminalModeEnter<CR>', maparg('J', 'n', 0, 1).rhs)
+  call assert_equal('', maparg('J', 'n'))
+  call assert_equal(':JusiTerminalModeToggle<CR>', maparg('<leader><Space>', 'n', 0, 1).rhs)
   call assert_equal(':JusiCellNewBelow<CR>', maparg('B', 'n', 0, 1).rhs)
   call assert_equal(':JusiCellNewAbove<CR>', maparg('A', 'n', 0, 1).rhs)
   call assert_equal(':JusiCellDelete<CR>', maparg('X', 'n', 0, 1).rhs)
@@ -4142,6 +4295,7 @@ function! Test_terminal_mode_enters_for_pty_followup_handler_and_restores_mode_m
   call assert_equal('-- JUSI TERMINAL --', jusi#cellmode#indicator_text())
   call assert_equal(':<C-U>call jusi#terminalmode#send_text(''j'')<CR>', maparg('j', 'n', 0, 1).rhs)
   call assert_equal(':<C-U>call jusi#terminalmode#send_lhs(''K'')<CR>', maparg('K', 'n', 0, 1).rhs)
+  call assert_equal(':JusiTerminalModeToggle<CR>', maparg('<leader><Space>', 'n', 0, 1).rhs)
   call assert_equal(':<C-U>call jusi#terminalmode#send_ctrl(''h'')<CR>', maparg('<C-H>', 'n', 0, 1).rhs)
   call assert_equal(':<C-U>call jusi#terminalmode#send_ctrl(''j'')<CR>', maparg('<C-J>', 'n', 0, 1).rhs)
   call assert_equal(':<C-U>call jusi#terminalmode#send_ctrl(''p'')<CR>', maparg('<C-P>', 'n', 0, 1).rhs)
@@ -4230,9 +4384,27 @@ function! Test_terminal_mode_maps_common_punctuation_text_input() abort
   call assert_equal(':<C-U>call jusi#terminalmode#send_lhs(''?'')<CR>', maparg('?', 'n', 0, 1).rhs)
   call assert_equal(':<C-U>call jusi#terminalmode#send_lhs(''!'')<CR>', maparg('!', 'n', 0, 1).rhs)
   call assert_equal(':<C-U>call jusi#terminalmode#send_lhs(''='')<CR>', maparg('=', 'n', 0, 1).rhs)
+  call assert_equal(':<C-U>call jusi#terminalmode#send_lhs('';'')<CR>', maparg(';', 'n', 0, 1).rhs)
   call assert_equal(':<C-U>call jusi#terminalmode#send_lhs('''''')<CR>', maparg("'", 'n', 0, 1).rhs)
   call assert_equal(':<C-U>call jusi#terminalmode#send_lhs(''"'')<CR>', maparg('"', 'n', 0, 1).rhs)
+  call assert_equal(':<C-U>call jusi#terminalmode#send_text('':'')<CR>', maparg('<leader>:', 'n', 0, 1).rhs)
   call assert_equal('', maparg(':', 'n'))
+endfunction
+
+function! Test_client_buffer_gets_toggle_focus_mappings() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd pods',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+
+  call jusi#focus#place_client_buffer(l:client, 'bsplit', 0)
+  call assert_equal(':JusiToggleFocus<CR>', maparg("\<C-\\>\<C-\\>", 'n', 0, 1).rhs)
+  call assert_equal('<C-R>=jusi#focus#toggle()<CR>', maparg("\<C-\\>\<C-\\>", 'i', 0, 1).rhs)
+  call win_gotoid(bufwinid(l:notebook))
 endfunction
 
 function! Test_terminal_mode_send_key_uses_terminal_key_handler_message() abort

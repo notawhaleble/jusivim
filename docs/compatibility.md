@@ -162,6 +162,11 @@ Current output refresh compatibility:
 - refresh timing is configurable through `g:jusi_client_poll_ms`
 - long-running managed executions may update client buffers incrementally while the cell remains `busy`
 - a busy client view may surface pending kernel `input_request` prompts, and the frontend may answer them with `input_reply` for that same tracked cell/client
+- PTY-backed handler clients now also support a first frontend-owned terminal path:
+  - notebook `terminal` mode routes keys to the owning PTY client
+  - pushed `terminal_bytes` are rendered into a terminal screen model instead of an append-only transcript
+  - visible PTY client buffers now include a first scrollback projection outside alternate-screen mode
+  - fullscreen apps still require broader VT coverage and are not yet treated as feature-complete
 
 ## Kernel Sessions
 

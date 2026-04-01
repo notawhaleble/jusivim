@@ -60,7 +60,7 @@ endif
 if !exists('g:jusi_sign_texts')
   let g:jusi_sign_texts = {
         \ 'initial': '#',
-        \ 'follow-up': '#+',
+        \ 'follow-up': '#>',
         \ 'busy': '#*',
         \ 'done': '#✔',
         \ 'error': '#✖',
