@@ -73,6 +73,9 @@ function! jusi#client#record_handler_message(bufnr, handler_id, message_type, pa
   call setbufvar(a:bufnr, 'jusi_handler_id', a:handler_id)
   call setbufvar(a:bufnr, 'jusi_handler_last_message_type', a:message_type)
   call setbufvar(a:bufnr, 'jusi_handler_last_payload', type(a:payload) == type({}) ? copy(a:payload) : a:payload)
+  if a:message_type ==# 'handler_snapshot' && type(a:payload) == type({})
+    call setbufvar(a:bufnr, 'jusi_handler_snapshot', copy(a:payload))
+  endif
   return 1
 endfunction
 
@@ -113,6 +116,9 @@ function! jusi#client#apply_handler_terminal_message(bufnr, message_type, payloa
   if !s:is_valid_bufnr(a:bufnr) || type(a:payload) != type({})
     return 0
   endif
+  if a:message_type ==# 'terminal_bytes'
+    return jusi#terminalscreen#apply_bytes(a:bufnr, get(a:payload, 'hex', ''))
+  endif
   let l:text = str2nr(0) is# 0 ? get(a:payload, 'text', '') : ''
   let l:text = type(l:text) == type('') ? l:text : ''
   if a:message_type ==# 'terminal_prompt'
@@ -129,6 +135,10 @@ function! jusi#client#apply_handler_terminal_message(bufnr, message_type, payloa
     return 1
   endif
   if a:message_type ==# 'terminal_input'
+    if !get(g:, 'jusi_terminal_echo_input', 0)
+      call setbufvar(a:bufnr, 'jusi_handler_terminal_prompt', '')
+      return 1
+    endif
     let l:prompt = getbufvar(a:bufnr, 'jusi_handler_terminal_prompt', '')
     if !empty(l:prompt) && getbufline(a:bufnr, '$')[0] ==# l:prompt
       call s:set_last_buffer_line(a:bufnr, l:prompt . l:text)

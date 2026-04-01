@@ -49,6 +49,10 @@ if !exists('g:jusi_client_layout')
   let g:jusi_client_layout = 'bsplit'
 endif
 
+if !exists('g:jusi_terminal_echo_input')
+  let g:jusi_terminal_echo_input = 0
+endif
+
 if !exists('g:jusi_sign_texts')
   let g:jusi_sign_texts = {
         \ 'initial': '#',
@@ -62,6 +66,7 @@ if !exists('g:jusi_sign_texts')
 endif
 
 call jusi#render#define_signs()
+call jusi#render#define_terminalmode_highlights()
 
 command! JusiRebuild call jusi#notebook#rebuild()
 command! JusiCellNext call jusi#notebook#goto_next()
@@ -80,6 +85,9 @@ command! JusiInterruptKernel call jusi#session#interrupt()
 command! JusiCloseClient call jusi#session#close_current_client()
 command! JusiTogglePark call jusi#session#toggle_park_current_client()
 command! JusiToggleFocus call jusi#focus#toggle()
+command! JusiTerminalModeEnter call jusi#terminalmode#enter()
+command! JusiTerminalModeExit call jusi#terminalmode#exit()
+command! JusiTerminalModeToggle call jusi#terminalmode#toggle()
 command! JusiHandlerBootstrap call jusi#session#bootstrap_handler_current()
 command! -nargs=? JusiHandlerInput call jusi#session#send_handler_input_current(<q-args>)
 command! -nargs=? JusiDisconnect call jusi#session#disconnect(<q-args>)
@@ -103,8 +111,11 @@ augroup jusi_notebook
   au BufEnter,CursorMoved,CursorMovedI *.vipynb call jusi#syntax#request_refresh(expand('<abuf>'))
   if exists('##WinScrolled')
     au WinScrolled *.vipynb call jusi#syntax#request_refresh(expand('<abuf>'))
+    au WinScrolled * call jusi#terminalmode#sync_current_client_resize()
   endif
   au VimResized *.vipynb call jusi#syntax#request_refresh(expand('<abuf>'))
+  au VimResized * call jusi#terminalmode#sync_visible_client_resizes()
+  au BufEnter * call jusi#terminalmode#sync_current_client_resize()
   au BufWipeout *.vipynb call jusi#notebook#guard_wipeout(expand('<abuf>'))
   au BufUnload *.vipynb call jusi#notebook#cleanup(expand('<abuf>'))
   au BufEnter,InsertEnter,InsertLeave *.vipynb call jusi#cellmode#update_indicator()

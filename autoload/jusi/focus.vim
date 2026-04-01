@@ -2,6 +2,15 @@ function! s:is_valid_bufnr(bufnr) abort
   return type(a:bufnr) == type(0) && a:bufnr > 0 && bufexists(a:bufnr)
 endfunction
 
+function! s:apply_client_window_options() abort
+  if !getbufvar(bufnr('%'), 'jusi_client_managed', 0)
+        \ && getbufvar(bufnr('%'), 'jusi_client_notebook_bufnr', 0) <= 0
+    return 0
+  endif
+  setlocal nonumber norelativenumber
+  return 1
+endfunction
+
 function! s:layout_command(layout) abort
   let l:layout = empty(a:layout) ? get(g:, 'jusi_client_layout', 'bsplit') : a:layout
   let l:map = {
@@ -33,9 +42,11 @@ function! s:jump_to_buffer(bufnr) abort
     let l:info = l:wininfo[0]
     execute 'tabnext ' . l:info.tabnr
     execute l:info.winnr . 'wincmd w'
+    call s:apply_client_window_options()
     return a:bufnr
   endif
   execute 'sbuffer ' . a:bufnr
+  call s:apply_client_window_options()
   return a:bufnr
 endfunction
 
@@ -54,6 +65,7 @@ function! jusi#focus#place_client_buffer(bufnr, ...) abort
     execute 'tabnext ' . l:info.tabnr
     execute l:info.winnr . 'wincmd w'
   endif
+  call s:apply_client_window_options()
   if l:return_focus && win_gotoid(l:source_winid)
     return a:bufnr
   endif
