@@ -47,6 +47,77 @@ function! s:current_context(bufnr) abort
         \ }
 endfunction
 
+function! s:stored_context(winid) abort
+  if a:winid <= 0 || !getwinvar(a:winid, 'jusi_terminal_mode_active', 0)
+    return {}
+  endif
+  return {
+        \ 'bufnr': getwinvar(a:winid, 'jusi_terminal_mode_notebook_bufnr', 0),
+        \ 'cell_id': getwinvar(a:winid, 'jusi_terminal_mode_cell_id', 0),
+        \ 'client_id': getwinvar(a:winid, 'jusi_terminal_mode_client_id', ''),
+        \ 'handler_id': getwinvar(a:winid, 'jusi_terminal_mode_handler_id', ''),
+        \ }
+endfunction
+
+function! s:find_cell_by_id(bufnr, cell_id) abort
+  for l:cell in get(jusi#notebook#state(a:bufnr), 'cells', [])
+    if get(l:cell, 'id', 0) == a:cell_id
+      return l:cell
+    endif
+  endfor
+  return {}
+endfunction
+
+function! s:validate_owned_context(winid) abort
+  let l:ctx = s:stored_context(a:winid)
+  if empty(l:ctx)
+    return {'ok': 0, 'error': 'Terminal mode is not active'}
+  endif
+  if !s:is_notebook_buffer(l:ctx.bufnr)
+    return {'ok': 0, 'error': 'Terminal mode lost notebook context'}
+  endif
+  if bufnr('%') != l:ctx.bufnr
+    return {'ok': 0, 'error': 'Terminal mode requires the active notebook window'}
+  endif
+  if jusi#cellmode#mode(l:ctx.bufnr) !=# 'terminal'
+    return {'ok': 0, 'error': 'Terminal mode is not active'}
+  endif
+  let l:session = jusi#session#state(l:ctx.bufnr)
+  if get(l:session, 'state', 'idle') !=# 'connected'
+    return {'ok': 0, 'error': 'Terminal mode requires a connected session'}
+  endif
+  let l:cell = s:find_cell_by_id(l:ctx.bufnr, l:ctx.cell_id)
+  if empty(l:cell)
+    return {'ok': 0, 'error': 'Terminal mode lost the owning cell'}
+  endif
+  if get(l:cell, 'status', '') !=# 'follow-up'
+    return {'ok': 0, 'error': 'Terminal mode requires a follow-up client'}
+  endif
+  if get(get(l:cell, 'owner', {}), 'kind', '') !=# 'handler'
+    return {'ok': 0, 'error': 'Terminal mode requires a handler-owned client'}
+  endif
+  if get(get(get(l:cell, 'handler', {}), 'snapshot', {}), 'transport', '') !=# 'pty'
+    return {'ok': 0, 'error': 'Terminal mode requires a PTY-backed handler client'}
+  endif
+  if get(l:cell, 'client_id', '') !=# l:ctx.client_id || empty(l:ctx.client_id)
+    return {'ok': 0, 'error': 'Terminal mode lost client ownership'}
+  endif
+  if empty(l:ctx.handler_id) || get(get(l:cell, 'handler', {}), 'id', '') !=# l:ctx.handler_id
+    return {'ok': 0, 'error': 'Terminal mode lost handler ownership'}
+  endif
+  let l:cursor_cell = jusi#notebook#cell_at_line(l:ctx.bufnr, line('.'))
+  if empty(l:cursor_cell) || get(l:cursor_cell, 'id', 0) !=# l:ctx.cell_id
+    return {'ok': 0, 'error': 'Terminal mode cursor left the owning cell'}
+  endif
+  return {
+        \ 'ok': 1,
+        \ 'bufnr': l:ctx.bufnr,
+        \ 'cell': l:cell,
+        \ 'client_id': l:ctx.client_id,
+        \ 'handler_id': l:ctx.handler_id,
+        \ }
+endfunction
+
 function! jusi#terminalmode#text_mappings() abort
   return [
         \ 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
@@ -87,6 +158,25 @@ function! jusi#terminalmode#key_mappings() abort
         \ {'lhs': '<Down>', 'key': 'down'},
         \ {'lhs': '<Left>', 'key': 'left'},
         \ {'lhs': '<Right>', 'key': 'right'},
+        \ ]
+endfunction
+
+function! jusi#terminalmode#control_mappings() abort
+  return [
+        \ {'lhs': '<C-A>', 'key': 'a'},
+        \ {'lhs': '<C-B>', 'key': 'b'},
+        \ {'lhs': '<C-C>', 'key': 'c'},
+        \ {'lhs': '<C-D>', 'key': 'd'},
+        \ {'lhs': '<C-E>', 'key': 'e'},
+        \ {'lhs': '<C-F>', 'key': 'f'},
+        \ {'lhs': '<C-H>', 'key': 'h'},
+        \ {'lhs': '<C-J>', 'key': 'j'},
+        \ {'lhs': '<C-L>', 'key': 'l'},
+        \ {'lhs': '<C-N>', 'key': 'n'},
+        \ {'lhs': '<C-P>', 'key': 'p'},
+        \ {'lhs': '<C-R>', 'key': 'r'},
+        \ {'lhs': '<C-U>', 'key': 'u'},
+        \ {'lhs': '<C-W>', 'key': 'w'},
         \ ]
 endfunction
 
@@ -210,27 +300,11 @@ endfunction
 
 function! s:input_context() abort
   let l:winid = s:window_id()
-  if l:winid <= 0 || !getwinvar(l:winid, 'jusi_terminal_mode_active', 0)
-    return {'ok': 0, 'error': 'Terminal mode is not active'}
+  let l:ctx = s:validate_owned_context(l:winid)
+  if !get(l:ctx, 'ok', 0)
+    call jusi#terminalmode#exit()
   endif
-  let l:bufnr = getwinvar(l:winid, 'jusi_terminal_mode_notebook_bufnr', 0)
-  if !s:is_notebook_buffer(l:bufnr) || bufnr('%') != l:bufnr
-    return {'ok': 0, 'error': 'Terminal mode requires the active notebook window'}
-  endif
-  if jusi#cellmode#mode(l:bufnr) !=# 'terminal'
-    return {'ok': 0, 'error': 'Terminal mode is not active'}
-  endif
-  let l:client_id = getwinvar(l:winid, 'jusi_terminal_mode_client_id', '')
-  let l:handler_id = getwinvar(l:winid, 'jusi_terminal_mode_handler_id', '')
-  if empty(l:client_id) || empty(l:handler_id)
-    return {'ok': 0, 'error': 'Terminal mode lost client context'}
-  endif
-  return {
-        \ 'ok': 1,
-        \ 'bufnr': l:bufnr,
-        \ 'client_id': l:client_id,
-        \ 'handler_id': l:handler_id,
-        \ }
+  return l:ctx
 endfunction
 
 function! jusi#terminalmode#send_text(text) abort
@@ -269,6 +343,26 @@ function! jusi#terminalmode#send_key(key, ...) abort
         \ l:payload,
         \ l:ctx.bufnr)
   return get(l:response, 'ok', 0)
+endfunction
+
+function! s:control_char_for_key(key) abort
+  if type(a:key) != type('') || empty(a:key)
+    return ''
+  endif
+  let l:key = tolower(a:key)
+  if l:key !~# '^[a-z]$'
+    return ''
+  endif
+  return nr2char(char2nr(l:key) - char2nr('a') + 1)
+endfunction
+
+function! jusi#terminalmode#send_ctrl(key) abort
+  let l:text = s:control_char_for_key(a:key)
+  if empty(l:text)
+    call s:echo_error('Cannot send terminal control key')
+    return 0
+  endif
+  return jusi#terminalmode#send_text(l:text)
 endfunction
 
 function! jusi#terminalmode#enter() abort
@@ -314,4 +408,16 @@ function! jusi#terminalmode#toggle() abort
     return jusi#terminalmode#exit()
   endif
   return jusi#terminalmode#enter()
+endfunction
+
+function! jusi#terminalmode#sync_active_owner() abort
+  let l:winid = s:window_id()
+  if l:winid <= 0 || !getwinvar(l:winid, 'jusi_terminal_mode_active', 0)
+    return 0
+  endif
+  if get(s:validate_owned_context(l:winid), 'ok', 0)
+    return 1
+  endif
+  call jusi#terminalmode#exit()
+  return 0
 endfunction

@@ -62,6 +62,10 @@ function! s:map_terminal_mode() abort
     execute 'nnoremap <silent> <nowait> <buffer> ' . s:escaped_lhs(l:item.lhs)
           \ . ' :<C-U>call jusi#terminalmode#send_key(' . string(l:item.key) . ')<CR>'
   endfor
+  for l:item in jusi#terminalmode#control_mappings()
+    execute 'nnoremap <silent> <nowait> <buffer> ' . s:escaped_lhs(l:item.lhs)
+          \ . ' :<C-U>call jusi#terminalmode#send_ctrl(' . string(l:item.key) . ')<CR>'
+  endfor
 endfunction
 
 function! s:clear_mode_mappings() abort
@@ -81,6 +85,9 @@ function! s:clear_mode_mappings() abort
     execute 'silent! nunmap <buffer> ' . s:escaped_lhs(l:lhs)
   endfor
   for l:item in jusi#terminalmode#key_mappings()
+    execute 'silent! nunmap <buffer> ' . s:escaped_lhs(l:item.lhs)
+  endfor
+  for l:item in jusi#terminalmode#control_mappings()
     execute 'silent! nunmap <buffer> ' . s:escaped_lhs(l:item.lhs)
   endfor
   nnoremap <silent> <buffer> <Space> :JusiCellModeToggle<CR>
@@ -122,22 +129,31 @@ function! jusi#cellmode#update_indicator(...) abort
   let l:perf_start = reltime()
   let l:force_clear = a:0 >= 1 ? a:1 : v:false
   let l:should_show = jusi#cellmode#should_show_indicator() && !l:force_clear
+  let l:text = l:should_show ? jusi#cellmode#indicator_text() : ''
+  let l:was_visible = get(g:, 'jusi_cellmode_indicator', 0)
+  let l:was_text = get(g:, 'jusi_cellmode_indicator_text', '')
 
   if l:should_show
+    if l:was_visible && l:was_text ==# l:text
+      call s:perf_log('cellmode_indicator-noop', l:perf_start)
+      return
+    endif
     redraw
     echo ''
     echohl ModeMsg
-    echon jusi#cellmode#indicator_text()
+    echon l:text
     echohl None
     let g:jusi_cellmode_indicator = 1
+    let g:jusi_cellmode_indicator_text = l:text
     call s:perf_log('cellmode_indicator-show', l:perf_start)
     return
   endif
 
-  if get(g:, 'jusi_cellmode_indicator', 0)
+  if l:was_visible
     redraw
     echo ''
     let g:jusi_cellmode_indicator = 0
+    let g:jusi_cellmode_indicator_text = ''
     call s:perf_log('cellmode_indicator-clear', l:perf_start)
     return
   endif

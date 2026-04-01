@@ -104,6 +104,7 @@ function! s:ensure_state(bufnr) abort
       \ 'cells': [],
       \ 'session': jusi#session#default_state(),
       \ 'dirty_insert': 0,
+      \ 'inserted_cell_hint': {},
       \ 'syntax_dirty': 0,
       \ 'syntax_dirty_from': 0,
       \ 'consistency_check_pending': 0,
@@ -126,6 +127,30 @@ function! s:ensure_buffer_tracking(bufnr) abort
   if exists('*listener_add') && !has_key(s:buffer_listener, a:bufnr)
     let s:buffer_listener[a:bufnr] = listener_add(function('s:on_buffer_change'), a:bufnr)
   endif
+endfunction
+
+function! s:is_inserted_cell_hint(cell, hint) abort
+  return type(a:hint) == type({})
+        \ && get(a:hint, 'start', 0) ==# get(a:cell, 'start', -1)
+        \ && get(a:hint, 'end', 0) ==# get(a:cell, 'end', -1)
+endfunction
+
+function! s:find_prev_cell_by_id(prev_cells, used_prev, cell_id) abort
+  if a:cell_id <= 0
+    return -1
+  endif
+  let l:idx = 0
+  while l:idx < len(a:prev_cells)
+    if has_key(a:used_prev, l:idx)
+      let l:idx += 1
+      continue
+    endif
+    if get(a:prev_cells[l:idx], 'id', 0) == a:cell_id
+      return l:idx
+    endif
+    let l:idx += 1
+  endwhile
+  return -1
 endfunction
 
 function! s:on_buffer_change(bufnr, start, end, added, changes) abort
@@ -385,16 +410,43 @@ function! s:add_signature_index(map, cell, idx) abort
   call add(a:map[l:signature], a:idx)
 endfunction
 
-function! s:take_signature_match(map, used_prev, signature) abort
+function! s:take_signature_match(map, prev_cells, used_prev, signature, parsed) abort
   if empty(a:signature) || !has_key(a:map, a:signature)
     return -1
   endif
+  let l:had_multiple = len(a:map[a:signature]) > 1
+  let l:best_idx = -1
+  let l:best_score = -1
+  let l:best_overlap = -1
+  let l:keep = []
   while !empty(a:map[a:signature])
     let l:idx = remove(a:map[a:signature], 0)
-    if !has_key(a:used_prev, l:idx)
-      return l:idx
+    if has_key(a:used_prev, l:idx)
+      continue
+    endif
+    let l:score = s:match_score(a:parsed, a:prev_cells[l:idx])
+    let l:overlap = s:interval_overlap(a:parsed.start, a:parsed.end, a:prev_cells[l:idx].start, a:prev_cells[l:idx].end)
+    if l:score > l:best_score
+      if l:best_idx >= 0
+        call add(l:keep, l:best_idx)
+      endif
+      let l:best_idx = l:idx
+      let l:best_score = l:score
+      let l:best_overlap = l:overlap
+    else
+      call add(l:keep, l:idx)
     endif
   endwhile
+  let a:map[a:signature] = l:keep
+  if l:had_multiple && l:best_overlap <= 0
+    if l:best_idx >= 0
+      call insert(a:map[a:signature], l:best_idx, 0)
+    endif
+    return -1
+  endif
+  if l:best_idx >= 0
+    return l:best_idx
+  endif
   return -1
 endfunction
 
@@ -424,6 +476,7 @@ function! s:reconcile_cells(parsed_cells, prev_cells, state) abort
   let l:cells = []
   let l:used_prev = {}
   let l:signature_map = {}
+  let l:inserted_hint = get(a:state, 'inserted_cell_hint', {})
   let l:i = 0
 
   while l:i < len(a:prev_cells)
@@ -433,7 +486,18 @@ function! s:reconcile_cells(parsed_cells, prev_cells, state) abort
 
   let l:parsed_idx = 0
   for l:parsed in a:parsed_cells
-    let l:best_idx = s:take_signature_match(l:signature_map, l:used_prev, get(l:parsed, 'signature', ''))
+    if s:is_inserted_cell_hint(l:parsed, l:inserted_hint)
+      let l:hint_idx = s:find_prev_cell_by_id(a:prev_cells, l:used_prev, get(l:inserted_hint, 'id', 0))
+      if l:hint_idx >= 0
+        let l:used_prev[l:hint_idx] = 1
+        call add(l:cells, s:merge_runtime_cell(a:prev_cells[l:hint_idx], l:parsed))
+      else
+        call add(l:cells, s:init_runtime_cell(l:parsed, a:state))
+      endif
+      let l:parsed_idx += 1
+      continue
+    endif
+    let l:best_idx = s:take_signature_match(l:signature_map, a:prev_cells, l:used_prev, get(l:parsed, 'signature', ''), l:parsed)
     if l:best_idx < 0
       let l:best_idx = s:take_local_overlap_match(a:prev_cells, l:used_prev, l:parsed, l:parsed_idx)
     endif
@@ -473,7 +537,10 @@ function! jusi#notebook#parse_lines(lines, ...) abort
   let l:prev_state = a:0 >= 1 ? a:1 : {}
   let l:prev_cells = get(l:prev_state, 'cells', [])
   let l:next_cell_id = get(l:prev_state, 'next_cell_id', s:max_cell_id(l:prev_cells) + 1)
-  let l:state = {'next_cell_id': l:next_cell_id}
+  let l:state = {
+        \ 'next_cell_id': l:next_cell_id,
+        \ 'inserted_cell_hint': copy(get(l:prev_state, 'inserted_cell_hint', {})),
+        \ }
   let l:parsed_cells = s:parse_raw_cells(a:lines)
   let l:cells = s:reconcile_cells(l:parsed_cells, l:prev_cells, l:state)
   return {
@@ -794,10 +861,17 @@ function! jusi#notebook#handle_insert_exit(...) abort
     return {}
   endif
   let l:state = s:ensure_state(l:bufnr)
-  if get(l:state, 'dirty_insert', 0)
+  let l:tick = getbufvar(l:bufnr, 'changedtick')
+  if get(l:state, 'dirty_insert', 0) || get(l:state, 'changedtick', -1) !=# l:tick
     let l:result = jusi#notebook#rebuild(l:bufnr)
+    let l:result.inserted_cell_hint = {}
+    call setbufvar(l:bufnr, 'jusi_nb', l:result)
     call s:perf_log('handle_insert_exit-rebuild', l:perf_start, 'buf=' . l:bufnr)
     return l:result
+  endif
+  if !empty(get(l:state, 'inserted_cell_hint', {}))
+    let l:state.inserted_cell_hint = {}
+    call setbufvar(l:bufnr, 'jusi_nb', l:state)
   endif
   call s:perf_log('handle_insert_exit-clean', l:perf_start, 'buf=' . l:bufnr)
   return l:state
@@ -998,6 +1072,42 @@ function! s:cell_entry_line(cell) abort
   return a:cell.start
 endfunction
 
+function! s:insertion_index_for_line(state, lnum) abort
+  let l:idx = 0
+  while l:idx < len(a:state.cells)
+    if get(a:state.cells[l:idx], 'start', 0) >= a:lnum
+      return l:idx
+    endif
+    let l:idx += 1
+  endwhile
+  return len(a:state.cells)
+endfunction
+
+function! s:blank_inserted_parsed_cell(lnum) abort
+  return s:make_parsed_cell(
+        \ a:lnum,
+        \ a:lnum + 1,
+        \ 'code',
+        \ '',
+        \ s:cell_signature(['##', ''], 1, 2))
+endfunction
+
+function! s:prepare_state_for_explicit_insert(bufnr, lnum) abort
+  let l:state = s:ensure_state(a:bufnr)
+  let l:idx = s:insertion_index_for_line(l:state, a:lnum)
+  let l:i = l:idx
+  while l:i < len(l:state.cells)
+    call s:shift_cell_lines(l:state.cells[l:i], 2)
+    let l:i += 1
+  endwhile
+  let l:new_cell = s:init_runtime_cell(s:blank_inserted_parsed_cell(a:lnum), l:state)
+  call insert(l:state.cells, l:new_cell, l:idx)
+  let l:state.inserted_cell_hint = {'id': l:new_cell.id, 'start': a:lnum, 'end': a:lnum + 1}
+  let l:state.changedtick = -1
+  call setbufvar(a:bufnr, 'jusi_nb', l:state)
+  return l:state
+endfunction
+
 function! s:goto_cell(cell) abort
   call s:goto_cell_line(s:cell_entry_line(a:cell))
 endfunction
@@ -1038,6 +1148,8 @@ function! jusi#notebook#goto_cell_id(cell_id, ...) abort
 endfunction
 
 function! s:insert_cell_at(lnum) abort
+  let l:bufnr = bufnr('%')
+  call s:prepare_state_for_explicit_insert(l:bufnr, a:lnum)
   let l:line_count = line('$')
   if l:line_count == 1 && getline(1) ==# ''
     call setline(1, ['##', ''])

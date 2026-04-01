@@ -2,6 +2,18 @@ function! s:is_valid_bufnr(bufnr) abort
   return type(a:bufnr) == type(0) && a:bufnr > 0 && bufexists(a:bufnr)
 endfunction
 
+function! s:is_visible_bufnr(bufnr) abort
+  if !s:is_valid_bufnr(a:bufnr)
+    return 0
+  endif
+  for l:info in getwininfo()
+    if get(l:info, 'bufnr', 0) == a:bufnr
+      return 1
+    endif
+  endfor
+  return 0
+endfunction
+
 function! s:blank_line(cols) abort
   return repeat(' ', max([1, a:cols]))
 endfunction
@@ -23,6 +35,7 @@ function! s:default_state(bufnr) abort
         \ 'esc_state': '',
         \ 'csi': '',
         \ 'osc': '',
+        \ 'utf8': [],
         \ 'last_printable': ' ',
         \ 'alt_screen': {},
         \ }
@@ -54,6 +67,7 @@ function! s:state(bufnr) abort
   let l:state.esc_state = get(l:state, 'esc_state', '')
   let l:state.csi = get(l:state, 'csi', '')
   let l:state.osc = get(l:state, 'osc', '')
+  let l:state.utf8 = type(get(l:state, 'utf8', [])) == type([]) ? get(l:state, 'utf8', []) : []
   let l:state.last_printable = get(l:state, 'last_printable', ' ')
   let l:state.alt_screen = type(get(l:state, 'alt_screen', {})) == type({}) ? get(l:state, 'alt_screen', {}) : {}
   return l:state
@@ -82,6 +96,13 @@ function! s:render(bufnr, state) abort
   endwhile
   if len(l:lines) > a:state.rows
     call remove(l:lines, a:state.rows, -1)
+  endif
+  if get(a:state, 'cursor_visible', 1) && s:is_visible_bufnr(a:bufnr)
+    let l:cursor_row = min([len(l:lines) - 1, max([0, get(a:state, 'cursor_row', 0)])])
+    let l:cursor_col = min([a:state.cols - 1, max([0, get(a:state, 'cursor_col', 0)])])
+    let l:chars = s:line_chars(l:lines[l:cursor_row], a:state.cols)
+    let l:chars[l:cursor_col] = '█'
+    let l:lines[l:cursor_row] = join(l:chars, '')
   endif
   let l:existing = len(getbufline(a:bufnr, 1, '$'))
   call setbufvar(a:bufnr, '&modifiable', 1)
@@ -252,6 +273,69 @@ function! s:param(params, idx, default) abort
   endif
   let l:value = a:params[a:idx]
   return empty(l:value) ? a:default : str2nr(l:value)
+endfunction
+
+function! s:utf8_expected_len(byte) abort
+  if a:byte >= 0xc2 && a:byte <= 0xdf
+    return 2
+  endif
+  if a:byte >= 0xe0 && a:byte <= 0xef
+    return 3
+  endif
+  if a:byte >= 0xf0 && a:byte <= 0xf4
+    return 4
+  endif
+  return 0
+endfunction
+
+function! s:utf8_codepoint(bytes) abort
+  let l:len = len(a:bytes)
+  if l:len == 2
+    return ((a:bytes[0] - 0xc0) * 0x40) + (a:bytes[1] - 0x80)
+  endif
+  if l:len == 3
+    return ((a:bytes[0] - 0xe0) * 0x1000)
+          \ + ((a:bytes[1] - 0x80) * 0x40)
+          \ + (a:bytes[2] - 0x80)
+  endif
+  if l:len == 4
+    return ((a:bytes[0] - 0xf0) * 0x40000)
+          \ + ((a:bytes[1] - 0x80) * 0x1000)
+          \ + ((a:bytes[2] - 0x80) * 0x40)
+          \ + (a:bytes[3] - 0x80)
+  endif
+  return -1
+endfunction
+
+function! s:utf8_emit_pending(state) abort
+  if empty(get(a:state, 'utf8', []))
+    return 0
+  endif
+  let l:bytes = copy(a:state.utf8)
+  let a:state.utf8 = []
+  let l:expected = s:utf8_expected_len(l:bytes[0])
+  if l:expected == 0 || len(l:bytes) != l:expected
+    call s:put_char(a:state, '?')
+    return 1
+  endif
+  for l:i in range(1, len(l:bytes) - 1)
+    if l:bytes[l:i] < 0x80 || l:bytes[l:i] > 0xbf
+      call s:put_char(a:state, '?')
+      return 1
+    endif
+  endfor
+  let l:codepoint = s:utf8_codepoint(l:bytes)
+  if l:codepoint < 0
+        \ || (l:expected == 2 && l:codepoint < 0x80)
+        \ || (l:expected == 3 && l:codepoint < 0x800)
+        \ || (l:expected == 4 && l:codepoint < 0x10000)
+        \ || l:codepoint > 0x10ffff
+        \ || (l:codepoint >= 0xd800 && l:codepoint <= 0xdfff)
+    call s:put_char(a:state, '?')
+    return 1
+  endif
+  call s:put_char(a:state, nr2char(l:codepoint))
+  return 1
 endfunction
 
 function! s:handle_csi(state, seq) abort
@@ -548,6 +632,16 @@ function! jusi#terminalscreen#apply_bytes(bufnr, hex) abort
   endif
   let l:state = s:state(a:bufnr)
   for l:byte in s:decode_hex(a:hex)
+    if !empty(get(l:state, 'utf8', []))
+      if l:byte >= 0x80 && l:byte <= 0xbf
+        call add(l:state.utf8, l:byte)
+        if len(l:state.utf8) >= s:utf8_expected_len(l:state.utf8[0])
+          call s:utf8_emit_pending(l:state)
+        endif
+        continue
+      endif
+      call s:utf8_emit_pending(l:state)
+    endif
     if l:state.esc_state ==# 'esc'
       if l:byte ==# 0x5b
         let l:state.esc_state = 'csi'
@@ -642,12 +736,20 @@ function! jusi#terminalscreen#apply_bytes(bufnr, hex) abort
     if l:byte < 0x20 || l:byte ==# 0x7f
       continue
     endif
+    let l:utf8_len = s:utf8_expected_len(l:byte)
+    if l:utf8_len > 1
+      let l:state.utf8 = [l:byte]
+      continue
+    endif
     if l:byte > 0x7e
       call s:put_char(l:state, '?')
       continue
     endif
     call s:put_char(l:state, nr2char(l:byte))
   endfor
+  if !empty(get(l:state, 'utf8', []))
+    call s:utf8_emit_pending(l:state)
+  endif
   call s:save_state(a:bufnr, l:state)
   return s:render(a:bufnr, l:state)
 endfunction
