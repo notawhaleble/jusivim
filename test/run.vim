@@ -7,6 +7,7 @@ syntax on
 
 runtime plugin/jusi.vim
 let g:jusi_attach_registry_file = tempname()
+let g:jusi_terminal_sync_render = 1
 
 source test/notebook.vim
 
@@ -113,6 +114,8 @@ call Test_handler_terminal_bytes_visible_client_follows_scrollback_tail()
 call Test_handler_terminal_bytes_visible_client_preserves_manual_scrollback_view()
 call Test_handler_terminal_bytes_char_edits_do_not_crash_at_right_edge()
 call Test_handler_terminal_bytes_preserve_status_line_outside_scroll_region()
+call Test_handler_terminal_bytes_render_dec_special_graphics()
+call Test_handler_terminal_bytes_track_sgr_cell_styles()
 call Test_magic_header_has_dedicated_syntax_group()
 call Test_syntax_updates_after_cell_type_change()
 call Test_visible_cell_body_gets_rich_syntax()

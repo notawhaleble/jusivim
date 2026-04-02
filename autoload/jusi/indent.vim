@@ -61,6 +61,9 @@ function! jusi#indent#refresh(...) abort
   if l:bufnr != bufnr('%') || !s:is_notebook_buffer(l:bufnr)
     return
   endif
+  if exists('*jusi#cellmode#mode') && jusi#cellmode#mode(l:bufnr) ==# 'terminal'
+    return
+  endif
 
   let l:cell = jusi#notebook#cell_at_line(l:bufnr, line('.'))
   let l:key = s:cell_key(l:cell)

@@ -17,6 +17,60 @@ function! s:stop_refresh_timer(bufnr) abort
   call setbufvar(a:bufnr, 'jusi_client_refresh_timer', -1)
 endfunction
 
+function! s:terminal_render_delay_ms() abort
+  return max([0, get(g:, 'jusi_terminal_render_delay_ms', 15)])
+endfunction
+
+function! s:terminal_sync_render() abort
+  return get(g:, 'jusi_terminal_sync_render', 0) ? 1 : 0
+endfunction
+
+function! s:stop_terminal_render_timer(bufnr) abort
+  if !s:is_valid_bufnr(a:bufnr)
+    return
+  endif
+  let l:timer = getbufvar(a:bufnr, 'jusi_terminal_render_timer', -1)
+  if type(l:timer) == type(0) && l:timer > 0 && exists('*timer_stop')
+    call timer_stop(l:timer)
+  endif
+  call setbufvar(a:bufnr, 'jusi_terminal_render_timer', -1)
+endfunction
+
+function! s:flush_terminal_bytes(bufnr, ...) abort
+  if !s:is_valid_bufnr(a:bufnr)
+    return 0
+  endif
+  call setbufvar(a:bufnr, 'jusi_terminal_render_timer', -1)
+  let l:hex = getbufvar(a:bufnr, 'jusi_terminal_pending_hex', '')
+  if type(l:hex) != type('') || empty(l:hex)
+    call setbufvar(a:bufnr, 'jusi_terminal_pending_hex', '')
+    return 0
+  endif
+  call setbufvar(a:bufnr, 'jusi_terminal_pending_hex', '')
+  return jusi#terminalscreen#apply_bytes(a:bufnr, l:hex)
+endfunction
+
+function! s:queue_terminal_bytes(bufnr, hex) abort
+  if !s:is_valid_bufnr(a:bufnr)
+    return 0
+  endif
+  let l:pending = getbufvar(a:bufnr, 'jusi_terminal_pending_hex', '')
+  if type(l:pending) != type('')
+    let l:pending = ''
+  endif
+  call setbufvar(a:bufnr, 'jusi_terminal_pending_hex', l:pending . a:hex)
+  if s:terminal_sync_render() || !exists('*timer_start') || s:terminal_render_delay_ms() <= 0
+    return s:flush_terminal_bytes(a:bufnr)
+  endif
+  let l:timer = getbufvar(a:bufnr, 'jusi_terminal_render_timer', -1)
+  if type(l:timer) == type(0) && l:timer > 0
+    return 1
+  endif
+  let l:timer = timer_start(s:terminal_render_delay_ms(), function('s:flush_terminal_bytes', [a:bufnr]))
+  call setbufvar(a:bufnr, 'jusi_terminal_render_timer', l:timer)
+  return 1
+endfunction
+
 function! jusi#client#stop_refresh(bufnr) abort
   call s:stop_refresh_timer(a:bufnr)
   return getbufvar(a:bufnr, 'jusi_client_refresh_timer', -1)
@@ -48,6 +102,8 @@ function! jusi#client#create_prepared_buffer(notebook_bufnr, client_id) abort
   call setbufline(l:bufnr, 1, [''])
   call setbufvar(l:bufnr, '&modified', 0)
   call setbufvar(l:bufnr, 'jusi_client_refresh_timer', -1)
+  call setbufvar(l:bufnr, 'jusi_terminal_render_timer', -1)
+  call setbufvar(l:bufnr, 'jusi_terminal_pending_hex', '')
   call setbufvar(l:bufnr, 'jusi_client_revision', -1)
   call setbufvar(l:bufnr, 'jusi_client_title', '')
   call setbufvar(l:bufnr, 'jusi_client_execution_status', '')
@@ -117,7 +173,7 @@ function! jusi#client#apply_handler_terminal_message(bufnr, message_type, payloa
     return 0
   endif
   if a:message_type ==# 'terminal_bytes'
-    return jusi#terminalscreen#apply_bytes(a:bufnr, get(a:payload, 'hex', ''))
+    return s:queue_terminal_bytes(a:bufnr, get(a:payload, 'hex', ''))
   endif
   let l:text = str2nr(0) is# 0 ? get(a:payload, 'text', '') : ''
   let l:text = type(l:text) == type('') ? l:text : ''
@@ -165,6 +221,7 @@ function! jusi#client#destroy_buffer(bufnr) abort
     return 0
   endif
   call s:stop_refresh_timer(a:bufnr)
+  call s:stop_terminal_render_timer(a:bufnr)
   execute 'silent! bwipeout! ' . a:bufnr
   return bufexists(a:bufnr) ? 0 : 1
 endfunction

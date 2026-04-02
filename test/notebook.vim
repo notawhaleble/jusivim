@@ -2552,6 +2552,51 @@ function! Test_handler_terminal_bytes_visible_client_preserves_manual_scrollback
   call win_gotoid(bufwinid(l:notebook))
 endfunction
 
+function! Test_handler_terminal_bytes_alt_screen_resets_visible_view_to_top() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd pods',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+  call jusi#session#apply({'state': 'connected', 'id': 'sess-1'})
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  let b:jusi_nb.cells[0].handler = {'id': 'vd', 'last_message_type': 'handler_snapshot', 'payload': {}, 'snapshot': {'transport': 'pty'}}
+
+  call jusi#terminalscreen#resize(l:client, 3, 20)
+  call jusi#focus#place_client_buffer(l:client, 'bsplit', 0)
+  resize 2
+
+  call setbufvar(l:client, '&modifiable', 1)
+  call setbufline(l:client, 1, repeat(['old transcript line'], 20))
+  call setbufvar(l:client, '&modified', 0)
+  call setbufvar(l:client, '&modifiable', 0)
+  normal! G
+
+  call jusi#transport#receive(l:notebook, {
+        \ 'kind': 'event',
+        \ 'type': 'handler_message',
+        \ 'version': 1,
+        \ 'payload': {
+        \   'notebook_id': 'nb-' . l:notebook,
+        \   'session_id': 'sess-1',
+        \   'client_id': 'client-1',
+        \   'handler_id': 'vd',
+        \   'message_type': 'terminal_bytes',
+        \   'payload': {'hex': '1b5b3f31303439681b5b313b33721b5b481b5b324a6865616465720d0a726f77310d0a726f7732'},
+        \   },
+        \ })
+
+  let l:view = winsaveview()
+  call assert_equal(1, l:view.topline)
+  call assert_equal('header', s:terminal_visible_trim(getbufline(l:client, 1, 1)[0]))
+  call win_gotoid(bufwinid(l:notebook))
+endfunction
+
 function! Test_handler_terminal_bytes_ignore_osc_and_charset_sequences() abort
   call Test_open_scratch([
         \ '##',
@@ -2587,6 +2632,128 @@ function! Test_handler_terminal_bytes_ignore_osc_and_charset_sequences() abort
 
   let l:lines = getbufline(l:client, 1, '$')
   call assert_equal('hi!', substitute(l:lines[0], '\s\+$', '', ''))
+endfunction
+
+function! Test_handler_terminal_bytes_lf_preserves_column() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd pods',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+  let b:jusi_nb.session.id = 'sess-1'
+  let b:jusi_nb.session.state = 'connected'
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  let b:jusi_nb.cells[0].handler = {'id': 'vd', 'last_message_type': 'handler_snapshot', 'payload': {}, 'snapshot': {'transport': 'pty'}}
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+  call jusi#terminalscreen#resize(l:client, 3, 8)
+
+  call jusi#transport#receive(l:notebook, {
+        \ 'kind': 'event',
+        \ 'type': 'handler_message',
+        \ 'version': 1,
+        \ 'payload': {
+        \   'notebook_id': 'nb-' . l:notebook,
+        \   'session_id': 'sess-1',
+        \   'client_id': 'client-1',
+        \   'handler_id': 'vd',
+        \   'message_type': 'terminal_bytes',
+        \   'payload': {'hex': '6162630a64'},
+        \   },
+        \ })
+
+  call s:terminal_hide_cursor(l:client)
+  let l:lines = getbufline(l:client, 1, '$')
+  call assert_equal('abc', substitute(l:lines[0], '\s\+$', '', ''))
+  call assert_equal('   d', substitute(l:lines[1], '\s\+$', '', ''))
+endfunction
+
+function! Test_handler_terminal_bytes_render_dec_special_graphics() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd pods',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+  let b:jusi_nb.session.id = 'sess-1'
+  let b:jusi_nb.session.state = 'connected'
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  let b:jusi_nb.cells[0].handler = {'id': 'vd', 'last_message_type': 'handler_snapshot', 'payload': {}, 'snapshot': {'transport': 'pty'}}
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+  call jusi#terminalscreen#resize(l:client, 3, 20)
+
+  call jusi#transport#receive(l:notebook, {
+        \ 'kind': 'event',
+        \ 'type': 'handler_message',
+        \ 'version': 1,
+        \ 'payload': {
+        \   'notebook_id': 'nb-' . l:notebook,
+        \   'session_id': 'sess-1',
+        \   'client_id': 'client-1',
+        \   'handler_id': 'vd',
+        \   'message_type': 'terminal_bytes',
+        \   'payload': {'hex': '1b28421b29300e6c7171716b0f'},
+        \   },
+        \ })
+
+  call s:terminal_hide_cursor(l:client)
+  let l:lines = getbufline(l:client, 1, '$')
+  call assert_equal('┌───┐', substitute(l:lines[0], '\s\+$', '', ''))
+endfunction
+
+function! Test_handler_terminal_bytes_track_sgr_cell_styles() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd pods',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+  let b:jusi_nb.session.id = 'sess-1'
+  let b:jusi_nb.session.state = 'connected'
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  let b:jusi_nb.cells[0].handler = {'id': 'vd', 'last_message_type': 'handler_snapshot', 'payload': {}, 'snapshot': {'transport': 'pty'}}
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+  call jusi#terminalscreen#resize(l:client, 3, 20)
+  call jusi#focus#place_client_buffer(l:client, 'bsplit', 0)
+
+  call jusi#transport#receive(l:notebook, {
+        \ 'kind': 'event',
+        \ 'type': 'handler_message',
+        \ 'version': 1,
+        \ 'payload': {
+        \   'notebook_id': 'nb-' . l:notebook,
+        \   'session_id': 'sess-1',
+        \   'client_id': 'client-1',
+        \   'handler_id': 'vd',
+        \   'message_type': 'terminal_bytes',
+        \   'payload': {'hex': '1b5b34343b39376d4845414445521b5b306d0d0a1b5b376d524f571b5b306d'},
+        \   },
+        \ })
+
+  call s:terminal_hide_cursor(l:client)
+  let l:state = getbufvar(l:client, 'jusi_terminal_screen', {})
+  call assert_equal('bright_white', get(get(get(l:state, 'attr_rows', [])[0], 0, {}), 'fg', ''))
+  call assert_equal('blue', get(get(get(l:state, 'attr_rows', [])[0], 0, {}), 'bg', ''))
+  call assert_equal(1, get(get(get(l:state, 'attr_rows', [])[1], 0, {}), 'reverse', 0))
+  call assert_equal('', get(get(get(l:state, 'attr_rows', [])[1], 4, {}), 'fg', ''))
+  call assert_equal('', get(get(get(l:state, 'attr_rows', [])[1], 4, {}), 'bg', ''))
+  call assert_equal(0, get(get(get(l:state, 'attr_rows', [])[1], 4, {}), 'reverse', 0))
+  call win_gotoid(bufwinid(l:notebook))
 endfunction
 
 function! Test_handler_terminal_bytes_support_repeat_and_alias_cursor_moves() abort

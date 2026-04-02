@@ -197,6 +197,9 @@ function! jusi#syntax#request_refresh(bufnr) abort
   if l:bufnr != bufnr('%')
     return
   endif
+  if exists('*jusi#cellmode#mode') && jusi#cellmode#mode(l:bufnr) ==# 'terminal'
+    return
+  endif
   if !exists('*timer_start')
     call jusi#syntax#schedule(l:bufnr)
     return

@@ -183,6 +183,11 @@ function! s:update_cell(bufnr, cell_id, update) abort
   let l:previous_status = get(l:state.cells[l:idx], 'status', '')
   let l:previous_bufnr = get(l:state.cells[l:idx], 'client_bufnr', -1)
   let l:update = copy(a:update)
+  let l:client_effects_changed = has_key(l:update, 'client_bufnr')
+        \ || has_key(l:update, 'client_state')
+        \ || has_key(l:update, 'client_id')
+        \ || has_key(l:update, 'status')
+        \ || has_key(l:update, 'owner')
   let l:preserve_local_buffer = get(l:update, '_preserve_local_buffer', 0)
   if has_key(l:update, '_preserve_local_buffer')
     call remove(l:update, '_preserve_local_buffer')
@@ -220,7 +225,7 @@ function! s:update_cell(bufnr, cell_id, update) abort
   endif
   call s:update_state(a:bufnr, l:state)
 
-  if get(l:state.cells[l:idx], 'client_bufnr', -1) > 0
+  if l:client_effects_changed && get(l:state.cells[l:idx], 'client_bufnr', -1) > 0
     call jusi#client#mark_attached_buffer(
           \ a:bufnr,
           \ l:state.cells[l:idx].id,
@@ -1125,7 +1130,7 @@ function! jusi#session#callback_handler_message(payload, ...) abort
               \ max([1, getbufvar(l:cell.client_bufnr, 'jusi_terminal_rows', 24)]),
               \ max([1, getbufvar(l:cell.client_bufnr, 'jusi_terminal_cols', 80)]))
       endif
-      if get(l:payload, 'message_type', '') ==# 'terminal_bytes'
+      if get(l:payload, 'message_type', '') ==# 'terminal_bytes' && s:terminal_debug_log_enabled()
         call s:terminal_debug_log('terminal-bytes-before', {
               \ 'bufnr': l:bufnr,
               \ 'client_bufnr': l:cell.client_bufnr,
@@ -1152,7 +1157,7 @@ function! jusi#session#callback_handler_message(payload, ...) abort
             \ l:cell.client_bufnr,
             \ get(l:payload, 'message_type', ''),
             \ get(l:payload, 'payload', {}))
-      if get(l:payload, 'message_type', '') ==# 'terminal_bytes'
+      if get(l:payload, 'message_type', '') ==# 'terminal_bytes' && s:terminal_debug_log_enabled()
         call s:terminal_debug_log('terminal-bytes-after', {
               \ 'bufnr': l:bufnr,
               \ 'client_bufnr': l:cell.client_bufnr,
@@ -1248,6 +1253,43 @@ function! s:current_handler_context(bufnr) abort
         \ }
 endfunction
 
+function! s:client_window_metrics(client_bufnr) abort
+  for l:info in getwininfo()
+    if get(l:info, 'bufnr', 0) != a:client_bufnr
+      continue
+    endif
+    let l:rows = get(l:info, 'height', 0)
+    let l:cols = get(l:info, 'width', 0)
+    if l:rows > 0 && l:cols > 0
+      return {'rows': l:rows, 'cols': l:cols}
+    endif
+  endfor
+  return {}
+endfunction
+
+function! s:bootstrap_client_geometry(bufnr, cell, handler_id) abort
+  let l:client_bufnr = get(a:cell, 'client_bufnr', -1)
+  let l:client_id = get(a:cell, 'client_id', '')
+  if l:client_bufnr <= 0 || empty(l:client_id) || empty(a:handler_id)
+    return {}
+  endif
+  call jusi#focus#place_client_buffer(l:client_bufnr)
+  let l:metrics = s:client_window_metrics(l:client_bufnr)
+  if empty(l:metrics)
+    return {}
+  endif
+  call setbufvar(l:client_bufnr, 'jusi_terminal_rows', l:metrics.rows)
+  call setbufvar(l:client_bufnr, 'jusi_terminal_cols', l:metrics.cols)
+  call jusi#terminalscreen#resize(l:client_bufnr, l:metrics.rows, l:metrics.cols)
+  let l:response = jusi#session#send_handler_message(
+        \ l:client_id,
+        \ a:handler_id,
+        \ 'terminal_resize',
+        \ {'rows': l:metrics.rows, 'cols': l:metrics.cols},
+        \ a:bufnr)
+  return get(l:response, 'ok', 0) ? l:metrics : {}
+endfunction
+
 function! jusi#session#bootstrap_handler_current() abort
   let l:bufnr = s:normalize_bufnr(bufnr('%'))
   if !s:require_notebook_buffer(l:bufnr, 'bootstrap handler')
@@ -1260,15 +1302,20 @@ function! jusi#session#bootstrap_handler_current() abort
   endif
 
   let l:cell = l:ctx.cell
+  let l:metrics = s:bootstrap_client_geometry(l:bufnr, l:cell, get(l:ctx, 'handler_id', ''))
+  if empty(l:metrics)
+    return s:fail_session(l:bufnr, {'last_action': 'handler_message'}, 'Cannot bootstrap handler without a visible client window')
+  endif
   let l:response = jusi#session#send_handler_message(
         \ get(l:cell, 'client_id', ''),
         \ get(l:ctx, 'handler_id', ''),
         \ 'bootstrap_done',
-        \ {'bufnr': get(l:cell, 'client_bufnr', -1)},
+        \ {
+        \   'bufnr': get(l:cell, 'client_bufnr', -1),
+        \   'rows': l:metrics.rows,
+        \   'cols': l:metrics.cols,
+        \   },
         \ l:bufnr)
-  if get(l:response, 'ok', 0)
-    call jusi#terminalmode#sync_client_resize_for_buffer(l:bufnr, get(l:cell, 'client_bufnr', -1), 1)
-  endif
   return l:response
 endfunction
 

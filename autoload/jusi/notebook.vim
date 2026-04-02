@@ -897,6 +897,9 @@ function! jusi#notebook#refresh_if_changed(...) abort
   if !s:is_notebook_buffer(l:bufnr)
     return {}
   endif
+  if exists('*jusi#cellmode#mode') && jusi#cellmode#mode(l:bufnr) ==# 'terminal'
+    return s:ensure_state(l:bufnr)
+  endif
   let l:state = s:ensure_state(l:bufnr)
   let l:tick = getbufvar(l:bufnr, 'changedtick')
   if get(l:state, 'changedtick', -1) !=# l:tick
