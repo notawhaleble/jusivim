@@ -2756,6 +2756,52 @@ function! Test_handler_terminal_bytes_track_sgr_cell_styles() abort
   call win_gotoid(bufwinid(l:notebook))
 endfunction
 
+function! Test_handler_terminal_bytes_reverse_row_highlights_when_styles_disabled() abort
+  let l:save_styles = get(g:, 'jusi_terminal_enable_styles', 0)
+  let g:jusi_terminal_enable_styles = 0
+  try
+    call Test_open_scratch([
+          \ '##',
+          \ '%%vd pods',
+          \ ])
+    let l:notebook = bufnr('%')
+    let l:cell_id = b:jusi_nb.cells[0].id
+    let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.state = 'connected'
+    let b:jusi_nb.cells[0].status = 'follow-up'
+    let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = l:client
+    let b:jusi_nb.cells[0].handler = {'id': 'vd', 'last_message_type': 'handler_snapshot', 'payload': {}, 'snapshot': {'transport': 'pty'}}
+    call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+    call jusi#terminalscreen#resize(l:client, 3, 20)
+    call jusi#focus#place_client_buffer(l:client, 'bsplit', 0)
+
+    call jusi#transport#receive(l:notebook, {
+          \ 'kind': 'event',
+          \ 'type': 'handler_message',
+          \ 'version': 1,
+          \ 'payload': {
+          \   'notebook_id': 'nb-' . l:notebook,
+          \   'session_id': 'sess-1',
+          \   'client_id': 'client-1',
+          \   'handler_id': 'vd',
+          \   'message_type': 'terminal_bytes',
+          \   'payload': {'hex': '1b5b376d524f571b5b306d'},
+          \   },
+          \ })
+
+    let l:winid = bufwinid(l:client)
+    call assert_true(l:winid > 0)
+    call assert_true(len(getwinvar(l:winid, 'jusi_terminal_style_matches', [])) > 0)
+    call win_gotoid(bufwinid(l:notebook))
+  finally
+    let g:jusi_terminal_enable_styles = l:save_styles
+  endtry
+endfunction
+
 function! Test_handler_terminal_bytes_support_repeat_and_alias_cursor_moves() abort
   call Test_open_scratch([
         \ '##',
@@ -4735,7 +4781,7 @@ function! Test_cell_mode_indicator_state_transitions() abort
   call assert_equal(0, jusi#cellmode#should_show_indicator())
   call assert_equal(0, g:jusi_cellmode_indicator)
   call jusi#cellmode#enable()
-  call assert_equal(&filetype ==# 'jusinb' && mode() =~# '^n', jusi#cellmode#should_show_indicator())
+  call assert_equal(&filetype ==# 'jusinb' && mode() =~# '^[nc]', jusi#cellmode#should_show_indicator())
   call jusi#cellmode#update_indicator(v:true)
   call assert_equal(0, g:jusi_cellmode_indicator)
 endfunction

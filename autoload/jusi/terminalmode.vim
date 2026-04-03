@@ -181,6 +181,12 @@ function! jusi#terminalmode#control_mappings() abort
 endfunction
 
 function! s:window_metrics(winid) abort
+  if a:winid > 0 && a:winid == s:window_id()
+    return {
+          \ 'rows': winheight(0),
+          \ 'cols': winwidth(0),
+          \ }
+  endif
   for l:info in getwininfo()
     if get(l:info, 'winid', 0) == a:winid
       return {

@@ -36,6 +36,17 @@ function! s:escaped_lhs(lhs) abort
   return escape(a:lhs, '\|')
 endfunction
 
+function! s:maybe_unmap_buffer(lhs) abort
+  let l:map = maparg(a:lhs, 'n', 0, 1)
+  if type(l:map) != type({}) || empty(l:map) || !get(l:map, 'buffer', 0)
+    return
+  endif
+  try
+    execute 'nunmap <buffer> ' . s:escaped_lhs(a:lhs)
+  catch /^Vim\%((\a\+)\)\=:E31/
+  endtry
+endfunction
+
 function! s:map_cell_mode() abort
   nnoremap <silent> <buffer> j :<C-U>execute "JusiCellNext"<CR>
   nnoremap <silent> <buffer> k :<C-U>execute "JusiCellPrev"<CR>
@@ -55,43 +66,44 @@ function! s:map_terminal_mode() abort
   nnoremap <silent> <buffer> <leader><Space> :JusiTerminalModeToggle<CR>
   nnoremap <silent> <buffer> <leader>: :<C-U>call jusi#terminalmode#send_text(':')<CR>
   for l:lhs in jusi#terminalmode#text_mappings()
-    execute 'nnoremap <silent> <buffer> ' . s:escaped_lhs(l:lhs)
+    let l:opts = l:lhs ==# '<Bslash>' ? '<silent> <buffer>' : '<silent> <buffer> <nowait>'
+    execute 'nnoremap ' . l:opts . ' ' . s:escaped_lhs(l:lhs)
           \ . ' :<C-U>call jusi#terminalmode#send_lhs('
           \ . string(l:lhs)
           \ . ')<CR>'
   endfor
   for l:item in jusi#terminalmode#key_mappings()
-    execute 'nnoremap <silent> <buffer> ' . s:escaped_lhs(l:item.lhs)
+    execute 'nnoremap <silent> <buffer> <nowait> ' . s:escaped_lhs(l:item.lhs)
           \ . ' :<C-U>call jusi#terminalmode#send_key(' . string(l:item.key) . ')<CR>'
   endfor
   for l:item in jusi#terminalmode#control_mappings()
-    execute 'nnoremap <silent> <buffer> ' . s:escaped_lhs(l:item.lhs)
+    execute 'nnoremap <silent> <buffer> <nowait> ' . s:escaped_lhs(l:item.lhs)
           \ . ' :<C-U>call jusi#terminalmode#send_ctrl(' . string(l:item.key) . ')<CR>'
   endfor
 endfunction
 
 function! s:clear_mode_mappings() abort
-  silent! nunmap <buffer> j
-  silent! nunmap <buffer> k
-  silent! nunmap <buffer> <leader><Space>
-  silent! nunmap <buffer> <leader>:
-  silent! nunmap <buffer> B
-  silent! nunmap <buffer> A
-  silent! nunmap <buffer> X
-  silent! nunmap <buffer> C
-  silent! nunmap <buffer> Y
-  silent! nunmap <buffer> P
-  silent! nunmap <buffer> S
-  silent! nunmap <buffer> Q
-  silent! nunmap <buffer> R
+  call s:maybe_unmap_buffer('j')
+  call s:maybe_unmap_buffer('k')
+  call s:maybe_unmap_buffer('<leader><Space>')
+  call s:maybe_unmap_buffer('<leader>:')
+  call s:maybe_unmap_buffer('B')
+  call s:maybe_unmap_buffer('A')
+  call s:maybe_unmap_buffer('X')
+  call s:maybe_unmap_buffer('C')
+  call s:maybe_unmap_buffer('Y')
+  call s:maybe_unmap_buffer('P')
+  call s:maybe_unmap_buffer('S')
+  call s:maybe_unmap_buffer('Q')
+  call s:maybe_unmap_buffer('R')
   for l:lhs in jusi#terminalmode#text_mappings()
-    execute 'silent! nunmap <buffer> ' . s:escaped_lhs(l:lhs)
+    call s:maybe_unmap_buffer(l:lhs)
   endfor
   for l:item in jusi#terminalmode#key_mappings()
-    execute 'silent! nunmap <buffer> ' . s:escaped_lhs(l:item.lhs)
+    call s:maybe_unmap_buffer(l:item.lhs)
   endfor
   for l:item in jusi#terminalmode#control_mappings()
-    execute 'silent! nunmap <buffer> ' . s:escaped_lhs(l:item.lhs)
+    call s:maybe_unmap_buffer(l:item.lhs)
   endfor
   nnoremap <silent> <buffer> <Space> :JusiCellModeToggle<CR>
   nnoremap <silent> <buffer> <leader><Space> :JusiTerminalModeToggle<CR>
@@ -166,7 +178,7 @@ endfunction
 
 function! jusi#cellmode#should_show_indicator() abort
   let l:is_vipynb = &filetype ==# 'jusinb'
-  return l:is_vipynb && jusi#cellmode#mode() !=# 'edit' && mode() =~# '^n'
+  return l:is_vipynb && jusi#cellmode#mode() !=# 'edit' && mode() =~# '^[nc]'
 endfunction
 
 function! jusi#cellmode#set_mode(mode, ...) abort

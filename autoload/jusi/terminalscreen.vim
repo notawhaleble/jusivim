@@ -26,11 +26,28 @@ function! s:default_style() abort
   return {'fg': '', 'bg': '', 'bold': 0, 'reverse': 0}
 endfunction
 
+function! s:canonical_style(style) abort
+  if !exists('s:style_cache')
+    let s:style_cache = {}
+  endif
+  let l:key = s:style_key(a:style)
+  if !has_key(s:style_cache, l:key)
+    let s:style_cache[l:key] = {
+          \ 'fg': get(a:style, 'fg', ''),
+          \ 'bg': get(a:style, 'bg', ''),
+          \ 'bold': get(a:style, 'bold', 0) ? 1 : 0,
+          \ 'reverse': get(a:style, 'reverse', 0) ? 1 : 0,
+          \ }
+  endif
+  return s:style_cache[l:key]
+endfunction
+
 function! s:blank_attr_row(cols) abort
+  let l:blank = s:canonical_style(s:default_style())
   let l:row = []
   let l:i = 0
   while l:i < max([1, a:cols])
-    call add(l:row, s:default_style())
+    call add(l:row, l:blank)
     let l:i += 1
   endwhile
   return l:row
@@ -40,11 +57,11 @@ function! s:normalize_attr_row(row, cols) abort
   let l:normalized = type(a:row) == type([]) ? copy(a:row) : []
   let l:i = 0
   while l:i < len(l:normalized)
-    let l:normalized[l:i] = s:style_copy(l:normalized[l:i])
+    let l:normalized[l:i] = s:canonical_style(l:normalized[l:i])
     let l:i += 1
   endwhile
   while len(l:normalized) < max([1, a:cols])
-    call add(l:normalized, s:default_style())
+    call add(l:normalized, s:canonical_style(s:default_style()))
   endwhile
   if len(l:normalized) > a:cols
     call remove(l:normalized, a:cols, -1)
@@ -143,6 +160,60 @@ function! s:clear_window_style_matches(winid) abort
     call matchdelete(l:id, a:winid)
   endfor
   call setwinvar(a:winid, 'jusi_terminal_style_matches', [])
+  call setwinvar(a:winid, 'jusi_terminal_reverse_rows', [])
+endfunction
+
+function! s:ensure_reverse_row_group() abort
+  if !hlexists('JusiTerminalReverseRow')
+    execute 'highlight default JusiTerminalReverseRow term=reverse cterm=reverse gui=reverse'
+  endif
+  return 'JusiTerminalReverseRow'
+endfunction
+
+function! s:row_has_reverse(attr_row) abort
+  if type(a:attr_row) != type([])
+    return 0
+  endif
+  for l:style in a:attr_row
+    if get(l:style, 'reverse', 0)
+      return 1
+    endif
+  endfor
+  return 0
+endfunction
+
+function! s:reverse_row_positions(attr_rows) abort
+  let l:positions = []
+  let l:row_idx = 0
+  while l:row_idx < len(a:attr_rows)
+    let l:row = get(a:attr_rows, l:row_idx, [])
+    if s:row_has_reverse(l:row)
+      call add(l:positions, [l:row_idx + 1, 1, max([1, len(l:row)])])
+    endif
+    let l:row_idx += 1
+  endwhile
+  return l:positions
+endfunction
+
+function! s:apply_reverse_row_matches(winid, positions) abort
+  let l:previous = getwinvar(a:winid, 'jusi_terminal_reverse_rows', [])
+  let l:existing_ids = getwinvar(a:winid, 'jusi_terminal_style_matches', [])
+  if string(l:previous) ==# string(a:positions)
+    return l:existing_ids
+  endif
+  for l:id in l:existing_ids
+    call matchdelete(l:id, a:winid)
+  endfor
+  let l:ids = []
+  if !empty(a:positions)
+    let l:group = s:ensure_reverse_row_group()
+    for l:pos in a:positions
+      call add(l:ids, matchaddpos(l:group, [l:pos], 5, -1, {'window': a:winid}))
+    endfor
+  endif
+  call setwinvar(a:winid, 'jusi_terminal_style_matches', l:ids)
+  call setwinvar(a:winid, 'jusi_terminal_reverse_rows', copy(a:positions))
+  return l:ids
 endfunction
 
 function! s:style_span_limit() abort
@@ -157,6 +228,7 @@ function! s:default_state(bufnr) abort
   let l:rows = max([1, getbufvar(a:bufnr, 'jusi_terminal_rows', 24)])
   let l:cols = max([1, getbufvar(a:bufnr, 'jusi_terminal_cols', 80)])
   return {
+        \ '_internal': 1,
         \ 'rows': l:rows,
         \ 'cols': l:cols,
         \ 'cursor_row': 0,
@@ -182,6 +254,7 @@ function! s:default_state(bufnr) abort
         \ 'last_printable': ' ',
         \ 'current_style': s:default_style(),
         \ 'alt_screen': {},
+        \ 'line_cache': {},
         \ }
 endfunction
 
@@ -216,33 +289,43 @@ function! s:state(bufnr) abort
     let l:state.lines = [s:blank_line(l:state.cols)]
   endif
   let l:state.attr_rows = type(get(l:state, 'attr_rows', [])) == type([]) ? get(l:state, 'attr_rows', []) : []
+  let l:fast_path = get(l:state, '_internal', 0) ? 1 : 0
   while len(l:state.attr_rows) < len(l:state.lines)
     call add(l:state.attr_rows, s:blank_attr_row(l:state.cols))
   endwhile
   if len(l:state.attr_rows) > len(l:state.lines)
     call remove(l:state.attr_rows, len(l:state.lines), -1)
   endif
-  let l:i = 0
-  while l:i < len(l:state.attr_rows)
-    let l:state.attr_rows[l:i] = s:normalize_attr_row(l:state.attr_rows[l:i], l:state.cols)
-    let l:i += 1
-  endwhile
-  let l:scroll_i = 0
-  while l:scroll_i < len(l:state.scrollback_attr_rows)
-    let l:state.scrollback_attr_rows[l:scroll_i] = s:normalize_attr_row(l:state.scrollback_attr_rows[l:scroll_i], l:state.cols)
-    let l:scroll_i += 1
-  endwhile
+  if !l:fast_path
+    let l:i = 0
+    while l:i < len(l:state.attr_rows)
+      let l:state.attr_rows[l:i] = s:normalize_attr_row(l:state.attr_rows[l:i], l:state.cols)
+      let l:i += 1
+    endwhile
+    let l:scroll_i = 0
+    while l:scroll_i < len(l:state.scrollback_attr_rows)
+      let l:state.scrollback_attr_rows[l:scroll_i] = s:normalize_attr_row(l:state.scrollback_attr_rows[l:scroll_i], l:state.cols)
+      let l:scroll_i += 1
+    endwhile
+  endif
   let l:state.esc_state = get(l:state, 'esc_state', '')
   let l:state.csi = get(l:state, 'csi', '')
   let l:state.osc = get(l:state, 'osc', '')
   let l:state.utf8 = type(get(l:state, 'utf8', [])) == type([]) ? get(l:state, 'utf8', []) : []
   let l:state.last_printable = get(l:state, 'last_printable', ' ')
-  let l:state.current_style = s:style_copy(get(l:state, 'current_style', s:default_style()))
+  let l:state.current_style = l:fast_path
+        \ ? get(l:state, 'current_style', s:default_style())
+        \ : s:style_copy(get(l:state, 'current_style', s:default_style()))
   let l:state.alt_screen = type(get(l:state, 'alt_screen', {})) == type({}) ? get(l:state, 'alt_screen', {}) : {}
+  let l:state.line_cache = l:fast_path && type(get(l:state, 'line_cache', {})) == type({})
+        \ ? get(l:state, 'line_cache', {})
+        \ : {}
+  let l:state._internal = 1
   return l:state
 endfunction
 
 function! s:save_state(bufnr, state) abort
+  let a:state._internal = 1
   call setbufvar(a:bufnr, 'jusi_terminal_screen', a:state)
   call setbufvar(a:bufnr, 'jusi_terminal_rows', a:state.rows)
   call setbufvar(a:bufnr, 'jusi_terminal_cols', a:state.cols)
@@ -254,6 +337,32 @@ function! s:ensure_line(state, row) abort
     call add(a:state.lines, s:blank_line(a:state.cols))
     call add(a:state.attr_rows, s:blank_attr_row(a:state.cols))
   endwhile
+endfunction
+
+function! s:invalidate_line_cache(state) abort
+  let a:state.line_cache = {}
+endfunction
+
+function! s:get_cached_chars(state, row) abort
+  call s:ensure_line(a:state, a:row)
+  let l:key = string(a:row)
+  if !has_key(a:state.line_cache, l:key)
+    let a:state.line_cache[l:key] = s:line_chars(a:state.lines[a:row], a:state.cols)
+  endif
+  return a:state.line_cache[l:key]
+endfunction
+
+function! s:flush_line_cache(state) abort
+  if type(get(a:state, 'line_cache', {})) != type({}) || empty(a:state.line_cache)
+    return
+  endif
+  for [l:key, l:chars] in items(a:state.line_cache)
+    let l:row = str2nr(l:key)
+    if l:row >= 0 && l:row < len(a:state.lines)
+      let a:state.lines[l:row] = join(l:chars, '')
+    endif
+  endfor
+  let a:state.line_cache = {}
 endfunction
 
 function! s:append_scrollback(state, line, attr_row) abort
@@ -398,15 +507,25 @@ function! s:visible_attr_rows(state, screen_lines) abort
 endfunction
 
 function! s:apply_window_style_matches(winid, attr_rows) abort
-  call s:clear_window_style_matches(a:winid)
+  let l:reverse_positions = s:reverse_row_positions(a:attr_rows)
+  let l:ids = s:apply_reverse_row_matches(a:winid, l:reverse_positions)
   if !s:styles_enabled()
     return
   endif
+  call s:clear_window_style_matches(a:winid)
+  let l:ids = []
+  if !empty(l:reverse_positions)
+    let l:reverse_group = s:ensure_reverse_row_group()
+    for l:pos in l:reverse_positions
+      call add(l:ids, matchaddpos(l:reverse_group, [l:pos], 5, -1, {'window': a:winid}))
+    endfor
+  endif
   let l:limit = s:style_span_limit()
   if l:limit <= 0
+    call setwinvar(a:winid, 'jusi_terminal_style_matches', l:ids)
+    call setwinvar(a:winid, 'jusi_terminal_reverse_rows', copy(l:reverse_positions))
     return
   endif
-  let l:ids = []
   let l:span_count = 0
   let l:row_idx = 0
   while l:row_idx < len(a:attr_rows)
@@ -436,13 +555,48 @@ function! s:apply_window_style_matches(winid, attr_rows) abort
     let l:row_idx += 1
   endwhile
   call setwinvar(a:winid, 'jusi_terminal_style_matches', l:ids)
+  call setwinvar(a:winid, 'jusi_terminal_reverse_rows', copy(l:reverse_positions))
+endfunction
+
+function! s:update_buffer_lines(bufnr, existing_lines, new_lines) abort
+  let l:existing_len = len(a:existing_lines)
+  let l:new_len = len(a:new_lines)
+  let l:overlap = min([l:existing_len, l:new_len])
+  let l:start = -1
+  let l:i = 0
+  while l:i < l:overlap
+    if get(a:existing_lines, l:i, '') !=# get(a:new_lines, l:i, '')
+      if l:start < 0
+        let l:start = l:i + 1
+      endif
+    elseif l:start > 0
+      call setbufline(a:bufnr, l:start, a:new_lines[l:start - 1 : l:i - 1])
+      let l:start = -1
+    endif
+    let l:i += 1
+  endwhile
+  if l:start > 0
+    call setbufline(a:bufnr, l:start, a:new_lines[l:start - 1 : l:overlap - 1])
+  endif
+  if l:new_len > l:existing_len
+    if exists('*appendbufline')
+      call appendbufline(a:bufnr, l:existing_len, a:new_lines[l:existing_len : -1])
+    else
+      call setbufline(a:bufnr, 1, a:new_lines)
+      return
+    endif
+  elseif l:existing_len > l:new_len
+    call deletebufline(a:bufnr, l:new_len + 1, '$')
+  endif
 endfunction
 
 function! s:render(bufnr, state) abort
   if !s:is_valid_bufnr(a:bufnr)
     return 0
   endif
-  let l:existing = len(getbufline(a:bufnr, 1, '$'))
+  call s:flush_line_cache(a:state)
+  let l:existing_lines = getbufline(a:bufnr, 1, '$')
+  let l:existing = len(l:existing_lines)
   let l:window_views = s:is_visible_bufnr(a:bufnr)
         \ ? s:visible_window_views(a:bufnr, l:existing)
         \ : []
@@ -467,10 +621,7 @@ function! s:render(bufnr, state) abort
     let l:lines[l:cursor_row] = join(l:chars, '')
   endif
   call setbufvar(a:bufnr, '&modifiable', 1)
-  call setbufline(a:bufnr, 1, l:lines)
-  if l:existing > len(l:lines)
-    call deletebufline(a:bufnr, len(l:lines) + 1, '$')
-  endif
+  call s:update_buffer_lines(a:bufnr, l:existing_lines, l:lines)
   call setbufvar(a:bufnr, '&modified', 0)
   call setbufvar(a:bufnr, '&modifiable', 0)
   if !empty(l:window_views)
@@ -504,15 +655,14 @@ endfunction
 
 function! s:set_char(state, row, col, ch) abort
   call s:ensure_line(a:state, a:row)
-  let l:chars = s:line_chars(a:state.lines[a:row], a:state.cols)
+  let l:chars = s:get_cached_chars(a:state, a:row)
   let l:chars[a:col] = a:ch
-  let a:state.lines[a:row] = join(l:chars, '')
-  let a:state.attr_rows[a:row][a:col] = s:style_copy(get(a:state, 'current_style', s:default_style()))
+  let a:state.attr_rows[a:row][a:col] = s:canonical_style(get(a:state, 'current_style', s:default_style()))
 endfunction
 
 function! s:erase_line_segment(state, row, start_col, end_col) abort
   call s:ensure_line(a:state, a:row)
-  let l:chars = s:line_chars(a:state.lines[a:row], a:state.cols)
+  let l:chars = s:get_cached_chars(a:state, a:row)
   let l:start = max([0, a:start_col])
   let l:end = min([a:state.cols - 1, a:end_col])
   if l:end < l:start
@@ -520,28 +670,26 @@ function! s:erase_line_segment(state, row, start_col, end_col) abort
   endif
   for l:i in range(l:start, l:end)
     let l:chars[l:i] = ' '
-    let a:state.attr_rows[a:row][l:i] = s:default_style()
+    let a:state.attr_rows[a:row][l:i] = s:canonical_style(s:default_style())
   endfor
-  let a:state.lines[a:row] = join(l:chars, '')
 endfunction
 
 function! s:insert_blank_chars(state, row, col, count) abort
   call s:ensure_line(a:state, a:row)
-  let l:chars = s:line_chars(a:state.lines[a:row], a:state.cols)
+  let l:chars = s:get_cached_chars(a:state, a:row)
   let l:attrs = s:normalize_attr_row(a:state.attr_rows[a:row], a:state.cols)
   let l:count = max([1, a:count])
   let l:col = min([a:state.cols - 1, max([0, a:col])])
   call extend(l:chars, repeat([' '], l:count), l:col)
-  call extend(l:attrs, repeat([s:default_style()], l:count), l:col)
+  call extend(l:attrs, repeat([s:canonical_style(s:default_style())], l:count), l:col)
   call s:truncate_chars(l:chars, a:state.cols)
   call s:truncate_chars(l:attrs, a:state.cols)
-  let a:state.lines[a:row] = join(l:chars, '')
   let a:state.attr_rows[a:row] = l:attrs
 endfunction
 
 function! s:delete_chars(state, row, col, count) abort
   call s:ensure_line(a:state, a:row)
-  let l:chars = s:line_chars(a:state.lines[a:row], a:state.cols)
+  let l:chars = s:get_cached_chars(a:state, a:row)
   let l:attrs = s:normalize_attr_row(a:state.attr_rows[a:row], a:state.cols)
   let l:count = max([1, a:count])
   let l:col = min([a:state.cols - 1, max([0, a:col])])
@@ -550,10 +698,9 @@ function! s:delete_chars(state, row, col, count) abort
     call remove(l:attrs, l:col, min([len(l:attrs) - 1, l:col + l:count - 1]))
   endif
   call extend(l:chars, repeat([' '], l:count))
-  call extend(l:attrs, repeat([s:default_style()], l:count))
+  call extend(l:attrs, repeat([s:canonical_style(s:default_style())], l:count))
   call s:truncate_chars(l:chars, a:state.cols)
   call s:truncate_chars(l:attrs, a:state.cols)
-  let a:state.lines[a:row] = join(l:chars, '')
   let a:state.attr_rows[a:row] = l:attrs
 endfunction
 
@@ -564,6 +711,7 @@ function! s:scroll_region(state) abort
 endfunction
 
 function! s:insert_lines(state, row, count) abort
+  call s:flush_line_cache(a:state)
   let l:count = max([1, a:count])
   let l:region = s:scroll_region(a:state)
   let l:row = min([l:region.bottom, max([l:region.top, a:row])])
@@ -584,6 +732,7 @@ function! s:insert_lines(state, row, count) abort
 endfunction
 
 function! s:delete_lines(state, row, count) abort
+  call s:flush_line_cache(a:state)
   let l:count = max([1, a:count])
   let l:region = s:scroll_region(a:state)
   let l:row = min([l:region.bottom, max([l:region.top, a:row])])
@@ -607,6 +756,7 @@ function! s:delete_lines(state, row, count) abort
 endfunction
 
 function! s:clear_screen(state) abort
+  call s:invalidate_line_cache(a:state)
   let a:state.lines = []
   let a:state.attr_rows = []
   let l:i = 0
@@ -618,6 +768,7 @@ function! s:clear_screen(state) abort
 endfunction
 
 function! s:linefeed(state) abort
+  call s:flush_line_cache(a:state)
   let l:top = min([a:state.rows - 1, max([0, get(a:state, 'scroll_top', 0)])])
   let l:bottom = min([a:state.rows - 1, max([l:top, get(a:state, 'scroll_bottom', a:state.rows - 1)])])
   if a:state.cursor_row ==# l:bottom
@@ -637,6 +788,7 @@ function! s:linefeed(state) abort
 endfunction
 
 function! s:index(state) abort
+  call s:flush_line_cache(a:state)
   let a:state.cursor_row = min([a:state.rows - 1, a:state.cursor_row + 1])
   let l:top = min([a:state.rows - 1, max([0, get(a:state, 'scroll_top', 0)])])
   let l:bottom = min([a:state.rows - 1, max([l:top, get(a:state, 'scroll_bottom', a:state.rows - 1)])])
@@ -656,6 +808,7 @@ function! s:index(state) abort
 endfunction
 
 function! s:reverse_index(state) abort
+  call s:flush_line_cache(a:state)
   let l:top = min([a:state.rows - 1, max([0, get(a:state, 'scroll_top', 0)])])
   let l:bottom = min([a:state.rows - 1, max([l:top, get(a:state, 'scroll_bottom', a:state.rows - 1)])])
   if a:state.cursor_row ==# l:top
@@ -686,6 +839,42 @@ function! s:param(params, idx, default) abort
   endif
   let l:value = a:params[a:idx]
   return empty(l:value) ? a:default : str2nr(l:value)
+endfunction
+
+function! s:param_num(params, idx, default) abort
+  if a:idx >= len(a:params)
+    return a:default
+  endif
+  let l:value = a:params[a:idx]
+  return l:value < 0 ? a:default : l:value
+endfunction
+
+function! s:parse_csi(seq) abort
+  if !exists('s:csi_parse_cache')
+    let s:csi_parse_cache = {}
+  endif
+  if has_key(s:csi_parse_cache, a:seq)
+    return s:csi_parse_cache[a:seq]
+  endif
+  let l:final = strpart(a:seq, len(a:seq) - 1, 1)
+  let l:body = strpart(a:seq, 0, len(a:seq) - 1)
+  let l:private = !empty(l:body) && l:body[0] ==# '?'
+  if l:private
+    let l:body = strpart(l:body, 1)
+  endif
+  let l:params = []
+  if !empty(l:body)
+    for l:item in split(l:body, ';')
+      call add(l:params, empty(l:item) ? -1 : str2nr(l:item))
+    endfor
+  endif
+  let l:parsed = {
+        \ 'final': l:final,
+        \ 'private': l:private ? 1 : 0,
+        \ 'params': l:params,
+        \ }
+  let s:csi_parse_cache[a:seq] = l:parsed
+  return l:parsed
 endfunction
 
 function! s:ansi_color_name(code, bright) abort
@@ -793,73 +982,70 @@ function! s:handle_csi(state, seq) abort
   if empty(a:seq)
     return
   endif
-  let l:final = strpart(a:seq, len(a:seq) - 1, 1)
-  let l:body = strpart(a:seq, 0, len(a:seq) - 1)
-  let l:private = !empty(l:body) && l:body[0] ==# '?'
-  if l:private
-    let l:body = strpart(l:body, 1)
-  endif
-  let l:params = split(l:body, ';')
+  let l:parsed = s:parse_csi(a:seq)
+  let l:final = l:parsed.final
+  let l:private = l:parsed.private
+  let l:params = l:parsed.params
   if l:final ==# 'A'
-    let a:state.cursor_row = max([0, a:state.cursor_row - s:param(l:params, 0, 1)])
+    let a:state.cursor_row = max([0, a:state.cursor_row - s:param_num(l:params, 0, 1)])
     return
   endif
   if l:final ==# 'B'
-    let a:state.cursor_row = min([a:state.rows - 1, a:state.cursor_row + s:param(l:params, 0, 1)])
+    let a:state.cursor_row = min([a:state.rows - 1, a:state.cursor_row + s:param_num(l:params, 0, 1)])
     call s:ensure_line(a:state, a:state.cursor_row)
     return
   endif
   if l:final ==# 'C'
-    let a:state.cursor_col = min([a:state.cols - 1, a:state.cursor_col + s:param(l:params, 0, 1)])
+    let a:state.cursor_col = min([a:state.cols - 1, a:state.cursor_col + s:param_num(l:params, 0, 1)])
     return
   endif
   if l:final ==# 'D'
-    let a:state.cursor_col = max([0, a:state.cursor_col - s:param(l:params, 0, 1)])
+    let a:state.cursor_col = max([0, a:state.cursor_col - s:param_num(l:params, 0, 1)])
     return
   endif
   if l:final ==# 'G'
-    let a:state.cursor_col = min([a:state.cols - 1, max([0, s:param(l:params, 0, 1) - 1])])
+    let a:state.cursor_col = min([a:state.cols - 1, max([0, s:param_num(l:params, 0, 1) - 1])])
     return
   endif
   if l:final ==# '`'
-    let a:state.cursor_col = min([a:state.cols - 1, max([0, s:param(l:params, 0, 1) - 1])])
+    let a:state.cursor_col = min([a:state.cols - 1, max([0, s:param_num(l:params, 0, 1) - 1])])
     return
   endif
   if l:final ==# 'd'
-    let a:state.cursor_row = min([a:state.rows - 1, max([0, s:param(l:params, 0, 1) - 1])])
+    let a:state.cursor_row = min([a:state.rows - 1, max([0, s:param_num(l:params, 0, 1) - 1])])
     call s:ensure_line(a:state, a:state.cursor_row)
     return
   endif
   if l:final ==# 'H' || l:final ==# 'f'
-    let a:state.cursor_row = min([a:state.rows - 1, max([0, s:param(l:params, 0, 1) - 1])])
-    let a:state.cursor_col = min([a:state.cols - 1, max([0, s:param(l:params, 1, 1) - 1])])
+    let a:state.cursor_row = min([a:state.rows - 1, max([0, s:param_num(l:params, 0, 1) - 1])])
+    let a:state.cursor_col = min([a:state.cols - 1, max([0, s:param_num(l:params, 1, 1) - 1])])
     call s:ensure_line(a:state, a:state.cursor_row)
     return
   endif
   if l:final ==# 'E'
-    let a:state.cursor_row = min([a:state.rows - 1, a:state.cursor_row + s:param(l:params, 0, 1)])
+    let a:state.cursor_row = min([a:state.rows - 1, a:state.cursor_row + s:param_num(l:params, 0, 1)])
     let a:state.cursor_col = 0
     call s:ensure_line(a:state, a:state.cursor_row)
     return
   endif
   if l:final ==# 'e'
-    let a:state.cursor_row = min([a:state.rows - 1, a:state.cursor_row + s:param(l:params, 0, 1)])
+    let a:state.cursor_row = min([a:state.rows - 1, a:state.cursor_row + s:param_num(l:params, 0, 1)])
     call s:ensure_line(a:state, a:state.cursor_row)
     return
   endif
   if l:final ==# 'F'
-    let a:state.cursor_row = max([0, a:state.cursor_row - s:param(l:params, 0, 1)])
+    let a:state.cursor_row = max([0, a:state.cursor_row - s:param_num(l:params, 0, 1)])
     let a:state.cursor_col = 0
     call s:ensure_line(a:state, a:state.cursor_row)
     return
   endif
   if l:final ==# 'a'
-    let a:state.cursor_col = min([a:state.cols - 1, a:state.cursor_col + s:param(l:params, 0, 1)])
+    let a:state.cursor_col = min([a:state.cols - 1, a:state.cursor_col + s:param_num(l:params, 0, 1)])
     return
   endif
   if l:final ==# 'r'
-    let l:top = max([1, s:param(l:params, 0, 1)]) - 1
-    let l:bottom = max([1, s:param(l:params, 1, a:state.rows)]) - 1
+    let l:top = max([1, s:param_num(l:params, 0, 1)]) - 1
+    let l:bottom = max([1, s:param_num(l:params, 1, a:state.rows)]) - 1
     let a:state.scroll_top = min([a:state.rows - 1, max([0, l:top])])
     let a:state.scroll_bottom = min([a:state.rows - 1, max([a:state.scroll_top, l:bottom])])
     let a:state.cursor_row = a:state.scroll_top
@@ -867,7 +1053,7 @@ function! s:handle_csi(state, seq) abort
     return
   endif
   if l:final ==# 'J'
-    let l:mode = s:param(l:params, 0, 0)
+    let l:mode = s:param_num(l:params, 0, 0)
     if l:mode ==# 2
       call s:clear_screen(a:state)
       let a:state.cursor_row = 0
@@ -902,7 +1088,7 @@ function! s:handle_csi(state, seq) abort
     return
   endif
   if l:final ==# 'K'
-    let l:mode = s:param(l:params, 0, 0)
+    let l:mode = s:param_num(l:params, 0, 0)
     if l:mode ==# 1
       call s:erase_line_segment(a:state, a:state.cursor_row, 0, a:state.cursor_col)
     elseif l:mode ==# 2
@@ -913,15 +1099,15 @@ function! s:handle_csi(state, seq) abort
     return
   endif
   if l:final ==# '@'
-    call s:insert_blank_chars(a:state, a:state.cursor_row, a:state.cursor_col, s:param(l:params, 0, 1))
+    call s:insert_blank_chars(a:state, a:state.cursor_row, a:state.cursor_col, s:param_num(l:params, 0, 1))
     return
   endif
   if l:final ==# 'P'
-    call s:delete_chars(a:state, a:state.cursor_row, a:state.cursor_col, s:param(l:params, 0, 1))
+    call s:delete_chars(a:state, a:state.cursor_row, a:state.cursor_col, s:param_num(l:params, 0, 1))
     return
   endif
   if l:final ==# 'b'
-    let l:count = s:param(l:params, 0, 1)
+    let l:count = s:param_num(l:params, 0, 1)
     let l:i = 0
     while l:i < l:count
       call s:put_char(a:state, get(a:state, 'last_printable', ' '))
@@ -930,33 +1116,33 @@ function! s:handle_csi(state, seq) abort
     return
   endif
   if l:final ==# 'I'
-    let l:count = s:param(l:params, 0, 1)
+    let l:count = s:param_num(l:params, 0, 1)
     let a:state.cursor_col = min([a:state.cols - 1, ((a:state.cursor_col / 8) + l:count) * 8])
     return
   endif
   if l:final ==# 'Z'
-    let l:count = s:param(l:params, 0, 1)
+    let l:count = s:param_num(l:params, 0, 1)
     let a:state.cursor_col = max([0, (((a:state.cursor_col / 8) + 1) - l:count) * 8])
     return
   endif
   if l:final ==# 'X'
-    call s:erase_line_segment(a:state, a:state.cursor_row, a:state.cursor_col, a:state.cursor_col + s:param(l:params, 0, 1) - 1)
+    call s:erase_line_segment(a:state, a:state.cursor_row, a:state.cursor_col, a:state.cursor_col + s:param_num(l:params, 0, 1) - 1)
     return
   endif
   if l:final ==# 'L'
-    call s:insert_lines(a:state, a:state.cursor_row, s:param(l:params, 0, 1))
+    call s:insert_lines(a:state, a:state.cursor_row, s:param_num(l:params, 0, 1))
     return
   endif
   if l:final ==# 'M'
-    call s:delete_lines(a:state, a:state.cursor_row, s:param(l:params, 0, 1))
+    call s:delete_lines(a:state, a:state.cursor_row, s:param_num(l:params, 0, 1))
     return
   endif
   if l:final ==# 'S'
-    call s:delete_lines(a:state, get(a:state, 'scroll_top', 0), s:param(l:params, 0, 1))
+    call s:delete_lines(a:state, get(a:state, 'scroll_top', 0), s:param_num(l:params, 0, 1))
     return
   endif
   if l:final ==# 'T'
-    call s:insert_lines(a:state, get(a:state, 'scroll_top', 0), s:param(l:params, 0, 1))
+    call s:insert_lines(a:state, get(a:state, 'scroll_top', 0), s:param_num(l:params, 0, 1))
     return
   endif
   if l:final ==# 'm'
@@ -970,7 +1156,7 @@ function! s:handle_csi(state, seq) abort
     if l:private
       let l:enable = l:final ==# 'h'
       for l:param in l:params
-        let l:mode = empty(l:param) ? 0 : str2nr(l:param)
+        let l:mode = l:param < 0 ? 0 : l:param
         if l:mode ==# 25
           let a:state.cursor_visible = l:enable ? 1 : 0
         elseif l:mode ==# 1048

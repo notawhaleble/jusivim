@@ -345,7 +345,6 @@ endfunction
 
 function! s:client_should_poll(cell) abort
   if get(get(a:cell, 'owner', {}), 'kind', '') ==# 'handler'
-        \ && get(get(get(a:cell, 'handler', {}), 'snapshot', {}), 'transport', '') ==# 'pty'
     return 0
   endif
   return index(['busy', 'follow-up'], get(a:cell, 'status', '')) >= 0

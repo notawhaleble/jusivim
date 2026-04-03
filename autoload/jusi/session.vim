@@ -1066,6 +1066,13 @@ function! jusi#session#callback_client_updated(payload, ...) abort
           \ || get(l:cell, 'client_bufnr', -1) < 0
       continue
     endif
+    let l:client_bufnr = l:cell.client_bufnr
+    let l:buffer_snapshot = getbufvar(l:client_bufnr, 'jusi_handler_snapshot', {})
+    let l:last_message_type = getbufvar(l:client_bufnr, 'jusi_handler_last_message_type', '')
+    if get(l:buffer_snapshot, 'transport', '') ==# 'pty'
+          \ || index(['terminal_input', 'terminal_output', 'terminal_prompt', 'terminal_bytes'], l:last_message_type) >= 0
+      return l:session
+    endif
     if get(get(l:cell, 'owner', {}), 'kind', '') ==# 'handler'
           \ && get(get(get(l:cell, 'handler', {}), 'snapshot', {}), 'transport', '') ==# 'pty'
       return l:session
@@ -1113,24 +1120,31 @@ function! jusi#session#callback_handler_message(payload, ...) abort
     if get(l:cell, 'client_id', '') !=# get(l:payload, 'client_id', '')
       continue
     endif
+    let l:message_type = get(l:payload, 'message_type', '')
+    let l:is_live_terminal_message = index([
+          \ 'terminal_input',
+          \ 'terminal_output',
+          \ 'terminal_prompt',
+          \ 'terminal_bytes',
+          \ ], l:message_type) >= 0
     let l:handler_update = {
           \ 'id': get(l:payload, 'handler_id', ''),
-          \ 'last_message_type': get(l:payload, 'message_type', ''),
+          \ 'last_message_type': l:message_type,
           \ 'payload': copy(get(l:payload, 'payload', {})),
           \ 'snapshot': get(get(l:cell, 'handler', {}), 'snapshot', {}),
           \ }
-    if get(l:payload, 'message_type', '') ==# 'handler_snapshot'
+    if l:message_type ==# 'handler_snapshot'
       let l:handler_update.snapshot = copy(get(l:payload, 'payload', {}))
     endif
     if get(l:cell, 'client_bufnr', -1) > 0
-      if get(l:payload, 'message_type', '') ==# 'handler_snapshot'
+      if l:message_type ==# 'handler_snapshot'
             \ && get(get(l:payload, 'payload', {}), 'transport', '') ==# 'pty'
         call jusi#terminalscreen#reset(
               \ l:cell.client_bufnr,
               \ max([1, getbufvar(l:cell.client_bufnr, 'jusi_terminal_rows', 24)]),
               \ max([1, getbufvar(l:cell.client_bufnr, 'jusi_terminal_cols', 80)]))
       endif
-      if get(l:payload, 'message_type', '') ==# 'terminal_bytes' && s:terminal_debug_log_enabled()
+      if l:message_type ==# 'terminal_bytes' && s:terminal_debug_log_enabled()
         call s:terminal_debug_log('terminal-bytes-before', {
               \ 'bufnr': l:bufnr,
               \ 'client_bufnr': l:cell.client_bufnr,
@@ -1141,23 +1155,23 @@ function! jusi#session#callback_handler_message(payload, ...) abort
               \ 'screen': jusi#terminalscreen#debug_state(l:cell.client_bufnr),
               \ })
       endif
-      if get(l:payload, 'message_type', '') ==# 'handler_snapshot'
+      if l:message_type ==# 'handler_snapshot'
             \ && get(get(l:payload, 'payload', {}), 'transport', '') ==# 'pty'
         call jusi#client#stop_refresh(l:cell.client_bufnr)
       endif
-      if index(['terminal_input', 'terminal_output', 'terminal_prompt', 'terminal_bytes'], get(l:payload, 'message_type', '')) >= 0
+      if l:is_live_terminal_message
         call jusi#client#stop_refresh(l:cell.client_bufnr)
       endif
       call jusi#client#record_handler_message(
             \ l:cell.client_bufnr,
             \ get(l:payload, 'handler_id', ''),
-            \ get(l:payload, 'message_type', ''),
+            \ l:message_type,
             \ get(l:payload, 'payload', {}))
       call jusi#client#apply_handler_terminal_message(
             \ l:cell.client_bufnr,
-            \ get(l:payload, 'message_type', ''),
+            \ l:message_type,
             \ get(l:payload, 'payload', {}))
-      if get(l:payload, 'message_type', '') ==# 'terminal_bytes' && s:terminal_debug_log_enabled()
+      if l:message_type ==# 'terminal_bytes' && s:terminal_debug_log_enabled()
         call s:terminal_debug_log('terminal-bytes-after', {
               \ 'bufnr': l:bufnr,
               \ 'client_bufnr': l:cell.client_bufnr,
@@ -1169,9 +1183,11 @@ function! jusi#session#callback_handler_message(payload, ...) abort
               \ })
       endif
     endif
-    call s:update_cell(l:bufnr, l:cell.id, {
-          \ 'handler': l:handler_update,
-          \ })
+    if !l:is_live_terminal_message
+      call s:update_cell(l:bufnr, l:cell.id, {
+            \ 'handler': l:handler_update,
+            \ })
+    endif
     return jusi#notebook#state(l:bufnr)
   endfor
 
