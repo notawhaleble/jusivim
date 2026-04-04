@@ -11,6 +11,7 @@ function! s:apply_client_window_options() abort
   nnoremap <silent> <buffer> <C-\><C-\> :JusiToggleFocus<CR>
   inoremap <silent> <buffer> <C-\><C-\> <C-R>=jusi#focus#toggle()<CR>
   if exists('*jusi#terminalscreen#refresh')
+        \ && getbufvar(bufnr('%'), 'jusi_client_transport_kind', '') !=# 'native_terminal'
     call jusi#terminalscreen#refresh(bufnr('%'))
   endif
   return 1
@@ -92,6 +93,7 @@ function! s:first_notebook_buffer() abort
 endfunction
 
 function! s:focus_current_cell_client() abort
+  let l:notebook_bufnr = bufnr('%')
   let l:cell = jusi#notebook#cell_at_line(bufnr('%'), line('.'))
   if empty(l:cell) || get(l:cell, 'client_bufnr', -1) < 0
     echohl ErrorMsg
@@ -100,10 +102,19 @@ function! s:focus_current_cell_client() abort
     return 0
   endif
   if !bufexists(l:cell.client_bufnr)
-    echohl ErrorMsg
-    echom 'Attached client buffer is missing locally'
-    echohl None
-    return 0
+    let l:recovered = jusi#client#recover_attached_buffer(
+          \ l:notebook_bufnr,
+          \ get(l:cell, 'id', 0),
+          \ get(l:cell, 'client_id', ''))
+    if l:recovered > 0
+      call jusi#session#callback_cell(l:cell.id, {'client_bufnr': l:recovered, 'client_state': 'active'}, l:notebook_bufnr)
+      let l:cell = jusi#notebook#cell_at_line(l:notebook_bufnr, line('.'))
+    else
+      echohl ErrorMsg
+      echom 'Attached client buffer is missing locally'
+      echohl None
+      return 0
+    endif
   endif
   return s:jump_to_buffer(l:cell.client_bufnr)
 endfunction

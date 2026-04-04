@@ -50,6 +50,7 @@ endfunction
 function! s:map_cell_mode() abort
   nnoremap <silent> <buffer> j :<C-U>execute "JusiCellNext"<CR>
   nnoremap <silent> <buffer> k :<C-U>execute "JusiCellPrev"<CR>
+  nnoremap <silent> <buffer> <CR> :JusiExecute<CR>
   nnoremap <silent> <buffer> <leader><Space> :JusiTerminalModeToggle<CR>
   nnoremap <silent> <buffer> B :JusiCellNewBelow<CR>
   nnoremap <silent> <buffer> A :JusiCellNewAbove<CR>
@@ -85,6 +86,7 @@ endfunction
 function! s:clear_mode_mappings() abort
   call s:maybe_unmap_buffer('j')
   call s:maybe_unmap_buffer('k')
+  call s:maybe_unmap_buffer('<CR>')
   call s:maybe_unmap_buffer('<leader><Space>')
   call s:maybe_unmap_buffer('<leader>:')
   call s:maybe_unmap_buffer('B')

@@ -6,6 +6,158 @@ function! s:is_valid_bufnr(bufnr) abort
   return type(a:bufnr) == type(0) && a:bufnr > 0 && bufexists(a:bufnr)
 endfunction
 
+function! s:native_terminal_debug_enabled() abort
+  return type(get(g:, 'jusi_native_terminal_debug_log', 0)) == type('')
+        \ && !empty(get(g:, 'jusi_native_terminal_debug_log', ''))
+endfunction
+
+function! s:native_terminal_debug(message, payload) abort
+  if !s:native_terminal_debug_enabled()
+    return
+  endif
+  let l:path = get(g:, 'jusi_native_terminal_debug_log', '')
+  let l:parts = [strftime('%Y-%m-%d %H:%M:%S'), a:message, string(a:payload)]
+  call writefile([join(l:parts, ' | ')], l:path, 'a')
+endfunction
+
+function! s:layout_command(layout) abort
+  let l:layout = empty(a:layout) ? get(g:, 'jusi_client_layout', 'bsplit') : a:layout
+  let l:map = {
+        \ 'asplit': 'aboveleft split',
+        \ 'Asplit': 'topleft split',
+        \ 'bsplit': 'belowright split',
+        \ 'Bsplit': 'botright split',
+        \ 'rsplit': 'vertical belowright split',
+        \ 'lsplit': 'vertical topleft split',
+        \ 'tab': 'tab split',
+        \ }
+  return get(l:map, l:layout, l:map['bsplit'])
+endfunction
+
+function! s:native_terminal_transport(view) abort
+  let l:transport = get(a:view, 'transport', {})
+  return type(l:transport) == type({}) ? l:transport : {}
+endfunction
+
+function! s:is_native_terminal_view(view) abort
+  let l:transport = s:native_terminal_transport(a:view)
+  return get(l:transport, 'kind', '') ==# 'native_terminal'
+endfunction
+
+function! s:sanitize_terminal_env(env) abort
+  if type(a:env) != type({})
+    return {}
+  endif
+  let l:env = copy(a:env)
+  for l:key in ['ROWS', 'COLUMNS', 'LINES']
+    if has_key(l:env, l:key)
+      call remove(l:env, l:key)
+    endif
+  endfor
+  return l:env
+endfunction
+
+function! s:sanitize_native_terminal_transport(transport) abort
+  if type(a:transport) != type({})
+    return {}
+  endif
+  let l:transport = copy(a:transport)
+  let l:attach_env = s:sanitize_terminal_env(get(l:transport, 'attach_env', {}))
+  if has_key(l:attach_env, 'JUSI_TERMINAL_ENV_JSON')
+    try
+      let l:nested = json_decode(l:attach_env.JUSI_TERMINAL_ENV_JSON)
+      let l:nested = s:sanitize_terminal_env(l:nested)
+      let l:attach_env.JUSI_TERMINAL_ENV_JSON = json_encode(l:nested)
+    catch
+    endtry
+  endif
+  let l:transport.attach_env = l:attach_env
+  return l:transport
+endfunction
+
+function! s:native_terminal_launcher() abort
+  let l:launcher = get(g:, 'jusi_native_terminal_launcher', 0)
+  return type(l:launcher) == type(function('tr')) ? l:launcher : function('s:launch_native_terminal_default')
+endfunction
+
+function! s:launch_native_terminal_default(notebook_bufnr, cell_id, client_id, transport) abort
+  let l:cmd = get(a:transport, 'attach_cmd', [])
+  let l:env = get(a:transport, 'attach_env', {})
+  call s:native_terminal_debug('launch-default-begin', {
+        \ 'notebook_bufnr': a:notebook_bufnr,
+        \ 'cell_id': a:cell_id,
+        \ 'client_id': a:client_id,
+        \ 'cmd': l:cmd,
+        \ 'env': l:env,
+        \ })
+  if !(type(l:cmd) == type([]) && !empty(l:cmd)) && !(type(l:cmd) == type('') && !empty(l:cmd))
+    call s:native_terminal_debug('launch-default-invalid-cmd', l:cmd)
+    return 0
+  endif
+  let l:source_winid = exists('*win_getid') ? win_getid() : 0
+  execute s:layout_command(get(g:, 'jusi_client_layout', 'bsplit'))
+  if has('nvim') && exists('*termopen')
+    enew
+    call termopen(l:cmd, {'env': type(l:env) == type({}) ? l:env : {}})
+    let l:bufnr = bufnr('%')
+  elseif exists('*term_start')
+    let l:options = {'curwin': 1, 'term_finish': 'close'}
+    if type(l:env) == type({})
+      let l:options.env = l:env
+    endif
+    call term_start(l:cmd, l:options)
+    let l:bufnr = bufnr('%')
+  else
+    let l:bufnr = 0
+  endif
+  if l:bufnr > 0
+    call setbufvar(l:bufnr, '&bufhidden', 'hide')
+  endif
+  call s:native_terminal_debug('launch-default-end', {
+        \ 'bufnr': l:bufnr,
+        \ 'cmd': l:cmd,
+        \ 'env': l:env,
+        \ })
+  if l:source_winid > 0
+    call win_gotoid(l:source_winid)
+  endif
+  return l:bufnr
+endfunction
+
+function! s:ensure_native_terminal_buffer(notebook_bufnr, cell_id, client_id, client_bufnr, transport) abort
+  let l:transport = s:sanitize_native_terminal_transport(a:transport)
+  if s:is_valid_bufnr(a:client_bufnr)
+        \ && getbufvar(a:client_bufnr, 'jusi_client_transport_kind', '') ==# 'native_terminal'
+        \ && getbufvar(a:client_bufnr, 'jusi_client_id', '') ==# a:client_id
+    call setbufvar(a:client_bufnr, 'jusi_client_transport', copy(l:transport))
+    return a:client_bufnr
+  endif
+  let l:Launcher = s:native_terminal_launcher()
+  let l:new_bufnr = call(l:Launcher, [a:notebook_bufnr, a:cell_id, a:client_id, l:transport])
+  call s:native_terminal_debug('ensure-native-terminal-buffer', {
+        \ 'notebook_bufnr': a:notebook_bufnr,
+        \ 'cell_id': a:cell_id,
+        \ 'client_id': a:client_id,
+        \ 'old_bufnr': a:client_bufnr,
+        \ 'new_bufnr': l:new_bufnr,
+        \ 'transport': l:transport,
+        \ })
+  if type(l:new_bufnr) != type(0) || l:new_bufnr <= 0 || !bufexists(l:new_bufnr)
+    return 0
+  endif
+  call jusi#client#mark_attached_buffer(a:notebook_bufnr, a:cell_id, a:client_id, l:new_bufnr)
+  call setbufvar(l:new_bufnr, 'jusi_client_transport_kind', 'native_terminal')
+  call setbufvar(l:new_bufnr, 'jusi_client_transport', copy(l:transport))
+  call jusi#session#callback_cell(a:cell_id, {
+        \ 'client_bufnr': l:new_bufnr,
+        \ 'client_state': 'active',
+        \ }, a:notebook_bufnr)
+  if s:is_valid_bufnr(a:client_bufnr) && a:client_bufnr != l:new_bufnr
+    call jusi#client#destroy_buffer(a:client_bufnr)
+  endif
+  return l:new_bufnr
+endfunction
+
 function! s:stop_refresh_timer(bufnr) abort
   if !s:is_valid_bufnr(a:bufnr)
     return
@@ -172,6 +324,9 @@ function! jusi#client#apply_handler_terminal_message(bufnr, message_type, payloa
   if !s:is_valid_bufnr(a:bufnr) || type(a:payload) != type({})
     return 0
   endif
+  if getbufvar(a:bufnr, 'jusi_client_transport_kind', '') ==# 'native_terminal'
+    return 0
+  endif
   if a:message_type ==# 'terminal_bytes'
     return s:queue_terminal_bytes(a:bufnr, get(a:payload, 'hex', ''))
   endif
@@ -267,6 +422,28 @@ function! jusi#client#validate_attached_binding(notebook_bufnr, cell_id, client_
     return s:binding_mismatch('Client buffer belongs to another cell')
   endif
   return {'ok': 1}
+endfunction
+
+function! jusi#client#recover_attached_buffer(notebook_bufnr, cell_id, client_id) abort
+  for l:info in getbufinfo()
+    let l:bufnr = get(l:info, 'bufnr', 0)
+    if !s:is_valid_bufnr(l:bufnr)
+      continue
+    endif
+    if getbufvar(l:bufnr, 'jusi_client_notebook_bufnr', -1) != a:notebook_bufnr
+      continue
+    endif
+    if getbufvar(l:bufnr, 'jusi_client_role', '') !=# 'cell'
+      continue
+    endif
+    if getbufvar(l:bufnr, 'jusi_client_cell_id', 0) == a:cell_id
+      return l:bufnr
+    endif
+    if !empty(a:client_id) && getbufvar(l:bufnr, 'jusi_client_id', '') ==# a:client_id
+      return l:bufnr
+    endif
+  endfor
+  return 0
 endfunction
 
 function! s:notebook_cell(notebook_bufnr, cell_id) abort
@@ -390,6 +567,14 @@ function! s:refresh_attached_now(notebook_bufnr, cell_id, client_id, client_bufn
   endif
 
   let l:view = s:normalize_client_view(l:response)
+  if s:is_native_terminal_view(l:view)
+    let l:transport = s:native_terminal_transport(l:view)
+    let l:terminal_bufnr = s:ensure_native_terminal_buffer(a:notebook_bufnr, a:cell_id, a:client_id, a:client_bufnr, l:transport)
+    if l:terminal_bufnr > 0
+      call jusi#session#maybe_autobootstrap_cell(a:cell_id, a:notebook_bufnr)
+      return l:view
+    endif
+  endif
   let l:revision = get(l:view, 'revision', -1)
   if l:revision != getbufvar(a:client_bufnr, 'jusi_client_revision', -1)
     let l:lines = get(l:view, 'lines', [])

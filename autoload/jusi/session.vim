@@ -436,6 +436,19 @@ function! s:refresh_stale_cells(bufnr) abort
       continue
     endif
     let l:missing_locally = !bufexists(l:cell.client_bufnr)
+    if l:missing_locally
+      let l:recovered_bufnr = jusi#client#recover_attached_buffer(
+            \ a:bufnr,
+            \ l:cell.id,
+            \ get(l:cell, 'client_id', ''))
+      if l:recovered_bufnr > 0
+        let l:cell = s:update_cell(a:bufnr, l:cell.id, {
+              \ 'client_bufnr': l:recovered_bufnr,
+              \ 'client_state': 'active',
+              \ })
+        let l:missing_locally = 0
+      endif
+    endif
     let l:validation = jusi#client#validate_attached_binding(
           \ a:bufnr,
           \ l:cell.id,
@@ -546,6 +559,10 @@ endfunction
 
 function! s:connected_session_state(session) abort
   return index(['starting', 'connected', 'stopping'], get(a:session, 'state', 'idle')) >= 0
+endfunction
+
+function! s:is_stopping_session_state(session) abort
+  return index(['stopping', 'stopped'], get(a:session, 'state', 'idle')) >= 0
 endfunction
 
 function! s:fail_session(bufnr, update, message) abort
@@ -985,7 +1002,9 @@ endfunction
 function! jusi#session#callback_prepared(update, ...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
   call s:debug_log(l:bufnr, 'callback-prepared-begin', a:update, jusi#session#prepared(l:bufnr))
-  call s:refresh_stale_prepared(l:bufnr)
+  if !s:is_stopping_session_state(jusi#session#state(l:bufnr))
+    call s:refresh_stale_prepared(l:bufnr)
+  endif
   let l:update = s:normalize_prepared_update(a:update)
   let l:state = s:update_prepared(l:bufnr, l:update)
   if empty(l:state)
@@ -1009,8 +1028,8 @@ endfunction
 
 function! jusi#session#callback_cell(cell_id, update, ...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
-  call s:refresh_stale_cells(l:bufnr)
   let l:cell = s:update_cell(l:bufnr, a:cell_id, a:update)
+  let l:cell = s:maybe_autobootstrap_handler_cell(l:bufnr, l:cell)
   return s:maybe_finalize_closed_cell(l:bufnr, l:cell)
 endfunction
 
@@ -1132,13 +1151,24 @@ function! jusi#session#callback_handler_message(payload, ...) abort
           \ 'last_message_type': l:message_type,
           \ 'payload': copy(get(l:payload, 'payload', {})),
           \ 'snapshot': get(get(l:cell, 'handler', {}), 'snapshot', {}),
+          \ 'bootstrap_state': get(get(l:cell, 'handler', {}), 'bootstrap_state', ''),
           \ }
     if l:message_type ==# 'handler_snapshot'
-      let l:handler_update.snapshot = copy(get(l:payload, 'payload', {}))
+      let l:handler_update.snapshot = extend(
+            \ copy(l:handler_update.snapshot),
+            \ copy(get(l:payload, 'payload', {})),
+            \ 'force')
+      if get(get(l:payload, 'payload', {}), 'mode', '') ==# 'live'
+        let l:handler_update.bootstrap_state = 'live'
+      endif
+    elseif l:message_type ==# 'bootstrap_ready'
+      let l:handler_update.snapshot = copy(l:handler_update.snapshot)
+      let l:handler_update.snapshot.bootstrap_ready = 1
     endif
     if get(l:cell, 'client_bufnr', -1) > 0
       if l:message_type ==# 'handler_snapshot'
             \ && get(get(l:payload, 'payload', {}), 'transport', '') ==# 'pty'
+            \ && getbufvar(l:cell.client_bufnr, 'jusi_client_transport_kind', '') !=# 'native_terminal'
         call jusi#terminalscreen#reset(
               \ l:cell.client_bufnr,
               \ max([1, getbufvar(l:cell.client_bufnr, 'jusi_terminal_rows', 24)]),
@@ -1157,6 +1187,7 @@ function! jusi#session#callback_handler_message(payload, ...) abort
       endif
       if l:message_type ==# 'handler_snapshot'
             \ && get(get(l:payload, 'payload', {}), 'transport', '') ==# 'pty'
+            \ && getbufvar(l:cell.client_bufnr, 'jusi_client_transport_kind', '') !=# 'native_terminal'
         call jusi#client#stop_refresh(l:cell.client_bufnr)
       endif
       if l:is_live_terminal_message
@@ -1184,9 +1215,12 @@ function! jusi#session#callback_handler_message(payload, ...) abort
       endif
     endif
     if !l:is_live_terminal_message
-      call s:update_cell(l:bufnr, l:cell.id, {
+      let l:cell = s:update_cell(l:bufnr, l:cell.id, {
             \ 'handler': l:handler_update,
             \ })
+      if index(['handler_snapshot', 'bootstrap_ready'], l:message_type) >= 0
+        let l:cell = s:maybe_autobootstrap_handler_cell(l:bufnr, l:cell)
+      endif
     endif
     return jusi#notebook#state(l:bufnr)
   endfor
@@ -1284,26 +1318,228 @@ function! s:client_window_metrics(client_bufnr) abort
 endfunction
 
 function! s:bootstrap_client_geometry(bufnr, cell, handler_id) abort
-  let l:client_bufnr = get(a:cell, 'client_bufnr', -1)
+  let l:client_bufnr = s:autobootstrap_client_bufnr(a:bufnr, a:cell)
   let l:client_id = get(a:cell, 'client_id', '')
   if l:client_bufnr <= 0 || empty(l:client_id) || empty(a:handler_id)
+    call s:debug_log(a:bufnr, 'bootstrap-geometry-skip', {
+          \ 'cell_id': get(a:cell, 'id', 0),
+          \ 'client_bufnr': l:client_bufnr,
+          \ 'client_id': l:client_id,
+          \ 'handler_id': a:handler_id,
+          \ })
     return {}
+  endif
+  if l:client_bufnr !=# get(a:cell, 'client_bufnr', -1)
+    call s:update_cell(a:bufnr, get(a:cell, 'id', 0), {
+          \ 'client_bufnr': l:client_bufnr,
+          \ 'client_state': 'active',
+          \ })
   endif
   call jusi#focus#place_client_buffer(l:client_bufnr)
   let l:metrics = s:client_window_metrics(l:client_bufnr)
   if empty(l:metrics)
+    call s:debug_log(a:bufnr, 'bootstrap-geometry-missing-window', {
+          \ 'cell_id': get(a:cell, 'id', 0),
+          \ 'client_bufnr': l:client_bufnr,
+          \ 'client_id': l:client_id,
+          \ 'handler_id': a:handler_id,
+          \ })
     return {}
   endif
+  call s:debug_log(a:bufnr, 'bootstrap-geometry-metrics', {
+        \ 'cell_id': get(a:cell, 'id', 0),
+        \ 'client_bufnr': l:client_bufnr,
+        \ 'client_id': l:client_id,
+        \ 'handler_id': a:handler_id,
+        \ 'rows': l:metrics.rows,
+        \ 'cols': l:metrics.cols,
+        \ })
   call setbufvar(l:client_bufnr, 'jusi_terminal_rows', l:metrics.rows)
   call setbufvar(l:client_bufnr, 'jusi_terminal_cols', l:metrics.cols)
-  call jusi#terminalscreen#resize(l:client_bufnr, l:metrics.rows, l:metrics.cols)
+  if getbufvar(l:client_bufnr, 'jusi_client_transport_kind', '') !=# 'native_terminal'
+    call jusi#terminalscreen#resize(l:client_bufnr, l:metrics.rows, l:metrics.cols)
+  endif
   let l:response = jusi#session#send_handler_message(
         \ l:client_id,
         \ a:handler_id,
         \ 'terminal_resize',
         \ {'rows': l:metrics.rows, 'cols': l:metrics.cols},
         \ a:bufnr)
+  call s:debug_log(a:bufnr, 'bootstrap-geometry-resize-response', {
+        \ 'cell_id': get(a:cell, 'id', 0),
+        \ 'client_bufnr': l:client_bufnr,
+        \ 'client_id': l:client_id,
+        \ 'handler_id': a:handler_id,
+        \ 'rows': l:metrics.rows,
+        \ 'cols': l:metrics.cols,
+        \ 'response': l:response,
+        \ })
   return get(l:response, 'ok', 0) ? l:metrics : {}
+endfunction
+
+function! s:handler_with_bootstrap_state(cell, state) abort
+  let l:handler = copy(get(a:cell, 'handler', {}))
+  let l:handler.bootstrap_state = a:state
+  return l:handler
+endfunction
+
+function! s:autobootstrap_client_bufnr(bufnr, cell) abort
+  let l:client_bufnr = get(a:cell, 'client_bufnr', -1)
+  if l:client_bufnr > 0 && bufexists(l:client_bufnr)
+    return l:client_bufnr
+  endif
+  return jusi#client#recover_attached_buffer(
+        \ a:bufnr,
+        \ get(a:cell, 'id', 0),
+        \ get(a:cell, 'client_id', ''))
+endfunction
+
+function! s:autobootstrap_handler_id(bufnr, cell) abort
+  let l:handler_id = get(get(a:cell, 'handler', {}), 'id', '')
+  if !empty(l:handler_id)
+    return l:handler_id
+  endif
+  let l:client_bufnr = s:autobootstrap_client_bufnr(a:bufnr, a:cell)
+  if l:client_bufnr <= 0
+    return ''
+  endif
+  let l:transport = getbufvar(l:client_bufnr, 'jusi_client_transport', {})
+  if type(l:transport) == type({})
+    let l:handler_id = get(l:transport, 'handler_id', '')
+    if !empty(l:handler_id)
+      return l:handler_id
+    endif
+  endif
+  return getbufvar(l:client_bufnr, 'jusi_handler_id', '')
+endfunction
+
+function! s:autobootstrap_kind(bufnr, cell) abort
+  let l:snapshot = get(get(a:cell, 'handler', {}), 'snapshot', {})
+  if get(l:snapshot, 'transport', '') ==# 'pty'
+    return 'pty'
+  endif
+  let l:client_bufnr = s:autobootstrap_client_bufnr(a:bufnr, a:cell)
+  if l:client_bufnr <= 0
+    return ''
+  endif
+  let l:transport = getbufvar(l:client_bufnr, 'jusi_client_transport', {})
+  if type(l:transport) == type({})
+        \ && get(l:transport, 'kind', '') ==# 'native_terminal'
+    return 'native_terminal'
+  endif
+  return ''
+endfunction
+
+function! s:is_bootstrap_ready(bufnr, cell) abort
+  let l:snapshot = get(get(a:cell, 'handler', {}), 'snapshot', {})
+  if get(l:snapshot, 'bootstrap_ready', 0)
+    return 1
+  endif
+  let l:client_bufnr = s:autobootstrap_client_bufnr(a:bufnr, a:cell)
+  if l:client_bufnr <= 0
+    return 0
+  endif
+  let l:transport = getbufvar(l:client_bufnr, 'jusi_client_transport', {})
+  if type(l:transport) == type({})
+    return get(l:transport, 'bootstrap_ready', 0) ? 1 : 0
+  endif
+  return 0
+endfunction
+
+function! s:maybe_autobootstrap_handler_cell(bufnr, cell) abort
+  if empty(a:cell)
+    return {}
+  endif
+  if get(a:cell, 'status', '') !=# 'follow-up'
+        \ || get(get(a:cell, 'owner', {}), 'kind', '') !=# 'handler'
+        \ || get(a:cell, 'client_state', '') !=# 'active'
+        \ || get(a:cell, 'client_bufnr', -1) <= 0
+        \ || empty(get(a:cell, 'client_id', ''))
+    return a:cell
+  endif
+
+  let l:handler = get(a:cell, 'handler', {})
+  let l:snapshot = get(l:handler, 'snapshot', {})
+  let l:handler_id = s:autobootstrap_handler_id(a:bufnr, a:cell)
+  let l:autobootstrap_kind = s:autobootstrap_kind(a:bufnr, a:cell)
+  if empty(l:handler_id) || empty(l:autobootstrap_kind)
+    call s:debug_log(a:bufnr, 'autobootstrap-skip-kind', {
+          \ 'cell_id': get(a:cell, 'id', 0),
+          \ 'client_id': get(a:cell, 'client_id', ''),
+          \ 'handler_id': l:handler_id,
+          \ 'kind': l:autobootstrap_kind,
+          \ })
+    return a:cell
+  endif
+
+  if !s:is_bootstrap_ready(a:bufnr, a:cell)
+    call s:debug_log(a:bufnr, 'autobootstrap-skip-not-ready', {
+          \ 'cell_id': get(a:cell, 'id', 0),
+          \ 'client_id': get(a:cell, 'client_id', ''),
+          \ 'handler_id': l:handler_id,
+          \ 'kind': l:autobootstrap_kind,
+          \ 'handler': get(a:cell, 'handler', {}),
+          \ 'transport': getbufvar(get(a:cell, 'client_bufnr', -1), 'jusi_client_transport', {}),
+          \ })
+    return a:cell
+  endif
+
+  if l:autobootstrap_kind ==# 'pty' && get(l:snapshot, 'mode', '') ==# 'live'
+    if get(l:handler, 'bootstrap_state', '') !=# 'live'
+      return s:update_cell(a:bufnr, get(a:cell, 'id', 0), {
+            \ 'handler': s:handler_with_bootstrap_state(a:cell, 'live'),
+            \ })
+    endif
+    return a:cell
+  endif
+
+  if get(l:handler, 'bootstrap_state', '') ==# 'done'
+    return a:cell
+  endif
+
+  let l:metrics = s:bootstrap_client_geometry(a:bufnr, a:cell, l:handler_id)
+  if empty(l:metrics)
+    return a:cell
+  endif
+  let l:response = jusi#session#send_handler_message(
+        \ get(a:cell, 'client_id', ''),
+        \ l:handler_id,
+        \ 'bootstrap_done',
+        \ {
+        \   'bufnr': get(a:cell, 'client_bufnr', -1),
+        \   'rows': l:metrics.rows,
+        \   'cols': l:metrics.cols,
+        \   },
+        \ a:bufnr)
+  call s:debug_log(a:bufnr, 'autobootstrap-bootstrap-done-response', {
+        \ 'cell_id': get(a:cell, 'id', 0),
+        \ 'client_bufnr': get(a:cell, 'client_bufnr', -1),
+        \ 'client_id': get(a:cell, 'client_id', ''),
+        \ 'handler_id': l:handler_id,
+        \ 'kind': l:autobootstrap_kind,
+        \ 'rows': l:metrics.rows,
+        \ 'cols': l:metrics.cols,
+        \ 'response': l:response,
+        \ })
+  if get(l:response, 'ok', 0)
+    return s:update_cell(a:bufnr, get(a:cell, 'id', 0), {
+          \ 'handler': s:handler_with_bootstrap_state(a:cell, 'done'),
+          \ })
+  endif
+  return a:cell
+endfunction
+
+function! jusi#session#maybe_autobootstrap_cell(cell_id, ...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  let l:state = s:notebook_state(l:bufnr)
+  if empty(l:state)
+    return {}
+  endif
+  let l:idx = s:find_cell_index(l:state, a:cell_id)
+  if l:idx < 0
+    return {}
+  endif
+  return s:maybe_autobootstrap_handler_cell(l:bufnr, l:state.cells[l:idx])
 endfunction
 
 function! jusi#session#bootstrap_handler_current() abort
@@ -1332,6 +1568,11 @@ function! jusi#session#bootstrap_handler_current() abort
         \   'cols': l:metrics.cols,
         \   },
         \ l:bufnr)
+  if get(l:response, 'ok', 0)
+    call s:update_cell(l:bufnr, l:cell.id, {
+          \ 'handler': s:handler_with_bootstrap_state(l:cell, 'done'),
+          \ })
+  endif
   return l:response
 endfunction
 
@@ -1783,7 +2024,11 @@ function! jusi#session#close_current_client() abort
         \ })
   if get(l:response, 'ok', 0)
     if get(l:response, '_transport', 0)
-      return jusi#notebook#state(l:bufnr)
+      if get(l:cell, 'client_bufnr', -1) > 0
+        call jusi#client#destroy_buffer(l:cell.client_bufnr)
+      endif
+      let l:updated = s:update_cell(l:bufnr, l:cell.id, s:cell_close_reset_update())
+      return s:maybe_finalize_closed_cell(l:bufnr, l:updated)
     endif
     if has_key(l:response, 'cell') || has_key(l:response, 'prepared')
       call jusi#session#callback_response({
@@ -1910,6 +2155,19 @@ function! jusi#session#shutdown_all_clients(reason, ...) abort
     call jusi#session#shutdown_cell_client(l:cell.id, a:reason, l:bufnr)
   endfor
   call jusi#session#shutdown_prepared_client(a:reason, l:bufnr)
+  for l:info in getbufinfo()
+    let l:managed_bufnr = get(l:info, 'bufnr', 0)
+    if l:managed_bufnr <= 0
+      continue
+    endif
+    if !getbufvar(l:managed_bufnr, 'jusi_client_managed', 0)
+      continue
+    endif
+    if getbufvar(l:managed_bufnr, 'jusi_client_notebook_bufnr', -1) != l:bufnr
+      continue
+    endif
+    call jusi#client#destroy_buffer(l:managed_bufnr)
+  endfor
   return jusi#notebook#state(l:bufnr)
 endfunction
 

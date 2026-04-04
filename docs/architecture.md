@@ -319,6 +319,35 @@ PTY-backed handler clients should now be treated as screen projections rather th
 - visible non-alternate PTY clients may project scrollback above the current screen
 - notebook terminal-mode is only an input-routing mode; PTY geometry and redraw belong to the client buffer side
 
+This renderer path should now be treated as transitional, not as the long-term target architecture.
+
+Frontend-side profiling and real fullscreen-client testing showed that a first-class interactive PTY client implemented as:
+
+- structured PTY bytes over the handler channel
+- terminal parsing in pure Vimscript
+- projection into an ordinary buffer
+
+is unlikely to feel native enough even if correctness keeps improving.
+
+Long-term direction:
+
+- prefer real editor terminal buffers as the client surface
+- keep the notebook/session/handler ownership model
+- keep notebook-side terminal-mode UX where it still adds value
+- stop treating the custom normal-buffer PTY renderer as the final architecture
+
+Important constraint:
+
+- `jusivim` cannot complete that pivot from the frontend side alone while backend only exposes PTY output as `handler_message` events such as `terminal_bytes`
+- a native terminal buffer needs a real attached stream/job/PTY substrate, not already-framed control-channel bytes
+
+So a real terminal-buffer pivot requires a backend-facing substrate first, for example:
+
+- a stream/socket endpoint suitable for a local terminal bridge process
+- or another raw PTY relay path that a native terminal buffer can attach to
+
+Until that substrate exists, frontend work on the current PTY renderer should stay limited to bug fixes or targeted unblockers rather than deeper investment.
+
 ## Lifecycle And Cleanup
 
 Lifecycle behavior must be explicit and robust.

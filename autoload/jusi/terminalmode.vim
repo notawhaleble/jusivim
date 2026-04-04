@@ -256,7 +256,9 @@ function! s:send_client_resize_for_context(ctx, force) abort
   if get(l:response, 'ok', 0)
     call setwinvar(a:ctx.winid, 'jusi_terminal_last_rows', a:ctx.rows)
     call setwinvar(a:ctx.winid, 'jusi_terminal_last_cols', a:ctx.cols)
-    call jusi#terminalscreen#resize(a:ctx.bufnr, a:ctx.rows, a:ctx.cols)
+    if getbufvar(a:ctx.bufnr, 'jusi_client_transport_kind', '') !=# 'native_terminal'
+      call jusi#terminalscreen#resize(a:ctx.bufnr, a:ctx.rows, a:ctx.cols)
+    endif
     return 1
   endif
   return 0

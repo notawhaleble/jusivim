@@ -249,6 +249,10 @@ function! s:default_state(bufnr) abort
         \ 'attr_rows': [s:blank_attr_row(l:cols)],
         \ 'esc_state': '',
         \ 'csi': '',
+        \ 'csi_params': [],
+        \ 'csi_current': -1,
+        \ 'csi_started': 0,
+        \ 'csi_private': 0,
         \ 'osc': '',
         \ 'utf8': [],
         \ 'last_printable': ' ',
@@ -310,6 +314,10 @@ function! s:state(bufnr) abort
   endif
   let l:state.esc_state = get(l:state, 'esc_state', '')
   let l:state.csi = get(l:state, 'csi', '')
+  let l:state.csi_params = type(get(l:state, 'csi_params', [])) == type([]) ? get(l:state, 'csi_params', []) : []
+  let l:state.csi_current = type(get(l:state, 'csi_current', -1)) == type(0) ? get(l:state, 'csi_current', -1) : -1
+  let l:state.csi_started = get(l:state, 'csi_started', 0) ? 1 : 0
+  let l:state.csi_private = get(l:state, 'csi_private', 0) ? 1 : 0
   let l:state.osc = get(l:state, 'osc', '')
   let l:state.utf8 = type(get(l:state, 'utf8', [])) == type([]) ? get(l:state, 'utf8', []) : []
   let l:state.last_printable = get(l:state, 'last_printable', ' ')
@@ -849,34 +857,6 @@ function! s:param_num(params, idx, default) abort
   return l:value < 0 ? a:default : l:value
 endfunction
 
-function! s:parse_csi(seq) abort
-  if !exists('s:csi_parse_cache')
-    let s:csi_parse_cache = {}
-  endif
-  if has_key(s:csi_parse_cache, a:seq)
-    return s:csi_parse_cache[a:seq]
-  endif
-  let l:final = strpart(a:seq, len(a:seq) - 1, 1)
-  let l:body = strpart(a:seq, 0, len(a:seq) - 1)
-  let l:private = !empty(l:body) && l:body[0] ==# '?'
-  if l:private
-    let l:body = strpart(l:body, 1)
-  endif
-  let l:params = []
-  if !empty(l:body)
-    for l:item in split(l:body, ';')
-      call add(l:params, empty(l:item) ? -1 : str2nr(l:item))
-    endfor
-  endif
-  let l:parsed = {
-        \ 'final': l:final,
-        \ 'private': l:private ? 1 : 0,
-        \ 'params': l:params,
-        \ }
-  let s:csi_parse_cache[a:seq] = l:parsed
-  return l:parsed
-endfunction
-
 function! s:ansi_color_name(code, bright) abort
   let l:names = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white']
   if a:code < 0 || a:code > 7
@@ -978,14 +958,13 @@ function! s:utf8_emit_pending(state) abort
   return 1
 endfunction
 
-function! s:handle_csi(state, seq) abort
-  if empty(a:seq)
+function! s:handle_csi_parsed(state, parsed) abort
+  if empty(a:parsed)
     return
   endif
-  let l:parsed = s:parse_csi(a:seq)
-  let l:final = l:parsed.final
-  let l:private = l:parsed.private
-  let l:params = l:parsed.params
+  let l:final = a:parsed.final
+  let l:private = a:parsed.private
+  let l:params = a:parsed.params
   if l:final ==# 'A'
     let a:state.cursor_row = max([0, a:state.cursor_row - s:param_num(l:params, 0, 1)])
     return
@@ -1326,6 +1305,10 @@ function! jusi#terminalscreen#apply_bytes(bufnr, hex) abort
       if l:byte ==# 0x5b
         let l:state.esc_state = 'csi'
         let l:state.csi = ''
+        let l:state.csi_params = []
+        let l:state.csi_current = -1
+        let l:state.csi_started = 0
+        let l:state.csi_private = 0
       elseif l:byte ==# 0x5d
         let l:state.esc_state = 'osc'
         let l:state.osc = ''
@@ -1390,12 +1373,32 @@ function! jusi#terminalscreen#apply_bytes(bufnr, hex) abort
       continue
     endif
     if l:state.esc_state ==# 'csi'
-      let l:char = nr2char(l:byte)
-      let l:state.csi .= l:char
-      if l:char =~# '[@-~]'
-        call s:handle_csi(l:state, l:state.csi)
+      if l:byte ==# 0x3f && !l:state.csi_started && empty(l:state.csi_params) && !l:state.csi_private
+        let l:state.csi_private = 1
+      elseif l:byte >= 0x30 && l:byte <= 0x39
+        let l:state.csi_started = 1
+        let l:state.csi_current = l:state.csi_current < 0 ? (l:byte - 0x30) : (l:state.csi_current * 10 + l:byte - 0x30)
+      elseif l:byte ==# 0x3b
+        let l:state.csi_started = 1
+        call add(l:state.csi_params, l:state.csi_current)
+        let l:state.csi_current = -1
+      elseif l:byte >= 0x40 && l:byte <= 0x7e
+        if l:state.csi_started
+          call add(l:state.csi_params, l:state.csi_current)
+        endif
+        call s:handle_csi_parsed(l:state, {
+              \ 'final': nr2char(l:byte),
+              \ 'private': l:state.csi_private ? 1 : 0,
+              \ 'params': copy(l:state.csi_params),
+              \ })
         let l:state.esc_state = ''
         let l:state.csi = ''
+        let l:state.csi_params = []
+        let l:state.csi_current = -1
+        let l:state.csi_started = 0
+        let l:state.csi_private = 0
+      else
+        let l:state.csi_started = 1
       endif
       continue
     endif
