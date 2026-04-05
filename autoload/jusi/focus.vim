@@ -1,7 +1,3 @@
-function! s:is_valid_bufnr(bufnr) abort
-  return type(a:bufnr) == type(0) && a:bufnr > 0 && bufexists(a:bufnr)
-endfunction
-
 function! s:apply_client_window_options() abort
   if !getbufvar(bufnr('%'), 'jusi_client_managed', 0)
         \ && getbufvar(bufnr('%'), 'jusi_client_notebook_bufnr', 0) <= 0
@@ -10,25 +6,7 @@ function! s:apply_client_window_options() abort
   setlocal nonumber norelativenumber
   nnoremap <silent> <buffer> <C-\><C-\> :JusiToggleFocus<CR>
   inoremap <silent> <buffer> <C-\><C-\> <C-R>=jusi#focus#toggle()<CR>
-  if exists('*jusi#terminalscreen#refresh')
-        \ && getbufvar(bufnr('%'), 'jusi_client_transport_kind', '') !=# 'native_terminal'
-    call jusi#terminalscreen#refresh(bufnr('%'))
-  endif
   return 1
-endfunction
-
-function! s:layout_command(layout) abort
-  let l:layout = empty(a:layout) ? get(g:, 'jusi_client_layout', 'bsplit') : a:layout
-  let l:map = {
-        \ 'asplit': 'aboveleft split',
-        \ 'Asplit': 'topleft split',
-        \ 'bsplit': 'belowright split',
-        \ 'Bsplit': 'botright split',
-        \ 'rsplit': 'vertical belowright split',
-        \ 'lsplit': 'vertical topleft split',
-        \ 'tab': 'tab split',
-        \ }
-  return get(l:map, l:layout, l:map['bsplit'])
 endfunction
 
 function! s:find_window_for_buffer(bufnr) abort
@@ -57,7 +35,7 @@ function! s:jump_to_buffer(bufnr) abort
 endfunction
 
 function! jusi#focus#place_client_buffer(bufnr, ...) abort
-  if !s:is_valid_bufnr(a:bufnr)
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
     return 0
   endif
   let l:layout = a:0 >= 1 ? a:1 : get(g:, 'jusi_client_layout', 'bsplit')
@@ -65,7 +43,7 @@ function! jusi#focus#place_client_buffer(bufnr, ...) abort
   let l:source_winid = win_getid()
   let l:wininfo = filter(copy(getwininfo()), {_, v -> v.bufnr == a:bufnr})
   if empty(l:wininfo)
-    execute s:layout_command(l:layout) . ' | buffer ' . a:bufnr
+    execute jusi#window#client_layout_command(l:layout) . ' | buffer ' . a:bufnr
   else
     let l:info = l:wininfo[0]
     execute 'tabnext ' . l:info.tabnr

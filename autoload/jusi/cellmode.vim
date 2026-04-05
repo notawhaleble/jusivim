@@ -16,7 +16,7 @@ function! s:default_mode() abort
 endfunction
 
 function! s:normalize_mode(mode) abort
-  if a:mode ==# 'cell' || a:mode ==# 'terminal'
+  if a:mode ==# 'cell'
     return a:mode
   endif
   return 'edit'
@@ -51,7 +51,6 @@ function! s:map_cell_mode() abort
   nnoremap <silent> <buffer> j :<C-U>execute "JusiCellNext"<CR>
   nnoremap <silent> <buffer> k :<C-U>execute "JusiCellPrev"<CR>
   nnoremap <silent> <buffer> <CR> :JusiExecute<CR>
-  nnoremap <silent> <buffer> <leader><Space> :JusiTerminalModeToggle<CR>
   nnoremap <silent> <buffer> B :JusiCellNewBelow<CR>
   nnoremap <silent> <buffer> A :JusiCellNewAbove<CR>
   nnoremap <silent> <buffer> X :JusiCellDelete<CR>
@@ -63,32 +62,10 @@ function! s:map_cell_mode() abort
   nnoremap <silent> <buffer> R :JusiRebuild<CR>
 endfunction
 
-function! s:map_terminal_mode() abort
-  nnoremap <silent> <buffer> <leader><Space> :JusiTerminalModeToggle<CR>
-  nnoremap <silent> <buffer> <leader>: :<C-U>call jusi#terminalmode#send_text(':')<CR>
-  for l:lhs in jusi#terminalmode#text_mappings()
-    let l:opts = l:lhs ==# '<Bslash>' ? '<silent> <buffer>' : '<silent> <buffer> <nowait>'
-    execute 'nnoremap ' . l:opts . ' ' . s:escaped_lhs(l:lhs)
-          \ . ' :<C-U>call jusi#terminalmode#send_lhs('
-          \ . string(l:lhs)
-          \ . ')<CR>'
-  endfor
-  for l:item in jusi#terminalmode#key_mappings()
-    execute 'nnoremap <silent> <buffer> <nowait> ' . s:escaped_lhs(l:item.lhs)
-          \ . ' :<C-U>call jusi#terminalmode#send_key(' . string(l:item.key) . ')<CR>'
-  endfor
-  for l:item in jusi#terminalmode#control_mappings()
-    execute 'nnoremap <silent> <buffer> <nowait> ' . s:escaped_lhs(l:item.lhs)
-          \ . ' :<C-U>call jusi#terminalmode#send_ctrl(' . string(l:item.key) . ')<CR>'
-  endfor
-endfunction
-
 function! s:clear_mode_mappings() abort
   call s:maybe_unmap_buffer('j')
   call s:maybe_unmap_buffer('k')
   call s:maybe_unmap_buffer('<CR>')
-  call s:maybe_unmap_buffer('<leader><Space>')
-  call s:maybe_unmap_buffer('<leader>:')
   call s:maybe_unmap_buffer('B')
   call s:maybe_unmap_buffer('A')
   call s:maybe_unmap_buffer('X')
@@ -98,17 +75,7 @@ function! s:clear_mode_mappings() abort
   call s:maybe_unmap_buffer('S')
   call s:maybe_unmap_buffer('Q')
   call s:maybe_unmap_buffer('R')
-  for l:lhs in jusi#terminalmode#text_mappings()
-    call s:maybe_unmap_buffer(l:lhs)
-  endfor
-  for l:item in jusi#terminalmode#key_mappings()
-    call s:maybe_unmap_buffer(l:item.lhs)
-  endfor
-  for l:item in jusi#terminalmode#control_mappings()
-    call s:maybe_unmap_buffer(l:item.lhs)
-  endfor
   nnoremap <silent> <buffer> <Space> :JusiCellModeToggle<CR>
-  nnoremap <silent> <buffer> <leader><Space> :JusiTerminalModeToggle<CR>
 endfunction
 
 function! jusi#cellmode#mode(...) abort
@@ -125,8 +92,6 @@ function! jusi#cellmode#refresh(...) abort
   call s:clear_mode_mappings()
   if l:mode ==# 'cell'
     call s:map_cell_mode()
-  elseif l:mode ==# 'terminal'
-    call s:map_terminal_mode()
   endif
   call jusi#cellmode#update_indicator()
 endfunction
@@ -134,9 +99,6 @@ endfunction
 function! jusi#cellmode#indicator_text(...) abort
   let l:bufnr = a:0 >= 1 ? str2nr(a:1) : bufnr('%')
   let l:mode = s:mode(l:bufnr)
-  if l:mode ==# 'terminal'
-    return '-- JUSI TERMINAL --'
-  endif
   if l:mode ==# 'cell'
     return '-- CELL --'
   endif

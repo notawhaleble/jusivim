@@ -2,10 +2,6 @@ function! jusi#client#prepared_name(notebook_bufnr, client_id) abort
   return '!jusi-prepared-client:' . a:notebook_bufnr . ':' . a:client_id
 endfunction
 
-function! s:is_valid_bufnr(bufnr) abort
-  return type(a:bufnr) == type(0) && a:bufnr > 0 && bufexists(a:bufnr)
-endfunction
-
 function! s:native_terminal_debug_enabled() abort
   return type(get(g:, 'jusi_native_terminal_debug_log', 0)) == type('')
         \ && !empty(get(g:, 'jusi_native_terminal_debug_log', ''))
@@ -20,23 +16,40 @@ function! s:native_terminal_debug(message, payload) abort
   call writefile([join(l:parts, ' | ')], l:path, 'a')
 endfunction
 
-function! s:layout_command(layout) abort
-  let l:layout = empty(a:layout) ? get(g:, 'jusi_client_layout', 'bsplit') : a:layout
-  let l:map = {
-        \ 'asplit': 'aboveleft split',
-        \ 'Asplit': 'topleft split',
-        \ 'bsplit': 'belowright split',
-        \ 'Bsplit': 'botright split',
-        \ 'rsplit': 'vertical belowright split',
-        \ 'lsplit': 'vertical topleft split',
-        \ 'tab': 'tab split',
-        \ }
-  return get(l:map, l:layout, l:map['bsplit'])
+function! s:exit_terminal_job_mode() abort
+  if has('nvim')
+    call feedkeys("\<C-\\>\<C-N>", 'xt')
+    return
+  endif
+  silent! stopinsert
 endfunction
 
 function! s:native_terminal_transport(view) abort
   let l:transport = get(a:view, 'transport', {})
   return type(l:transport) == type({}) ? l:transport : {}
+endfunction
+
+function! jusi#client#transport(bufnr) abort
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
+    return {}
+  endif
+  let l:transport = getbufvar(a:bufnr, 'jusi_client_transport', {})
+  return type(l:transport) == type({}) ? l:transport : {}
+endfunction
+
+function! jusi#client#transport_kind(bufnr) abort
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
+    return ''
+  endif
+  return getbufvar(a:bufnr, 'jusi_client_transport_kind', '')
+endfunction
+
+function! jusi#client#handler_snapshot(bufnr) abort
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
+    return {}
+  endif
+  let l:snapshot = getbufvar(a:bufnr, 'jusi_handler_snapshot', {})
+  return type(l:snapshot) == type({}) ? l:snapshot : {}
 endfunction
 
 function! s:is_native_terminal_view(view) abort
@@ -80,6 +93,26 @@ function! s:native_terminal_launcher() abort
   return type(l:launcher) == type(function('tr')) ? l:launcher : function('s:launch_native_terminal_default')
 endfunction
 
+function! s:is_reusable_native_terminal_buffer(bufnr, client_id) abort
+  return jusi#client#is_native_terminal_buffer(a:bufnr)
+        \ && getbufvar(a:bufnr, 'jusi_client_id', '') ==# a:client_id
+endfunction
+
+function! s:set_native_terminal_buffer_transport(bufnr, transport) abort
+  call setbufvar(a:bufnr, 'jusi_client_transport_kind', 'native_terminal')
+  call setbufvar(a:bufnr, 'jusi_client_transport', copy(a:transport))
+endfunction
+
+function! s:bind_native_terminal_buffer(notebook_bufnr, cell_id, client_id, bufnr, transport) abort
+  call jusi#client#mark_attached_buffer(a:notebook_bufnr, a:cell_id, a:client_id, a:bufnr)
+  call s:set_native_terminal_buffer_transport(a:bufnr, a:transport)
+  call jusi#session#callback_cell(a:cell_id, {
+        \ 'client_bufnr': a:bufnr,
+        \ 'client_state': 'active',
+        \ }, a:notebook_bufnr)
+  return a:bufnr
+endfunction
+
 function! s:launch_native_terminal_default(notebook_bufnr, cell_id, client_id, transport) abort
   let l:cmd = get(a:transport, 'attach_cmd', [])
   let l:env = get(a:transport, 'attach_env', {})
@@ -95,7 +128,7 @@ function! s:launch_native_terminal_default(notebook_bufnr, cell_id, client_id, t
     return 0
   endif
   let l:source_winid = exists('*win_getid') ? win_getid() : 0
-  execute s:layout_command(get(g:, 'jusi_client_layout', 'bsplit'))
+  execute jusi#window#client_layout_command(get(g:, 'jusi_client_layout', 'bsplit'))
   if has('nvim') && exists('*termopen')
     enew
     call termopen(l:cmd, {'env': type(l:env) == type({}) ? l:env : {}})
@@ -126,10 +159,8 @@ endfunction
 
 function! s:ensure_native_terminal_buffer(notebook_bufnr, cell_id, client_id, client_bufnr, transport) abort
   let l:transport = s:sanitize_native_terminal_transport(a:transport)
-  if s:is_valid_bufnr(a:client_bufnr)
-        \ && getbufvar(a:client_bufnr, 'jusi_client_transport_kind', '') ==# 'native_terminal'
-        \ && getbufvar(a:client_bufnr, 'jusi_client_id', '') ==# a:client_id
-    call setbufvar(a:client_bufnr, 'jusi_client_transport', copy(l:transport))
+  if s:is_reusable_native_terminal_buffer(a:client_bufnr, a:client_id)
+    call s:set_native_terminal_buffer_transport(a:client_bufnr, l:transport)
     return a:client_bufnr
   endif
   let l:Launcher = s:native_terminal_launcher()
@@ -145,21 +176,15 @@ function! s:ensure_native_terminal_buffer(notebook_bufnr, cell_id, client_id, cl
   if type(l:new_bufnr) != type(0) || l:new_bufnr <= 0 || !bufexists(l:new_bufnr)
     return 0
   endif
-  call jusi#client#mark_attached_buffer(a:notebook_bufnr, a:cell_id, a:client_id, l:new_bufnr)
-  call setbufvar(l:new_bufnr, 'jusi_client_transport_kind', 'native_terminal')
-  call setbufvar(l:new_bufnr, 'jusi_client_transport', copy(l:transport))
-  call jusi#session#callback_cell(a:cell_id, {
-        \ 'client_bufnr': l:new_bufnr,
-        \ 'client_state': 'active',
-        \ }, a:notebook_bufnr)
-  if s:is_valid_bufnr(a:client_bufnr) && a:client_bufnr != l:new_bufnr
+  call s:bind_native_terminal_buffer(a:notebook_bufnr, a:cell_id, a:client_id, l:new_bufnr, l:transport)
+  if jusi#buffer#is_valid_bufnr(a:client_bufnr) && a:client_bufnr != l:new_bufnr
     call jusi#client#destroy_buffer(a:client_bufnr)
   endif
   return l:new_bufnr
 endfunction
 
 function! s:stop_refresh_timer(bufnr) abort
-  if !s:is_valid_bufnr(a:bufnr)
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
     return
   endif
   let l:timer = getbufvar(a:bufnr, 'jusi_client_refresh_timer', -1)
@@ -169,67 +194,13 @@ function! s:stop_refresh_timer(bufnr) abort
   call setbufvar(a:bufnr, 'jusi_client_refresh_timer', -1)
 endfunction
 
-function! s:terminal_render_delay_ms() abort
-  return max([0, get(g:, 'jusi_terminal_render_delay_ms', 15)])
-endfunction
-
-function! s:terminal_sync_render() abort
-  return get(g:, 'jusi_terminal_sync_render', 0) ? 1 : 0
-endfunction
-
-function! s:stop_terminal_render_timer(bufnr) abort
-  if !s:is_valid_bufnr(a:bufnr)
-    return
-  endif
-  let l:timer = getbufvar(a:bufnr, 'jusi_terminal_render_timer', -1)
-  if type(l:timer) == type(0) && l:timer > 0 && exists('*timer_stop')
-    call timer_stop(l:timer)
-  endif
-  call setbufvar(a:bufnr, 'jusi_terminal_render_timer', -1)
-endfunction
-
-function! s:flush_terminal_bytes(bufnr, ...) abort
-  if !s:is_valid_bufnr(a:bufnr)
-    return 0
-  endif
-  call setbufvar(a:bufnr, 'jusi_terminal_render_timer', -1)
-  let l:hex = getbufvar(a:bufnr, 'jusi_terminal_pending_hex', '')
-  if type(l:hex) != type('') || empty(l:hex)
-    call setbufvar(a:bufnr, 'jusi_terminal_pending_hex', '')
-    return 0
-  endif
-  call setbufvar(a:bufnr, 'jusi_terminal_pending_hex', '')
-  return jusi#terminalscreen#apply_bytes(a:bufnr, l:hex)
-endfunction
-
-function! s:queue_terminal_bytes(bufnr, hex) abort
-  if !s:is_valid_bufnr(a:bufnr)
-    return 0
-  endif
-  let l:pending = getbufvar(a:bufnr, 'jusi_terminal_pending_hex', '')
-  if type(l:pending) != type('')
-    let l:pending = ''
-  endif
-  call setbufvar(a:bufnr, 'jusi_terminal_pending_hex', l:pending . a:hex)
-  if s:terminal_sync_render() || !exists('*timer_start') || s:terminal_render_delay_ms() <= 0
-    return s:flush_terminal_bytes(a:bufnr)
-  endif
-  let l:timer = getbufvar(a:bufnr, 'jusi_terminal_render_timer', -1)
-  if type(l:timer) == type(0) && l:timer > 0
-    return 1
-  endif
-  let l:timer = timer_start(s:terminal_render_delay_ms(), function('s:flush_terminal_bytes', [a:bufnr]))
-  call setbufvar(a:bufnr, 'jusi_terminal_render_timer', l:timer)
-  return 1
-endfunction
-
 function! jusi#client#stop_refresh(bufnr) abort
   call s:stop_refresh_timer(a:bufnr)
   return getbufvar(a:bufnr, 'jusi_client_refresh_timer', -1)
 endfunction
 
 function! s:set_managed_vars(bufnr, notebook_bufnr, client_id, role, ...) abort
-  if !s:is_valid_bufnr(a:bufnr)
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
     return
   endif
   call setbufvar(a:bufnr, 'jusi_client_managed', 1)
@@ -275,7 +246,7 @@ function! jusi#client#mark_attached_buffer(notebook_bufnr, cell_id, client_id, b
 endfunction
 
 function! jusi#client#record_handler_message(bufnr, handler_id, message_type, payload) abort
-  if !s:is_valid_bufnr(a:bufnr)
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
     return 0
   endif
   call setbufvar(a:bufnr, 'jusi_handler_id', a:handler_id)
@@ -288,7 +259,7 @@ function! jusi#client#record_handler_message(bufnr, handler_id, message_type, pa
 endfunction
 
 function! s:append_buffer_line(bufnr, line) abort
-  if !s:is_valid_bufnr(a:bufnr)
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
     return 0
   endif
   let l:lines = getbufline(a:bufnr, 1, '$')
@@ -310,7 +281,7 @@ function! s:append_buffer_line(bufnr, line) abort
 endfunction
 
 function! s:set_last_buffer_line(bufnr, line) abort
-  if !s:is_valid_bufnr(a:bufnr)
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
     return 0
   endif
   call setbufvar(a:bufnr, '&modifiable', 1)
@@ -320,69 +291,84 @@ function! s:set_last_buffer_line(bufnr, line) abort
   return 1
 endfunction
 
+function! jusi#client#is_native_terminal_buffer(bufnr) abort
+  return jusi#buffer#is_valid_bufnr(a:bufnr)
+        \ && jusi#client#transport_kind(a:bufnr) ==# 'native_terminal'
+endfunction
+
 function! jusi#client#apply_handler_terminal_message(bufnr, message_type, payload) abort
-  if !s:is_valid_bufnr(a:bufnr) || type(a:payload) != type({})
-    return 0
-  endif
-  if getbufvar(a:bufnr, 'jusi_client_transport_kind', '') ==# 'native_terminal'
-    return 0
-  endif
-  if a:message_type ==# 'terminal_bytes'
-    return s:queue_terminal_bytes(a:bufnr, get(a:payload, 'hex', ''))
-  endif
-  let l:text = str2nr(0) is# 0 ? get(a:payload, 'text', '') : ''
-  let l:text = type(l:text) == type('') ? l:text : ''
-  if a:message_type ==# 'terminal_prompt'
-    if empty(l:text)
-      return 0
-    endif
-    let l:lines = getbufline(a:bufnr, 1, '$')
-    if len(l:lines) == 1 && empty(l:lines[0])
-      call s:set_last_buffer_line(a:bufnr, l:text)
-    elseif empty(l:lines) || l:lines[-1] !=# l:text
-      call s:append_buffer_line(a:bufnr, l:text)
-    endif
-    call setbufvar(a:bufnr, 'jusi_handler_terminal_prompt', l:text)
-    return 1
-  endif
-  if a:message_type ==# 'terminal_input'
-    if !get(g:, 'jusi_terminal_echo_input', 0)
-      call setbufvar(a:bufnr, 'jusi_handler_terminal_prompt', '')
-      return 1
-    endif
-    let l:prompt = getbufvar(a:bufnr, 'jusi_handler_terminal_prompt', '')
-    if !empty(l:prompt) && getbufline(a:bufnr, '$')[0] ==# l:prompt
-      call s:set_last_buffer_line(a:bufnr, l:prompt . l:text)
-    elseif !empty(l:text)
-      call s:append_buffer_line(a:bufnr, l:text)
-    endif
-    call setbufvar(a:bufnr, 'jusi_handler_terminal_prompt', '')
-    return 1
-  endif
-  if a:message_type ==# 'terminal_output'
-    if !empty(l:text)
-      call s:append_buffer_line(a:bufnr, l:text)
-    endif
-    return 1
-  endif
   return 0
 endfunction
 
-function! jusi#client#destroy_buffer(bufnr) abort
-  if !s:is_valid_bufnr(a:bufnr)
+function! s:prepare_terminal_buffer_for_close(bufnr) abort
+  let l:source_winid = exists('*win_getid') ? win_getid() : 0
+  for l:info in reverse(filter(copy(getwininfo()), {_, v -> get(v, 'bufnr', 0) == a:bufnr}))
+    execute 'tabnext ' . l:info.tabnr
+    execute l:info.winnr . 'wincmd w'
+    call s:exit_terminal_job_mode()
+  endfor
+  if l:source_winid > 0
+    call win_gotoid(l:source_winid)
+  endif
+endfunction
+
+function! s:hide_buffer_windows(bufnr) abort
+  let l:source_winid = exists('*win_getid') ? win_getid() : 0
+  for l:info in reverse(filter(copy(getwininfo()), {_, v -> get(v, 'bufnr', 0) == a:bufnr}))
+    execute 'tabnext ' . l:info.tabnr
+    execute l:info.winnr . 'wincmd w'
+    if jusi#client#is_native_terminal_buffer(a:bufnr)
+      call s:exit_terminal_job_mode()
+    endif
+    silent! hide close
+  endfor
+  if l:source_winid > 0
+    call win_gotoid(l:source_winid)
+  endif
+endfunction
+
+function! jusi#client#detach_buffer(bufnr) abort
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
     return 0
   endif
   if !getbufvar(a:bufnr, 'jusi_client_managed', 0)
     return 0
   endif
   call s:stop_refresh_timer(a:bufnr)
-  call s:stop_terminal_render_timer(a:bufnr)
+  call s:hide_buffer_windows(a:bufnr)
+  call setbufvar(a:bufnr, 'jusi_client_role', 'detached')
+  call setbufvar(a:bufnr, 'jusi_client_cell_id', 0)
+  return empty(filter(copy(getwininfo()), {_, v -> get(v, 'bufnr', 0) == a:bufnr})) ? 1 : 0
+endfunction
+
+function! jusi#client#destroy_buffer(bufnr) abort
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
+    return 0
+  endif
+  if !getbufvar(a:bufnr, 'jusi_client_managed', 0)
+    return 0
+  endif
+  call s:stop_refresh_timer(a:bufnr)
+  if jusi#client#is_native_terminal_buffer(a:bufnr)
+    call s:native_terminal_debug('destroy-buffer-begin', {
+          \ 'bufnr': a:bufnr,
+          \ 'visible': !empty(filter(copy(getwininfo()), {_, v -> get(v, 'bufnr', 0) == a:bufnr})),
+          \ 'mode': mode(),
+          \ })
+    call s:prepare_terminal_buffer_for_close(a:bufnr)
+  endif
   execute 'silent! bwipeout! ' . a:bufnr
+  if jusi#client#is_native_terminal_buffer(a:bufnr) || getbufvar(a:bufnr, 'jusi_client_transport_kind', '') ==# 'native_terminal'
+    call s:native_terminal_debug('destroy-buffer-end', {
+          \ 'bufnr': a:bufnr,
+          \ 'exists': bufexists(a:bufnr),
+          \ })
+  endif
   return bufexists(a:bufnr) ? 0 : 1
 endfunction
 
 function! jusi#client#is_managed_buffer(bufnr) abort
-  return s:is_valid_bufnr(a:bufnr) && getbufvar(a:bufnr, 'jusi_client_managed', 0)
+  return jusi#buffer#is_valid_bufnr(a:bufnr) && getbufvar(a:bufnr, 'jusi_client_managed', 0)
 endfunction
 
 function! s:binding_mismatch(message) abort
@@ -390,7 +376,7 @@ function! s:binding_mismatch(message) abort
 endfunction
 
 function! jusi#client#validate_prepared_binding(notebook_bufnr, client_id, bufnr) abort
-  if !s:is_valid_bufnr(a:bufnr)
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
     return s:binding_mismatch('Prepared client buffer is missing locally')
   endif
   if getbufvar(a:bufnr, 'jusi_client_notebook_bufnr', -1) != a:notebook_bufnr
@@ -406,7 +392,7 @@ function! jusi#client#validate_prepared_binding(notebook_bufnr, client_id, bufnr
 endfunction
 
 function! jusi#client#validate_attached_binding(notebook_bufnr, cell_id, client_id, bufnr) abort
-  if !s:is_valid_bufnr(a:bufnr)
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
     return s:binding_mismatch('Client buffer is missing locally')
   endif
   if getbufvar(a:bufnr, 'jusi_client_notebook_bufnr', -1) != a:notebook_bufnr
@@ -425,9 +411,10 @@ function! jusi#client#validate_attached_binding(notebook_bufnr, cell_id, client_
 endfunction
 
 function! jusi#client#recover_attached_buffer(notebook_bufnr, cell_id, client_id) abort
+  let l:fallback = 0
   for l:info in getbufinfo()
     let l:bufnr = get(l:info, 'bufnr', 0)
-    if !s:is_valid_bufnr(l:bufnr)
+    if !jusi#buffer#is_valid_bufnr(l:bufnr)
       continue
     endif
     if getbufvar(l:bufnr, 'jusi_client_notebook_bufnr', -1) != a:notebook_bufnr
@@ -436,14 +423,19 @@ function! jusi#client#recover_attached_buffer(notebook_bufnr, cell_id, client_id
     if getbufvar(l:bufnr, 'jusi_client_role', '') !=# 'cell'
       continue
     endif
-    if getbufvar(l:bufnr, 'jusi_client_cell_id', 0) == a:cell_id
+    let l:cell_match = getbufvar(l:bufnr, 'jusi_client_cell_id', 0) == a:cell_id
+    let l:client_match = !empty(a:client_id) && getbufvar(l:bufnr, 'jusi_client_id', '') ==# a:client_id
+    if !l:cell_match && !l:client_match
+      continue
+    endif
+    if jusi#client#is_native_terminal_buffer(l:bufnr)
       return l:bufnr
     endif
-    if !empty(a:client_id) && getbufvar(l:bufnr, 'jusi_client_id', '') ==# a:client_id
-      return l:bufnr
+    if l:fallback <= 0
+      let l:fallback = l:bufnr
     endif
   endfor
-  return 0
+  return l:fallback
 endfunction
 
 function! s:notebook_cell(notebook_bufnr, cell_id) abort
@@ -496,7 +488,7 @@ function! s:pending_input_from_view(view) abort
 endfunction
 
 function! s:replace_buffer_lines(bufnr, lines) abort
-  if !s:is_valid_bufnr(a:bufnr)
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
     return 0
   endif
   let l:lines = empty(a:lines) ? [''] : copy(a:lines)
@@ -533,7 +525,7 @@ function! s:refresh_delay_ms() abort
 endfunction
 
 function! s:refresh_context(notebook_bufnr, cell_id, client_id, client_bufnr) abort
-  if !bufexists(a:notebook_bufnr) || !s:is_valid_bufnr(a:client_bufnr)
+  if !bufexists(a:notebook_bufnr) || !jusi#buffer#is_valid_bufnr(a:client_bufnr)
     return {}
   endif
   let l:cell = s:notebook_cell(a:notebook_bufnr, a:cell_id)
@@ -571,7 +563,6 @@ function! s:refresh_attached_now(notebook_bufnr, cell_id, client_id, client_bufn
     let l:transport = s:native_terminal_transport(l:view)
     let l:terminal_bufnr = s:ensure_native_terminal_buffer(a:notebook_bufnr, a:cell_id, a:client_id, a:client_bufnr, l:transport)
     if l:terminal_bufnr > 0
-      call jusi#session#maybe_autobootstrap_cell(a:cell_id, a:notebook_bufnr)
       return l:view
     endif
   endif
@@ -599,7 +590,7 @@ function! s:refresh_attached_now(notebook_bufnr, cell_id, client_id, client_bufn
 endfunction
 
 function! s:refresh_timer(notebook_bufnr, cell_id, client_id, client_bufnr, timer) abort
-  if s:is_valid_bufnr(a:client_bufnr) && getbufvar(a:client_bufnr, 'jusi_client_refresh_timer', -1) == a:timer
+  if jusi#buffer#is_valid_bufnr(a:client_bufnr) && getbufvar(a:client_bufnr, 'jusi_client_refresh_timer', -1) == a:timer
     call setbufvar(a:client_bufnr, 'jusi_client_refresh_timer', -1)
   endif
   call s:refresh_attached_now(a:notebook_bufnr, a:cell_id, a:client_id, a:client_bufnr)
@@ -610,7 +601,7 @@ function! jusi#client#refresh_attached_view(notebook_bufnr, cell_id, client_id, 
 endfunction
 
 function! jusi#client#schedule_attached_refresh(notebook_bufnr, cell_id, client_id, client_bufnr) abort
-  if !s:is_valid_bufnr(a:client_bufnr)
+  if !jusi#buffer#is_valid_bufnr(a:client_bufnr)
     return 0
   endif
   call s:stop_refresh_timer(a:client_bufnr)

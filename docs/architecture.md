@@ -312,14 +312,16 @@ Binding rules:
 
 Failure to create or reuse a client buffer must produce a clear state transition and user-visible error.
 
-PTY-backed handler clients should now be treated as screen projections rather than transcripts:
+Native terminal pivot status:
 
-- pushed `terminal_bytes` mutate a terminal screen model first
-- the client buffer is a redraw target for that model
-- visible non-alternate PTY clients may project scrollback above the current screen
-- notebook terminal-mode is only an input-routing mode; PTY geometry and redraw belong to the client buffer side
-
-This renderer path should now be treated as transitional, not as the long-term target architecture.
+- interactive handler clients should now prefer backend-advertised `transport.kind=native_terminal`
+- frontend launches a real editor terminal buffer from backend `attach_cmd` / `attach_env`
+- notebook/session/handler ownership still remains in the notebook model
+- `handler_message` remains the control channel for handler-specific lifecycle/control events and runtime geometry updates such as `terminal_resize`
+- client close should be UX-first:
+  - detach notebook interaction immediately after accepted shutdown
+  - hide local client buffers while teardown finishes
+  - only destroy buffers at a safe finalization point
 
 Frontend-side profiling and real fullscreen-client testing showed that a first-class interactive PTY client implemented as:
 
@@ -333,20 +335,18 @@ Long-term direction:
 
 - prefer real editor terminal buffers as the client surface
 - keep the notebook/session/handler ownership model
-- keep notebook-side terminal-mode UX where it still adds value
 - stop treating the custom normal-buffer PTY renderer as the final architecture
 
 Important constraint:
 
-- `jusivim` cannot complete that pivot from the frontend side alone while backend only exposes PTY output as `handler_message` events such as `terminal_bytes`
-- a native terminal buffer needs a real attached stream/job/PTY substrate, not already-framed control-channel bytes
+- a native terminal buffer needs a real attached stream/job substrate, not already-framed control-channel bytes
 
 So a real terminal-buffer pivot requires a backend-facing substrate first, for example:
 
 - a stream/socket endpoint suitable for a local terminal bridge process
 - or another raw PTY relay path that a native terminal buffer can attach to
 
-Until that substrate exists, frontend work on the current PTY renderer should stay limited to bug fixes or targeted unblockers rather than deeper investment.
+That substrate now exists for the active native-terminal path, so frontend work should stay focused on simplifying around terminal buffers rather than preserving PTY-era abstractions.
 
 ## Lifecycle And Cleanup
 

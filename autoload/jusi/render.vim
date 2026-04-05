@@ -67,10 +67,6 @@ function! jusi#render#define_signs() abort
   endfor
 endfunction
 
-function! jusi#render#define_terminalmode_highlights() abort
-  highlight default JusiTerminalModeStatus ctermfg=White ctermbg=22 guifg=#ffffff guibg=#005f00
-endfunction
-
 function! jusi#render#sync_signs(bufnr, cells) abort
   let l:perf_start = reltime()
   execute 'sign unplace * group=' . s:sign_group . ' buffer=' . a:bufnr
