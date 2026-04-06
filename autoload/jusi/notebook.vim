@@ -5,6 +5,8 @@ let s:history_entry_pattern = '^###\s*$'
 
 let s:buffer_cache = {}
 let s:buffer_listener = {}
+let s:bypass_quit_guard = 0
+let s:bypass_wipeout_guard = {}
 
 function! s:perf_enabled() abort
   return get(g:, 'jusi_perf_log', 0) == 1
@@ -933,6 +935,10 @@ function! s:active_notebook_buffers() abort
   return l:bufnrs
 endfunction
 
+function! s:visible_window_count_for_buffer(bufnr) abort
+  return len(filter(copy(getwininfo()), {_, v -> get(v, 'bufnr', 0) == a:bufnr}))
+endfunction
+
 function! s:mark_skip_cleanup(bufnrs) abort
   for l:bufnr in a:bufnrs
     call setbufvar(l:bufnr, 'jusi_skip_cleanup_once', 1)
@@ -944,13 +950,24 @@ function! s:forced_close() abort
 endfunction
 
 function! jusi#notebook#guard_quit(...) abort
+  if s:bypass_quit_guard
+    let s:bypass_quit_guard = 0
+    return 1
+  endif
   let l:forced = a:0 >= 1 ? a:1 : s:forced_close()
-  let l:active = s:active_notebook_buffers()
-  if empty(l:active)
+  let l:bufnr = bufnr('%')
+  if getbufvar(l:bufnr, 'jusi_client_managed', 0)
+        \ || getbufvar(l:bufnr, 'jusi_client_notebook_bufnr', 0) > 0
+    return 1
+  endif
+  if !s:notebook_has_active_session(l:bufnr)
+    return 1
+  endif
+  if s:visible_window_count_for_buffer(l:bufnr) > 1
     return 1
   endif
   if l:forced
-    call s:mark_skip_cleanup(l:active)
+    call s:mark_skip_cleanup([l:bufnr])
     return 1
   endif
   call s:echo_error('Cannot quit while a Jusi session is active; use :q! or stop/disconnect it first')
@@ -959,6 +976,10 @@ endfunction
 
 function! jusi#notebook#guard_wipeout(...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if has_key(s:bypass_wipeout_guard, l:bufnr)
+    call remove(s:bypass_wipeout_guard, l:bufnr)
+    return 1
+  endif
   let l:forced = a:0 >= 2 ? a:2 : s:forced_close()
   if !s:notebook_has_active_session(l:bufnr)
     return 1
@@ -969,6 +990,105 @@ function! jusi#notebook#guard_wipeout(...) abort
   endif
   call s:echo_error('Cannot wipe a notebook buffer while a Jusi session is active; use :bwipeout! or stop/disconnect it first')
   throw 'jusi-wipeout-blocked'
+endfunction
+
+function! jusi#notebook#prepare_forced_exit() abort
+  call s:mark_skip_cleanup(s:active_notebook_buffers())
+  return 1
+endfunction
+
+function! s:run_quit_command(cmd) abort
+  let s:bypass_quit_guard = 1
+  execute a:cmd
+  return 1
+endfunction
+
+function! s:run_window_close(force) abort
+  if tabpagenr('$') > 1 || len(getwininfo()) > 1
+    execute a:force ? 'close!' : 'close'
+    return 1
+  endif
+  return s:run_quit_command(a:force ? 'quit!' : 'quit')
+endfunction
+
+function! s:run_client_close(bufnr, force) abort
+  let l:notebook_bufnr = getbufvar(a:bufnr, 'jusi_client_notebook_bufnr', 0)
+  if l:notebook_bufnr > 0 && bufexists(l:notebook_bufnr)
+    if s:visible_window_count_for_buffer(l:notebook_bufnr) > 0
+      if tabpagenr('$') > 1 || len(getwininfo()) > 1
+        execute a:force ? 'close!' : 'close'
+        return 1
+      endif
+    endif
+    execute 'buffer ' . l:notebook_bufnr
+    return 1
+  endif
+  return s:run_window_close(a:force)
+endfunction
+
+function! s:run_wipeout_command(bufnr, cmd) abort
+  let s:bypass_wipeout_guard[a:bufnr] = 1
+  execute a:cmd
+  return 1
+endfunction
+
+function! jusi#notebook#command_abbrev(lhs, replacement) abort
+  return getcmdtype() ==# ':' && getcmdline() ==# a:lhs ? a:replacement : a:lhs
+endfunction
+
+function! jusi#notebook#command_quit(force, all) abort
+  if a:all
+    let l:active = s:active_notebook_buffers()
+    if empty(l:active)
+      return s:run_quit_command(a:force ? 'qall!' : 'qall')
+    endif
+    if a:force
+      call s:mark_skip_cleanup(l:active)
+      return s:run_quit_command('qall!')
+    endif
+    call s:echo_error('Cannot quit while a Jusi session is active; use :q! or stop/disconnect it first')
+    return 0
+  endif
+
+  let l:bufnr = bufnr('%')
+  if getbufvar(l:bufnr, 'jusi_client_managed', 0)
+        \ || getbufvar(l:bufnr, 'jusi_client_notebook_bufnr', 0) > 0
+    call jusi#client#handle_editor_close(l:bufnr)
+    return s:run_client_close(l:bufnr, a:force)
+  endif
+
+  if !s:notebook_has_active_session(l:bufnr) || s:visible_window_count_for_buffer(l:bufnr) > 1
+    return s:run_window_close(a:force)
+  endif
+
+  if a:force
+    call s:mark_skip_cleanup([l:bufnr])
+    return s:run_window_close(1)
+  endif
+
+  call s:echo_error('Cannot quit while a Jusi session is active; use :q! or stop/disconnect it first')
+  return 0
+endfunction
+
+function! jusi#notebook#command_wipeout(force) abort
+  let l:bufnr = bufnr('%')
+  if getbufvar(l:bufnr, 'jusi_client_managed', 0)
+        \ || getbufvar(l:bufnr, 'jusi_client_notebook_bufnr', 0) > 0
+    call jusi#client#handle_editor_close(l:bufnr)
+    return s:run_wipeout_command(l:bufnr, a:force ? 'bwipeout!' : 'bwipeout')
+  endif
+
+  if !s:notebook_has_active_session(l:bufnr)
+    return s:run_wipeout_command(l:bufnr, a:force ? 'bwipeout!' : 'bwipeout')
+  endif
+
+  if a:force
+    call s:mark_skip_cleanup([l:bufnr])
+    return s:run_wipeout_command(l:bufnr, 'bwipeout!')
+  endif
+
+  call s:echo_error('Cannot wipe a notebook buffer while a Jusi session is active; use :bwipeout! or stop/disconnect it first')
+  return 0
 endfunction
 
 function! jusi#notebook#cleanup(...) abort

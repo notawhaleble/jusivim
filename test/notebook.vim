@@ -1439,7 +1439,7 @@ function! Test_toggle_park_rejects_followup_clients() abort
   let b:jusi_nb.cells[0].client_state = 'active'
   let b:jusi_nb.cells[0].client_bufnr = l:client
   call jusi#session#toggle_park_current_client()
-  call assert_equal('failed', b:jusi_nb.session.state)
+  call assert_equal('idle', b:jusi_nb.session.state)
   call assert_match('Cannot park a busy or follow-up client', b:jusi_nb.session.last_error)
   call assert_equal('follow-up', b:jusi_nb.cells[0].status)
   call assert_equal(l:client, b:jusi_nb.cells[0].client_bufnr)
@@ -2264,7 +2264,7 @@ function! Test_close_client_requires_attached_buffer() abort
         \ 'print("hello")',
         \ ])
   call jusi#session#close_current_client()
-  call assert_equal('failed', b:jusi_nb.session.state)
+  call assert_equal('idle', b:jusi_nb.session.state)
   call assert_match('Cannot close client without an attached client buffer', b:jusi_nb.session.last_error)
 endfunction
 

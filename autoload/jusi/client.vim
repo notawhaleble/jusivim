@@ -371,6 +371,62 @@ function! jusi#client#is_managed_buffer(bufnr) abort
   return jusi#buffer#is_valid_bufnr(a:bufnr) && getbufvar(a:bufnr, 'jusi_client_managed', 0)
 endfunction
 
+function! s:closed_cell_update() abort
+  return {
+        \ 'client_state': 'shutdown',
+        \ 'client_bufnr': -1,
+        \ 'close_requested': 0,
+        \ 'handler': {'id': '', 'last_message_type': '', 'payload': {}, 'snapshot': {}},
+        \ 'pending_input': {},
+        \ 'parked_status': '',
+        \ }
+endfunction
+
+function! jusi#client#handle_editor_close(bufnr) abort
+  if !jusi#client#is_managed_buffer(a:bufnr)
+    return 0
+  endif
+  if getbufvar(a:bufnr, 'jusi_client_close_observed', 0)
+    return 1
+  endif
+  call setbufvar(a:bufnr, 'jusi_client_close_observed', 1)
+
+  let l:notebook_bufnr = getbufvar(a:bufnr, 'jusi_client_notebook_bufnr', 0)
+  if l:notebook_bufnr <= 0 || !bufexists(l:notebook_bufnr)
+    return 1
+  endif
+  if getbufvar(l:notebook_bufnr, 'jusi_skip_cleanup_once', 0)
+    return 1
+  endif
+
+  let l:role = getbufvar(a:bufnr, 'jusi_client_role', '')
+  let l:cell_id = getbufvar(a:bufnr, 'jusi_client_cell_id', 0)
+  call setbufvar(a:bufnr, 'jusi_client_role', 'detached')
+  call setbufvar(a:bufnr, 'jusi_client_cell_id', 0)
+
+  if l:role ==# 'cell'
+    if l:cell_id > 0
+      let l:update = s:closed_cell_update()
+      let l:update._preserve_local_buffer = 1
+      call jusi#session#callback_cell(l:cell_id, l:update, l:notebook_bufnr)
+    endif
+    return 1
+  endif
+
+  if l:role ==# 'prepared'
+    call jusi#session#apply_prepared(l:notebook_bufnr, {
+          \ 'id': '',
+          \ 'state': 'missing',
+          \ 'client_state': 'shutdown',
+          \ 'bufnr': -1,
+          \ '_preserve_local_buffer': 1,
+          \ })
+    return 1
+  endif
+
+  return 1
+endfunction
+
 function! s:binding_mismatch(message) abort
   return {'ok': 0, 'message': a:message}
 endfunction

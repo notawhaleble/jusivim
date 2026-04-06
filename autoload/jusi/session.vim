@@ -567,9 +567,33 @@ function! s:is_stopping_session_state(session) abort
   return index(['stopping', 'stopped'], get(a:session, 'state', 'idle')) >= 0
 endfunction
 
+function! s:accept_runtime_callbacks(session) abort
+  return index(['disconnected', 'stopping', 'stopped'], get(a:session, 'state', 'idle')) < 0
+endfunction
+
+function! s:ignore_session_callback(current_session, update) abort
+  let l:current_state = get(a:current_session, 'state', 'idle')
+  let l:update_state = get(a:update, 'state', '')
+  if index(['disconnected', 'stopping', 'stopped'], l:current_state) >= 0
+        \ && index(['starting', 'connected'], l:update_state) >= 0
+    return 1
+  endif
+  return 0
+endfunction
+
 function! s:fail_session(bufnr, update, message) abort
   let l:state = s:update_session(a:bufnr, extend(copy(a:update), {
         \ 'state': 'failed',
+        \ 'last_error': a:message,
+        \ }))
+  call s:echo_error(a:message)
+  return l:state
+endfunction
+
+function! s:reject_action(bufnr, update, message) abort
+  let l:session = jusi#session#state(a:bufnr)
+  let l:state = s:update_session(a:bufnr, extend(copy(a:update), {
+        \ 'state': get(l:session, 'state', 'idle'),
         \ 'last_error': a:message,
         \ }))
   call s:echo_error(a:message)
@@ -991,12 +1015,17 @@ endfunction
 
 function! jusi#session#callback_session(update, ...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  let l:session = jusi#session#state(l:bufnr)
+  if s:ignore_session_callback(l:session, a:update)
+    call s:debug_log(l:bufnr, 'callback-session-ignored-inactive', a:update, l:session)
+    return jusi#notebook#state(l:bufnr)
+  endif
   let l:state = s:update_session(l:bufnr, a:update)
-  let l:session = get(l:state, 'session', {})
-  if get(l:session, 'state', '') ==# 'stopped'
-    call s:remove_attach_registry_session(l:session)
+  let l:next_session = get(l:state, 'session', {})
+  if get(l:next_session, 'state', '') ==# 'stopped'
+    call s:remove_attach_registry_session(l:next_session)
   else
-    call s:sync_attach_registry(l:bufnr, l:session)
+    call s:sync_attach_registry(l:bufnr, l:next_session)
   endif
   return l:state
 endfunction
@@ -1004,9 +1033,12 @@ endfunction
 function! jusi#session#callback_prepared(update, ...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
   call s:debug_log(l:bufnr, 'callback-prepared-begin', a:update, jusi#session#prepared(l:bufnr))
-  if !s:is_stopping_session_state(jusi#session#state(l:bufnr))
-    call s:refresh_stale_prepared(l:bufnr)
+  let l:session = jusi#session#state(l:bufnr)
+  if !s:accept_runtime_callbacks(l:session)
+    call s:debug_log(l:bufnr, 'callback-prepared-ignored-inactive', a:update, l:session)
+    return jusi#notebook#state(l:bufnr)
   endif
+  call s:refresh_stale_prepared(l:bufnr)
   let l:update = s:normalize_prepared_update(a:update)
   let l:state = s:update_prepared(l:bufnr, l:update)
   if empty(l:state)
@@ -1030,6 +1062,11 @@ endfunction
 
 function! jusi#session#callback_cell(cell_id, update, ...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  let l:session = jusi#session#state(l:bufnr)
+  if !s:accept_runtime_callbacks(l:session)
+    call s:debug_log(l:bufnr, 'callback-cell-ignored-inactive', a:cell_id, a:update, l:session)
+    return jusi#notebook#state(l:bufnr)
+  endif
   let l:cell = s:update_cell(l:bufnr, a:cell_id, a:update)
   return s:maybe_finalize_closed_cell(l:bufnr, l:cell)
 endfunction
@@ -1648,7 +1685,7 @@ function! jusi#session#close_current_client() abort
 
   let l:cell = jusi#notebook#cell_at_line(l:bufnr, line('.'))
   if empty(l:cell)
-    return s:fail_session(l:bufnr, {'last_action': 'close_client'}, 'Cannot close client without an attached client buffer')
+    return s:reject_action(l:bufnr, {'last_action': 'close_client'}, 'Cannot close client without an attached client buffer')
   endif
   let l:client_bufnr = get(l:cell, 'client_bufnr', -1)
   let l:binding = jusi#client#validate_attached_binding(
@@ -1670,14 +1707,14 @@ function! jusi#session#close_current_client() abort
     endif
   endif
   if get(l:cell, 'client_bufnr', -1) < 0
-    return s:fail_session(l:bufnr, {'last_action': 'close_client'}, 'Cannot close client without an attached client buffer')
+    return s:reject_action(l:bufnr, {'last_action': 'close_client'}, 'Cannot close client without an attached client buffer')
   endif
 
   let l:session = jusi#session#state(l:bufnr)
   if get(l:session, 'state', 'idle') !=# 'connected'
         \ || !jusi#adapter#has('shutdown_client')
     if index(['busy', 'follow-up'], get(l:cell, 'status', '')) >= 0
-      return s:fail_session(l:bufnr, {'last_action': 'close_client'}, 'Cannot close an active client without shutdown support')
+      return s:reject_action(l:bufnr, {'last_action': 'close_client'}, 'Cannot close an active client without shutdown support')
     endif
     call jusi#client#destroy_buffer(l:client_bufnr)
     call s:update_session(l:bufnr, {
@@ -1743,10 +1780,10 @@ function! jusi#session#toggle_park_current_client() abort
 
   let l:cell = jusi#notebook#cell_at_line(l:bufnr, line('.'))
   if empty(l:cell) || get(l:cell, 'client_bufnr', -1) < 0
-    return s:fail_session(l:bufnr, {'last_action': 'toggle_park'}, 'Cannot toggle parked state without an attached client buffer')
+    return s:reject_action(l:bufnr, {'last_action': 'toggle_park'}, 'Cannot toggle parked state without an attached client buffer')
   endif
   if index(['busy', 'follow-up'], get(l:cell, 'status', '')) >= 0
-    return s:fail_session(l:bufnr, {'last_action': 'toggle_park'}, 'Cannot park a busy or follow-up client')
+    return s:reject_action(l:bufnr, {'last_action': 'toggle_park'}, 'Cannot park a busy or follow-up client')
   endif
 
   call s:update_session(l:bufnr, {
