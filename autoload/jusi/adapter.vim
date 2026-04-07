@@ -241,8 +241,8 @@ function! jusi#adapter#call(op, bufnr, payload) abort
     return l:result
   endif
 
-  if jusi#transport#can_request(a:bufnr)
-    let l:envelope = jusi#adapter#build_request(a:op, a:bufnr, a:payload)
+  let l:envelope = jusi#adapter#build_request(a:op, a:bufnr, a:payload)
+  if jusi#transport#can_request(a:bufnr, l:envelope)
     let l:result = s:normalize_result(jusi#transport#request(a:bufnr, l:envelope))
     if type(l:result) != type({})
       return {'ok': 0, 'error': 'Transport returned invalid response for ' . a:op}
@@ -283,8 +283,8 @@ function! jusi#adapter#call_async(op, bufnr, payload) abort
     return l:result
   endif
 
-  if jusi#transport#can_request(a:bufnr)
-    let l:envelope = jusi#adapter#build_request(a:op, a:bufnr, a:payload)
+  let l:envelope = jusi#adapter#build_request(a:op, a:bufnr, a:payload)
+  if jusi#transport#can_request(a:bufnr, l:envelope)
     return jusi#transport#notify(a:bufnr, l:envelope)
   endif
 

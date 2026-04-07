@@ -1,3 +1,5 @@
+let s:debug_clock = {'sec': localtime(), 'rel': reltime()}
+
 function! s:normalize_bufnr(bufnr) abort
   if a:bufnr is# 0 || a:bufnr is# ''
     return bufnr('%')
@@ -21,12 +23,19 @@ function! s:debug_string(value) abort
   endtry
 endfunction
 
+function! s:debug_timestamp() abort
+  let l:elapsed_ms = float2nr(reltimefloat(reltime(s:debug_clock.rel)) * 1000.0)
+  let l:sec = s:debug_clock.sec + (l:elapsed_ms / 1000)
+  let l:ms = l:elapsed_ms % 1000
+  return strftime('%Y-%m-%d %H:%M:%S', l:sec) . printf('.%03d', l:ms)
+endfunction
+
 function! s:debug_log(bufnr, message, ...) abort
   if !s:debug_log_enabled()
     return
   endif
   let l:path = get(g:, 'jusi_session_debug_log', '')
-  let l:parts = [strftime('%Y-%m-%d %H:%M:%S'), 'bufnr=' . a:bufnr, a:message]
+  let l:parts = [s:debug_timestamp(), 'bufnr=' . a:bufnr, a:message]
   for l:item in a:000
     call add(l:parts, s:debug_string(l:item))
   endfor
@@ -43,7 +52,7 @@ function! s:terminal_debug_log(message, payload) abort
     return
   endif
   let l:path = get(g:, 'jusi_terminal_debug_log', '')
-  let l:parts = [strftime('%Y-%m-%d %H:%M:%S'), a:message]
+  let l:parts = [s:debug_timestamp(), a:message]
   call add(l:parts, s:debug_string(a:payload))
   call writefile([join(l:parts, ' | ')], l:path, 'a')
 endfunction
@@ -293,6 +302,25 @@ function! s:execute_cell_start_update(cell, prepared) abort
         \ 'client_state': 'active',
         \ 'client_bufnr': get(a:prepared, 'bufnr', -1),
         \ }
+endfunction
+
+function! s:release_current_cell_client_for_execute(bufnr, session, cell) abort
+  if empty(a:cell) || get(a:cell, 'client_bufnr', -1) < 0
+    return a:cell
+  endif
+
+  if s:has_trustworthy_client_identity(a:session, get(a:cell, 'client_id', ''))
+    call s:request_shutdown_client(
+          \ a:bufnr,
+          \ a:session,
+          \ a:cell.id,
+          \ get(a:cell, 'client_id', ''),
+          \ 'execute_replace')
+  endif
+  call jusi#client#detach_buffer(get(a:cell, 'client_bufnr', -1))
+  return s:update_cell(a:bufnr, a:cell.id, extend(copy(s:cell_close_reset_update()), {
+        \ '_preserve_local_buffer': 1,
+        \ }))
 endfunction
 
 function! s:restore_prepared_update(prepared) abort
@@ -1067,6 +1095,19 @@ function! jusi#session#callback_cell(cell_id, update, ...) abort
     call s:debug_log(l:bufnr, 'callback-cell-ignored-inactive', a:cell_id, a:update, l:session)
     return jusi#notebook#state(l:bufnr)
   endif
+  let l:state = s:notebook_state(l:bufnr)
+  let l:idx = empty(l:state) ? -1 : s:find_cell_index(l:state, a:cell_id)
+  if l:idx >= 0
+    let l:current_cell = l:state.cells[l:idx]
+    let l:update_client_id = get(a:update, 'client_id', '')
+    if !empty(l:update_client_id)
+          \ && !empty(get(l:current_cell, 'client_id', ''))
+          \ && l:update_client_id !=# get(l:current_cell, 'client_id', '')
+          \ && get(l:current_cell, 'client_state', '') ==# 'active'
+      call s:debug_log(l:bufnr, 'callback-cell-ignored-stale-client', a:cell_id, a:update, l:current_cell)
+      return jusi#notebook#state(l:bufnr)
+    endif
+  endif
   let l:cell = s:update_cell(l:bufnr, a:cell_id, a:update)
   return s:maybe_finalize_closed_cell(l:bufnr, l:cell)
 endfunction
@@ -1542,6 +1583,7 @@ function! jusi#session#execute_current() abort
         \ })
   call s:release_disposable_cell_clients(l:bufnr, l:cell.id)
   let l:cell = jusi#notebook#cell_at_line(l:bufnr, line('.'))
+  let l:cell = s:release_current_cell_client_for_execute(l:bufnr, l:session, l:cell)
   let l:cell_start = s:execute_cell_start_update(l:cell, l:prepared)
   call s:update_prepared(l:bufnr, s:execute_consumed_prepared_update(l:prepared))
   call s:update_cell(l:bufnr, l:cell.id, l:cell_start)

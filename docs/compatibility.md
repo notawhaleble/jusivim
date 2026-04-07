@@ -185,11 +185,39 @@ Session state must be explicit enough to recover from broken transport or broken
 
 Current target-alias compatibility:
 
+- `:JusiStartKernel` without an argument starts against the current local environment
+  and assumes backend is reachable there
 - `g:jusi_kernel_targets` may map an alias to a raw target string such as `venv://myenv1`
 - it may also map an alias to a dict with target fields such as:
   - `kind`
   - `value` or `connection`
   - `config`
+- supported start-target kinds now include:
+  - `local://`
+  - `venv://`
+  - `ssh://`
+  - `docker://`
+  - `docker+ssh://`
+- current local-start compatibility:
+  - plain kernel names and `local://` use the current frontend environment
+  - if backend is importable there, frontend starts it as `python -m jusi`
+- current `venv://` compatibility:
+  - the target value points at a virtualenv root
+  - frontend starts backend with that virtualenv's Python
+- current `ssh://` compatibility:
+  - the target value identifies the remote host, for example `ssh://user@host`
+  - dict config may also include:
+    - `user`
+    - `host`
+    - `port`
+    - `key_path`
+    - `password`
+- current `docker://` compatibility:
+  - the target value identifies the container name
+  - dict config may also include `container`
+- current `docker+ssh://` compatibility:
+  - the target value identifies remote host plus container, for example `docker+ssh://user@host/container`
+  - dict config may combine the `ssh://` auth fields with `container`
 - current attach compatibility is intentionally narrower:
   - `:JusiAttach {path}` treats a plain path as `target.kind=connection_file`
   - a successful `connection_file` attach persists a readable alias in the frontend attach registry

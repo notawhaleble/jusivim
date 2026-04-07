@@ -378,6 +378,53 @@ function! Test_integration_execute_after_transport_close_uses_new_prepared_buffe
   endtry
 endfunction
 
+function! Test_integration_execute_same_cell_replaces_old_attached_client() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let s:integration_shutdown_requests = []
+    let g:jusi_session_adapter = {'request': function('s:integration_transport_request_adapter')}
+    call Test_open_scratch([
+          \ '##',
+          \ '%%vd pods',
+          \ ])
+    let l:notebook = bufnr('%')
+    let l:cell_id = b:jusi_nb.cells[0].id
+    let l:old_client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:old_client)
+    call setbufvar(l:old_client, 'jusi_client_transport_kind', 'native_terminal')
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.state = 'connected'
+    let b:jusi_nb.cells[0].status = 'follow-up'
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = l:old_client
+    let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+
+    let l:new_prepared = jusi#client#create_prepared_buffer(l:notebook, 'client-2')
+    call jusi#session#apply_prepared({
+          \ 'id': 'client-2',
+          \ 'state': 'ready',
+          \ 'client_state': 'active',
+          \ 'bufnr': l:new_prepared,
+          \ })
+
+    call jusi#session#execute_current()
+
+    call assert_equal('execute', b:jusi_nb.session.last_action)
+    call assert_equal('busy', b:jusi_nb.cells[0].status)
+    call assert_equal('client-2', b:jusi_nb.cells[0].client_id)
+    call assert_equal(l:new_prepared, b:jusi_nb.cells[0].client_bufnr)
+    call assert_true(bufexists(l:old_client))
+    call assert_equal('detached', getbufvar(l:old_client, 'jusi_client_role', ''))
+    call assert_equal(0, getbufvar(l:old_client, 'jusi_client_cell_id', -1))
+    call assert_equal(1, len(s:integration_shutdown_requests))
+    call assert_equal('client-1', get(s:integration_shutdown_requests[0], 'client_id', ''))
+    call assert_equal('execute_replace', get(s:integration_shutdown_requests[0], 'reason', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
 function! Test_integration_cleanup_destroys_hidden_detached_client_after_transport_close() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   try

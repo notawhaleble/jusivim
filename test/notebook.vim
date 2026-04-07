@@ -884,6 +884,90 @@ function! Test_start_kernel_alias_preserves_dict_target_config() abort
   endtry
 endfunction
 
+function! Test_transport_backend_cmd_for_venv_target_uses_venv_python() abort
+  let l:venv = '/tmp/jusi-test-venv'
+  let l:cmd = jusi#transport#backend_cmd_for_target({
+        \ 'kind': 'venv',
+        \ 'value': 'venv://' . l:venv,
+        \ })
+  call assert_equal([fnamemodify(l:venv . '/bin/python', ':p'), '-m', 'jusi'], l:cmd)
+endfunction
+
+function! Test_transport_backend_cmd_for_local_target_uses_default_backend() abort
+  let l:cmd = jusi#transport#backend_cmd_for_target({
+        \ 'kind': 'local',
+        \ 'value': 'local://',
+        \ })
+  call assert_equal(jusi#transport#default_backend_cmd(), l:cmd)
+endfunction
+
+function! Test_transport_backend_cmd_for_ssh_target_supports_auth_options() abort
+  let l:cmd = jusi#transport#backend_cmd_for_target({
+        \ 'kind': 'ssh',
+        \ 'value': 'ssh://niku@example.com',
+        \ 'config': {
+        \   'key_path': '/tmp/test-key',
+        \   'port': 2222,
+        \   },
+        \ })
+  call assert_equal(['ssh', '-i', '/tmp/test-key', '-p', '2222', 'niku@example.com', 'python3', '-m', 'jusi'], l:cmd)
+
+  let l:password_cmd = jusi#transport#backend_cmd_for_target({
+        \ 'kind': 'ssh',
+        \ 'value': 'ssh://example.com',
+        \ 'config': {
+        \   'user': 'root',
+        \   'password': 'secret',
+        \   },
+        \ })
+  call assert_equal(['sshpass', '-p', 'secret', 'ssh', 'root@example.com', 'python3', '-m', 'jusi'], l:password_cmd)
+endfunction
+
+function! Test_transport_backend_cmd_for_docker_target_uses_container_name() abort
+  let l:cmd = jusi#transport#backend_cmd_for_target({
+        \ 'kind': 'docker',
+        \ 'value': 'docker://jusi-backend',
+        \ })
+  call assert_equal(['docker', 'exec', '-i', 'jusi-backend', 'python3', '-m', 'jusi'], l:cmd)
+endfunction
+
+function! Test_transport_backend_cmd_for_docker_ssh_target_combines_remote_and_container() abort
+  let l:cmd = jusi#transport#backend_cmd_for_target({
+        \ 'kind': 'docker+ssh',
+        \ 'value': 'docker+ssh://niku@example.com/jusi-backend',
+        \ 'config': {
+        \   'key_path': '/tmp/test-key',
+        \   },
+        \ })
+  call assert_equal(['ssh', '-i', '/tmp/test-key', 'niku@example.com', 'docker', 'exec', '-i', 'jusi-backend', 'python3', '-m', 'jusi'], l:cmd)
+endfunction
+
+function! Test_cell_callback_ignores_stale_client_update_after_rebind() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd pods',
+        \ ])
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let b:jusi_nb.session.id = 'sess-1'
+  let b:jusi_nb.session.state = 'connected'
+  let b:jusi_nb.cells[0].status = 'busy'
+  let b:jusi_nb.cells[0].client_id = 'client-new'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = 91
+
+  call jusi#session#callback_cell(l:cell_id, {
+        \ 'client_id': 'client-old',
+        \ 'client_state': 'shutdown',
+        \ 'client_bufnr': -1,
+        \ 'status': 'done',
+        \ })
+
+  call assert_equal('client-new', b:jusi_nb.cells[0].client_id)
+  call assert_equal('active', b:jusi_nb.cells[0].client_state)
+  call assert_equal(91, b:jusi_nb.cells[0].client_bufnr)
+  call assert_equal('busy', b:jusi_nb.cells[0].status)
+endfunction
+
 function! Test_start_kernel_persists_attach_registry_entry_for_durable_session() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   let l:save_registry = get(g:, 'jusi_attach_registry_file', '')
@@ -2160,8 +2244,8 @@ function! Test_busy_client_polling_advances_output_before_terminal_update() abor
           \ 'client_bufnr': l:client,
           \ })
 
-    call Test_wait_until({-> getbufline(l:client, 1, '$') == ['started cell 1 [code:python]', 'stdout> 1', 'stdout> 2']}, 500)
-    call assert_equal(['started cell 1 [code:python]', 'stdout> 1', 'stdout> 2'], getbufline(l:client, 1, '$'))
+    call Test_wait_until({-> getbufline(l:client, 1, '$') == ['1', '2']}, 500)
+    call assert_equal(['1', '2'], getbufline(l:client, 1, '$'))
     call assert_true(s:inspect_client_calls >= 3)
 
     let l:calls_before_done = s:inspect_client_calls
@@ -2172,8 +2256,8 @@ function! Test_busy_client_polling_advances_output_before_terminal_update() abor
           \ 'execution_status': 'done',
           \ }
     call jusi#session#callback_cell(l:cell_id, {'status': 'done'})
-    call Test_wait_until({-> getbufline(l:client, 1, '$') == ['started cell 1 [code:python]', 'stdout> 1', 'stdout> 2', 'finished: done']}, 500)
-    call assert_equal(['started cell 1 [code:python]', 'stdout> 1', 'stdout> 2', 'finished: done'], getbufline(l:client, 1, '$'))
+    call Test_wait_until({-> getbufline(l:client, 1, '$') == ['1', '2']}, 500)
+    call assert_equal(['1', '2'], getbufline(l:client, 1, '$'))
 
     sleep 80m
     call assert_true(s:inspect_client_calls <= l:calls_before_done + 1)
@@ -2181,6 +2265,48 @@ function! Test_busy_client_polling_advances_output_before_terminal_update() abor
     let g:jusi_session_adapter = l:save_adapter
     let g:jusi_client_poll_ms = l:save_poll_ms
     let s:inspect_client_sequence = []
+  endtry
+endfunction
+
+function! Test_client_refresh_hides_transcript_noise_in_display_buffer() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {'inspect_client': function('s:test_session_adapter_inspect_client')}
+    let s:inspect_client_response = {
+          \ 'revision': 1,
+          \ 'title': 'cell 1: done',
+          \ 'lines': [
+          \   'meta> client=client-6 session=sess-1 bufnr=10',
+          \   'status> busy',
+          \   'handler.meta {"kind":"native_terminal"}',
+          \   'handler.handoff {"transport":"native_terminal"}',
+          \   'started cell 1 [code:python]',
+          \   "execute[3]> print('lalala')",
+          \   'stdout> lalala',
+          \   'finished: done',
+          \ ],
+          \ 'execution_status': 'done',
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    let l:notebook = bufnr('%')
+    let l:cell_id = b:jusi_nb.cells[0].id
+    let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.state = 'connected'
+    let b:jusi_nb.cells[0].status = 'done'
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = l:client
+    call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+
+    call jusi#client#refresh_attached_view(l:notebook, l:cell_id, 'client-1', l:client)
+
+    call assert_equal(['lalala'], getbufline(l:client, 1, '$'))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
   endtry
 endfunction
 
@@ -3332,6 +3458,47 @@ function! Test_transport_request_parses_real_job_response() abort
           \ 'type': 'start_session',
           \ 'request_id': 'req-test',
           \ 'payload': {'notebook_id': 'nb-1', 'kernel_name': 'python3'},
+          \ })
+    call assert_equal(1, get(l:response, 'ok', 0))
+    call assert_equal('', get(l:response, 'error', ''))
+  finally
+    call jusi#transport#stop(bufnr('%'))
+    let g:jusi_backend_cmd = l:save_backend_cmd
+  endtry
+endfunction
+
+function! Test_transport_request_can_start_backend_from_venv_target() abort
+  let l:save_backend_cmd = get(g:, 'jusi_backend_cmd', [])
+  let l:root = tempname()
+  let l:venv = l:root . '/test-venv'
+  let l:bin = l:venv . '/bin'
+  let l:python = l:bin . '/python'
+  try
+    call mkdir(l:bin, 'p')
+    call writefile([
+          \ '#!/bin/sh',
+          \ "IFS= read -r line",
+          \ "printf '%s\\n' '{\"version\":1,\"kind\":\"response\",\"type\":\"start_session\",\"request_id\":\"req-test\",\"ok\":true,\"payload\":{}}'",
+          \ ], l:python)
+    call setfperm(l:python, 'rwxr-xr-x')
+    let g:jusi_backend_cmd = []
+    call Test_open_scratch([
+          \ '##',
+          \ 'print(\"hello\")',
+          \ ])
+    let l:response = jusi#transport#request(bufnr('%'), {
+          \ 'version': 1,
+          \ 'kind': 'request',
+          \ 'type': 'start_session',
+          \ 'request_id': 'req-test',
+          \ 'payload': {
+          \   'notebook_id': 'nb-1',
+          \   'kernel_name': 'py',
+          \   'target': {
+          \     'kind': 'venv',
+          \     'value': 'venv://' . l:venv,
+          \     },
+          \   },
           \ })
     call assert_equal(1, get(l:response, 'ok', 0))
     call assert_equal('', get(l:response, 'error', ''))

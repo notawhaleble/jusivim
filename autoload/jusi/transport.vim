@@ -1,4 +1,5 @@
 let s:transport = {}
+let s:debug_clock = {'sec': localtime(), 'rel': reltime()}
 
 function! s:debug_log_enabled() abort
   return type(get(g:, 'jusi_transport_debug_log', 0)) == type('')
@@ -16,12 +17,19 @@ function! s:debug_string(value) abort
   endtry
 endfunction
 
+function! s:debug_timestamp() abort
+  let l:elapsed_ms = float2nr(reltimefloat(reltime(s:debug_clock.rel)) * 1000.0)
+  let l:sec = s:debug_clock.sec + (l:elapsed_ms / 1000)
+  let l:ms = l:elapsed_ms % 1000
+  return strftime('%Y-%m-%d %H:%M:%S', l:sec) . printf('.%03d', l:ms)
+endfunction
+
 function! s:debug_log(bufnr, message, ...) abort
   if !s:debug_log_enabled()
     return
   endif
   let l:path = get(g:, 'jusi_transport_debug_log', '')
-  let l:parts = [strftime('%Y-%m-%d %H:%M:%S'), 'bufnr=' . a:bufnr, a:message]
+  let l:parts = [s:debug_timestamp(), 'bufnr=' . a:bufnr, a:message]
   for l:item in a:000
     call add(l:parts, s:debug_string(l:item))
   endfor
@@ -54,6 +62,13 @@ function! s:backend_cmd() abort
   return get(g:, 'jusi_backend_cmd', [])
 endfunction
 
+function! s:copy_cmd(cmd) abort
+  if type(a:cmd) == type([])
+    return copy(a:cmd)
+  endif
+  return a:cmd
+endfunction
+
 function! s:has_backend_cmd() abort
   let l:cmd = s:backend_cmd()
   return (type(l:cmd) == type([]) && !empty(l:cmd))
@@ -73,10 +88,163 @@ endfunction
 function! jusi#transport#default_backend_cmd() abort
   let l:python = s:default_python()
   let l:backend_src = fnamemodify(getcwd() . '/../jusi/src', ':p')
-  if empty(l:python) || !isdirectory(l:backend_src)
+  if empty(l:python)
     return []
   endif
-  return 'PYTHONPATH=' . shellescape(l:backend_src) . ' ' . l:python . ' -m jusi'
+  if isdirectory(l:backend_src)
+    return 'PYTHONPATH=' . shellescape(l:backend_src) . ' ' . l:python . ' -m jusi'
+  endif
+  return [l:python, '-m', 'jusi']
+endfunction
+
+function! s:target_value_body(value) abort
+  if type(a:value) != type('')
+    return ''
+  endif
+  return substitute(a:value, '^[A-Za-z0-9_+-]\+://', '', '')
+endfunction
+
+function! s:target_config(target) abort
+  let l:config = get(a:target, 'config', {})
+  return type(l:config) == type({}) ? l:config : {}
+endfunction
+
+function! s:target_config_string(target, ...) abort
+  let l:config = s:target_config(a:target)
+  for l:key in a:000
+    let l:value = get(l:config, l:key, '')
+    if type(l:value) == type('') && !empty(l:value)
+      return l:value
+    endif
+  endfor
+  return ''
+endfunction
+
+function! s:target_config_number(target, ...) abort
+  let l:config = s:target_config(a:target)
+  for l:key in a:000
+    let l:value = get(l:config, l:key, '')
+    if type(l:value) == type(0) && l:value > 0
+      return l:value
+    endif
+    if type(l:value) == type('') && l:value =~# '^[1-9][0-9]*$'
+      return str2nr(l:value)
+    endif
+  endfor
+  return 0
+endfunction
+
+function! s:venv_python_path(venv_path) abort
+  if empty(a:venv_path)
+    return ''
+  endif
+  if has('win32') || has('win64')
+    return fnamemodify(a:venv_path . '/Scripts/python.exe', ':p')
+  endif
+  return fnamemodify(a:venv_path . '/bin/python', ':p')
+endfunction
+
+function! s:target_python_cmd(target) abort
+  let l:python = s:target_config_string(a:target, 'python')
+  if empty(l:python)
+    let l:python = 'python3'
+  endif
+  return [l:python, '-m', 'jusi']
+endfunction
+
+function! s:ssh_host(target) abort
+  let l:host = s:target_config_string(a:target, 'host')
+  if empty(l:host)
+    let l:value = s:target_value_body(get(a:target, 'value', ''))
+    let l:host = split(l:value, '/', 1)[0]
+  endif
+  let l:user = s:target_config_string(a:target, 'user')
+  if !empty(l:user) && l:host !~# '@'
+    let l:host = l:user . '@' . l:host
+  endif
+  return l:host
+endfunction
+
+function! s:docker_container(target) abort
+  let l:container = s:target_config_string(a:target, 'container', 'container_name')
+  if !empty(l:container)
+    return l:container
+  endif
+  let l:value = s:target_value_body(get(a:target, 'value', ''))
+  if get(a:target, 'kind', '') ==# 'docker+ssh'
+    let l:parts = split(l:value, '/', 1)
+    return len(l:parts) >= 2 ? l:parts[1] : ''
+  endif
+  return l:value
+endfunction
+
+function! s:ssh_prefix(target) abort
+  let l:host = s:ssh_host(a:target)
+  if empty(l:host)
+    return []
+  endif
+  let l:cmd = []
+  let l:password = s:target_config_string(a:target, 'password')
+  if !empty(l:password)
+    call extend(l:cmd, ['sshpass', '-p', l:password])
+  endif
+  call add(l:cmd, 'ssh')
+  let l:key_path = s:target_config_string(a:target, 'key_path', 'identity_file')
+  if !empty(l:key_path)
+    call extend(l:cmd, ['-i', l:key_path])
+  endif
+  let l:port = s:target_config_number(a:target, 'port')
+  if l:port > 0
+    call extend(l:cmd, ['-p', string(l:port)])
+  endif
+  call add(l:cmd, l:host)
+  return l:cmd
+endfunction
+
+function! jusi#transport#backend_cmd_for_target(target) abort
+  let l:target = type(a:target) == type({}) ? a:target : {}
+  let l:kind = get(l:target, 'kind', '')
+
+  if l:kind ==# 'local'
+    return jusi#transport#default_backend_cmd()
+  endif
+
+  if l:kind ==# 'venv'
+    let l:python = s:venv_python_path(s:target_value_body(get(l:target, 'value', '')))
+    return empty(l:python) ? [] : [l:python, '-m', 'jusi']
+  endif
+
+  if l:kind ==# 'ssh'
+    let l:cmd = s:ssh_prefix(l:target)
+    return empty(l:cmd) ? [] : l:cmd + s:target_python_cmd(l:target)
+  endif
+
+  if l:kind ==# 'docker'
+    let l:container = s:docker_container(l:target)
+    return empty(l:container) ? [] : ['docker', 'exec', '-i', l:container] + s:target_python_cmd(l:target)
+  endif
+
+  if l:kind ==# 'docker+ssh'
+    let l:cmd = s:ssh_prefix(l:target)
+    let l:container = s:docker_container(l:target)
+    return empty(l:cmd) || empty(l:container)
+          \ ? []
+          \ : l:cmd + ['docker', 'exec', '-i', l:container] + s:target_python_cmd(l:target)
+  endif
+
+  return s:copy_cmd(s:backend_cmd())
+endfunction
+
+function! s:backend_cmd_for_envelope(bufnr, envelope) abort
+  let l:type = get(a:envelope, 'type', '')
+  if l:type ==# 'start_session'
+    let l:payload = get(a:envelope, 'payload', {})
+    let l:cmd = jusi#transport#backend_cmd_for_target(get(l:payload, 'target', {}))
+    if (type(l:cmd) == type([]) && !empty(l:cmd)) || (type(l:cmd) == type('') && !empty(l:cmd))
+      return l:cmd
+    endif
+  endif
+  return s:copy_cmd(s:backend_cmd())
 endfunction
 
 function! s:ensure_state(bufnr) abort
@@ -264,20 +432,23 @@ function! s:vim_exit(bufnr, job, status) abort
   call s:set_state(a:bufnr, l:state)
 endfunction
 
-function! s:start_job(bufnr) abort
+function! s:start_job(bufnr, envelope) abort
   if s:job_is_running(a:bufnr)
     call s:debug_log(a:bufnr, 'start-job-skip-already-running')
     return 1
   endif
-  if !s:has_backend_cmd()
+  let l:cmd = s:backend_cmd_for_envelope(a:bufnr, a:envelope)
+  if !((type(l:cmd) == type([]) && !empty(l:cmd)) || (type(l:cmd) == type('') && !empty(l:cmd)))
     call s:debug_log(a:bufnr, 'start-job-no-backend-cmd')
     return 0
   endif
 
   let l:state = s:ensure_state(a:bufnr)
-  call s:debug_log(a:bufnr, 'start-job', s:backend_cmd())
+  let l:state.cmd = s:copy_cmd(l:cmd)
+  call s:set_state(a:bufnr, l:state)
+  call s:debug_log(a:bufnr, 'start-job', l:cmd)
   if has('nvim')
-    let l:job = jobstart(s:backend_cmd(), {
+    let l:job = jobstart(l:cmd, {
           \ 'on_stdout': function('s:nvim_stdout', [a:bufnr]),
           \ 'on_stderr': function('s:nvim_stdout', [a:bufnr]),
           \ 'on_exit': function('s:nvim_exit', [a:bufnr]),
@@ -294,7 +465,7 @@ function! s:start_job(bufnr) abort
     return 1
   endif
 
-  let l:job = job_start(s:backend_cmd(), {
+  let l:job = job_start(l:cmd, {
         \ 'in_io': 'pipe',
         \ 'out_io': 'pipe',
         \ 'err_io': 'pipe',
@@ -317,9 +488,11 @@ endfunction
 
 function! jusi#transport#can_request(...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  let l:envelope = a:0 >= 2 && type(a:2) == type({}) ? a:2 : {}
   return type(s:handler_funcref()) == type(function('tr'))
         \ || s:job_is_running(l:bufnr)
         \ || s:has_backend_cmd()
+        \ || !empty(s:backend_cmd_for_envelope(l:bufnr, l:envelope))
 endfunction
 
 function! jusi#transport#request(bufnr, envelope) abort
@@ -332,7 +505,7 @@ function! jusi#transport#request(bufnr, envelope) abort
     return l:result
   endif
 
-  if !s:start_job(l:bufnr)
+  if !s:start_job(l:bufnr, a:envelope)
     call s:debug_log(l:bufnr, 'request-no-transport')
     return {'ok': 0, 'error': 'Transport is not configured'}
   endif
@@ -382,7 +555,7 @@ function! jusi#transport#notify(bufnr, envelope) abort
     return l:result
   endif
 
-  if !s:start_job(l:bufnr)
+  if !s:start_job(l:bufnr, a:envelope)
     call s:debug_log(l:bufnr, 'notify-no-transport')
     return {'ok': 0, 'error': 'Transport is not configured'}
   endif

@@ -1,3 +1,5 @@
+let s:debug_clock = {'sec': localtime(), 'rel': reltime()}
+
 function! jusi#client#prepared_name(notebook_bufnr, client_id) abort
   return '!jusi-prepared-client:' . a:notebook_bufnr . ':' . a:client_id
 endfunction
@@ -7,12 +9,19 @@ function! s:native_terminal_debug_enabled() abort
         \ && !empty(get(g:, 'jusi_native_terminal_debug_log', ''))
 endfunction
 
+function! s:debug_timestamp() abort
+  let l:elapsed_ms = float2nr(reltimefloat(reltime(s:debug_clock.rel)) * 1000.0)
+  let l:sec = s:debug_clock.sec + (l:elapsed_ms / 1000)
+  let l:ms = l:elapsed_ms % 1000
+  return strftime('%Y-%m-%d %H:%M:%S', l:sec) . printf('.%03d', l:ms)
+endfunction
+
 function! s:native_terminal_debug(message, payload) abort
   if !s:native_terminal_debug_enabled()
     return
   endif
   let l:path = get(g:, 'jusi_native_terminal_debug_log', '')
-  let l:parts = [strftime('%Y-%m-%d %H:%M:%S'), a:message, string(a:payload)]
+  let l:parts = [s:debug_timestamp(), a:message, string(a:payload)]
   call writefile([join(l:parts, ' | ')], l:path, 'a')
 endfunction
 
@@ -543,6 +552,40 @@ function! s:pending_input_from_view(view) abort
   return {}
 endfunction
 
+function! s:display_lines_from_view(view) abort
+  let l:raw_lines = get(a:view, 'lines', [])
+  if type(l:raw_lines) != type([])
+    return []
+  endif
+
+  let l:display = []
+  for l:line in l:raw_lines
+    if type(l:line) != type('')
+      call add(l:display, string(l:line))
+      continue
+    endif
+    if l:line =~# '^meta>\s*'
+          \ || l:line =~# '^started cell '
+          \ || l:line =~# '^execute\[[0-9]\+\]>\s*'
+          \ || l:line =~# '^status>\s*'
+          \ || l:line =~# '^finished:\s*'
+          \ || l:line =~# '^handler\.handoff\>'
+          \ || l:line =~# '^handler\.meta\>'
+      continue
+    endif
+    if l:line =~# '^stdout>\s*'
+      call add(l:display, substitute(l:line, '^stdout>\s*', '', ''))
+      continue
+    endif
+    if l:line =~# '^stderr>\s*'
+      call add(l:display, substitute(l:line, '^stderr>\s*', '', ''))
+      continue
+    endif
+    call add(l:display, l:line)
+  endfor
+  return l:display
+endfunction
+
 function! s:replace_buffer_lines(bufnr, lines) abort
   if !jusi#buffer#is_valid_bufnr(a:bufnr)
     return 0
@@ -601,14 +644,30 @@ function! s:refresh_context(notebook_bufnr, cell_id, client_id, client_bufnr) ab
 endfunction
 
 function! s:refresh_attached_now(notebook_bufnr, cell_id, client_id, client_bufnr) abort
+  call s:native_terminal_debug('attached-refresh-begin', {
+        \ 'notebook_bufnr': a:notebook_bufnr,
+        \ 'cell_id': a:cell_id,
+        \ 'client_id': a:client_id,
+        \ 'client_bufnr': a:client_bufnr,
+        \ })
   let l:ctx = s:refresh_context(a:notebook_bufnr, a:cell_id, a:client_id, a:client_bufnr)
   if empty(l:ctx)
     call s:stop_refresh_timer(a:client_bufnr)
+    call s:native_terminal_debug('attached-refresh-skip-no-context', {
+          \ 'cell_id': a:cell_id,
+          \ 'client_id': a:client_id,
+          \ 'client_bufnr': a:client_bufnr,
+          \ })
     return {}
   endif
 
   let l:response = jusi#adapter#call('inspect_client', a:notebook_bufnr, {
         \ 'client_id': a:client_id,
+        \ })
+  call s:native_terminal_debug('attached-refresh-inspect-response', {
+        \ 'cell_id': a:cell_id,
+        \ 'client_id': a:client_id,
+        \ 'ok': get(l:response, 'ok', 0),
         \ })
   if !get(l:response, 'ok', 0)
     return {}
@@ -624,11 +683,20 @@ function! s:refresh_attached_now(notebook_bufnr, cell_id, client_id, client_bufn
   endif
   let l:revision = get(l:view, 'revision', -1)
   if l:revision != getbufvar(a:client_bufnr, 'jusi_client_revision', -1)
-    let l:lines = get(l:view, 'lines', [])
-    if empty(l:lines) && !empty(get(l:view, 'title', ''))
+    let l:raw_lines = get(l:view, 'lines', [])
+    let l:lines = s:display_lines_from_view(l:view)
+    if empty(l:lines) && empty(l:raw_lines) && !empty(get(l:view, 'title', ''))
       let l:lines = [l:view.title]
     endif
     call s:replace_buffer_lines(a:client_bufnr, l:lines)
+    call s:native_terminal_debug('attached-refresh-buffer-replaced', {
+          \ 'cell_id': a:cell_id,
+          \ 'client_id': a:client_id,
+          \ 'revision': l:revision,
+          \ 'raw_line_count': len(l:raw_lines),
+          \ 'display_line_count': len(l:lines),
+          \ 'display_lines': l:lines,
+          \ })
     call setbufvar(a:client_bufnr, 'jusi_client_revision', l:revision)
     call setbufvar(a:client_bufnr, 'jusi_client_title', get(l:view, 'title', ''))
     call setbufvar(a:client_bufnr, 'jusi_client_execution_status', get(l:view, 'execution_status', ''))
