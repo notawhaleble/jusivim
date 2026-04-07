@@ -107,14 +107,8 @@ Required user-facing behavior:
 - interrupting execution is explicit and observable
 - backend failures are surfaced clearly
 - execution failures must not silently corrupt notebook state
-
-Prepared execution behavior:
-
-- a connected session has at most one authoritative prepared client at a time
-- executing a cell consumes the current prepared client and binds it to that cell
+- executing a cell creates or binds the real client for that execution directly to the cell
 - once a client is bound to a cell, it stays attached to that cell and must not be rebound to another cell
-- the next prepared client is created only after the previous prepared client has been consumed into cell execution
-- a prepared client buffer belongs to that specific prepared client identity and must not be reused for another prepared client identity
 
 The plugin must behave predictably when the backend is absent, misconfigured, or unhealthy.
 
@@ -124,8 +118,6 @@ Execution output is presented through client buffers managed by the plugin.
 
 Required properties:
 
-- session-prepared and cell-attached clients are distinct roles
-- there is at most one authoritative prepared client buffer per session
 - a cell can be associated with its output/client view
 - switching focus between notebook and client buffers is reliable
 - follow-up workflows remain coherent
@@ -133,13 +125,8 @@ Required properties:
 - attached client buffers are placed predictably when they become active
 - attached client buffers can reflect backend-provided output content
 - client placement defaults to a bottom split and remains configurable
-
-Prepared-buffer identity rules:
-
-- a prepared client buffer belongs to one backend prepared client identity
-- a cell-attached client buffer belongs to one cell/client attachment
-- frontend cleanup may temporarily observe stale local buffers after failures or out-of-order events, but such buffers are not authoritative prepared state
-- the frontend must not relabel one prepared buffer as a different prepared client
+- an attached client buffer belongs to one cell/client attachment
+- frontend cleanup may temporarily observe stale local buffers after failures or out-of-order events, but such buffers are not authoritative runtime state
 
 Client buffer creation, binding, and loss of binding must not appear as mysterious failures.
 

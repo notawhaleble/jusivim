@@ -246,7 +246,7 @@ For attached `connection_file` sessions, frontend may also persist a local alias
 
 While a session is `connected`, backend may also emit explicit `healthcheck` events. Frontend should answer those with `healthcheck_reply` for the matching connected session only. Missed replies are backend-owned liveness decisions and should feed the ordinary backend-driven `disconnected` timeout path rather than a separate frontend timeout model.
 
-Fresh session establishment in an already-open notebook should clear stale cell runtime bindings before the new session becomes authoritative. Old cell-local `client_id` / `client_bufnr` state must not be allowed to collide with a newly prepared client after reconnect failure or transport loss.
+Fresh session establishment in an already-open notebook should clear stale cell runtime bindings before the new session becomes authoritative. Old cell-local `client_id` / `client_bufnr` state must not be allowed to collide with a newly created execution client after reconnect failure or transport loss.
 
 ## Backend Boundary
 
@@ -266,24 +266,6 @@ Adapter responsibilities:
 
 The adapter should convert transport messages into notebook/session updates without leaking protocol details into unrelated editing code.
 
-Prepared-client lifecycle should also remain explicit:
-
-- `missing`
-- `spawning`
-- `binding`
-- `ready`
-
-Prepared-client invariants:
-
-- one session has at most one authoritative prepared client at a time
-- the prepared client is a session-level resource, not a cell-level one
-- executing a cell consumes the prepared client into a cell-owned active client
-- once consumed, that client remains attached to that cell and is never rebound to another cell
-- the replacement prepared client starts only after the previous prepared client has been consumed
-- prepared buffer identity is tied to prepared client identity and must not be reused across different prepared client ids
-
-The frontend owns Vim buffer creation and must acknowledge prepared binding before the backend can treat the client as `ready`.
-
 ## Client Buffer Management
 
 Client buffers are editor resources attached to cells and sessions.
@@ -298,15 +280,11 @@ Responsibilities:
 The plugin should maintain explicit ownership rules:
 
 - notebook owns cells
-- session owns the current prepared client
 - cell may reference a client buffer
 - session may own process-level resources
 
 Binding rules:
 
-- session prepared buffer and cell-attached buffers are separate lifecycles
-- at most one prepared buffer is authoritative for a session
-- a prepared buffer belongs to a single backend prepared client id
 - an attached client buffer belongs to a single cell attachment
 - stale local buffers left behind by failure handling are cleanup targets, not alternate sources of truth
 

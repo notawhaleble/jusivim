@@ -98,7 +98,7 @@ function! Test_insert_below_keeps_runtime_on_matching_duplicate_signature_cell()
         \ '%%vd pods',
         \ ])
   let l:notebook = bufnr('%')
-  let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
   let b:jusi_nb.cells[2].status = 'follow-up'
   let b:jusi_nb.cells[2].owner = {'kind': 'handler'}
   let b:jusi_nb.cells[2].client_id = 'client-1'
@@ -358,11 +358,6 @@ function! s:test_session_adapter_start(bufnr, payload) abort
         \   'kernel_name': get(a:payload, 'kernel_name', ''),
         \   'connection': 'mock://kernel/' . get(a:payload, 'kernel_name', ''),
         \   },
-        \ 'prepared': {
-        \   'id': 'client-1',
-        \   'state': 'binding',
-        \   'bufnr': -1,
-        \   },
         \ }
 endfunction
 
@@ -377,11 +372,6 @@ function! s:test_session_adapter_attach(bufnr, payload) abort
         \   'backend': 'mock',
         \   'connection': type(l:target) == type({}) ? get(l:target, 'value', '') : l:target,
         \   },
-        \ 'prepared': {
-        \   'id': 'client-1',
-        \   'state': 'binding',
-        \   'bufnr': -1,
-        \   },
         \ }
 endfunction
 
@@ -393,11 +383,6 @@ function! s:test_session_adapter_attach_without_ids(bufnr, payload) abort
         \   'state': 'connected',
         \   'backend': 'mock',
         \   'connection': type(l:target) == type({}) ? get(l:target, 'value', '') : l:target,
-        \   },
-        \ 'prepared': {
-        \   'id': 'client-1',
-        \   'state': 'binding',
-        \   'bufnr': -1,
         \   },
         \ }
 endfunction
@@ -474,11 +459,6 @@ function! s:test_transport_like_request_adapter(bufnr, envelope) abort
           \     'kernel_name': get(get(a:envelope, 'payload', {}), 'kernel_name', ''),
           \     'connection': 'mock://kernel/' . get(get(a:envelope, 'payload', {}), 'kernel_name', ''),
           \     },
-          \   'prepared': {
-          \     'id': 'client-1',
-          \     'state': 'binding',
-          \     'bufnr': -1,
-          \     },
           \   },
           \ }
   endif
@@ -492,10 +472,6 @@ function! s:test_transport_like_request_adapter(bufnr, envelope) abort
           \     'expires_at': '2030-01-01T00:00:00Z',
           \     'last_action': 'disconnect',
           \     },
-          \   'prepared': {
-          \     'state': 'missing',
-          \     'bufnr': -1,
-          \     },
           \   },
           \ }
   endif
@@ -508,11 +484,6 @@ function! s:test_transport_like_request_adapter(bufnr, envelope) abort
           \     'state': 'connected',
           \     'last_action': 'reconnect',
           \     'expires_at': '',
-          \     },
-          \   'prepared': {
-          \     'id': 'client-2',
-          \     'state': 'binding',
-          \     'bufnr': -1,
           \     },
           \   },
           \ }
@@ -532,10 +503,13 @@ endfunction
 function! s:test_session_adapter_execute(bufnr, payload) abort
   return {
         \ 'ok': 1,
-        \ 'prepared': {
-        \   'id': 'client-2',
-        \   'state': 'binding',
-        \   'bufnr': -1,
+        \ 'cell': {
+        \   'id': get(get(a:payload, 'cell', {}), 'id', 0),
+        \   'status': 'busy',
+        \   'client_id': 'client-2',
+        \   'client_state': 'active',
+        \   'client_bufnr': -1,
+        \   'owner': {'kind': 'kernel'},
         \   },
         \ }
 endfunction
@@ -580,10 +554,6 @@ function! s:test_session_adapter_stop(bufnr, payload) abort
         \ 'session': {
         \   'request': {},
         \   },
-        \ 'prepared': {
-        \   'state': 'missing',
-        \   'bufnr': -1,
-        \   },
         \ }
 endfunction
 
@@ -595,10 +565,6 @@ function! s:test_session_adapter_disconnect(bufnr, payload) abort
         \   'expires_at': '2030-01-01T00:00:00Z',
         \   'last_action': 'disconnect',
         \   },
-        \ 'prepared': {
-        \   'state': 'missing',
-        \   'bufnr': -1,
-        \   },
         \ }
 endfunction
 
@@ -609,11 +575,6 @@ function! s:test_session_adapter_reconnect(bufnr, payload) abort
         \   'state': 'connected',
         \   'expires_at': '',
         \   'last_action': 'reconnect',
-        \   },
-        \ 'prepared': {
-        \   'id': 'client-2',
-        \   'state': 'binding',
-        \   'bufnr': -1,
         \   },
         \ }
 endfunction
@@ -637,10 +598,7 @@ function! Test_default_session_state_is_initialized_for_notebook() abort
   call assert_equal('', get(l:session, 'last_error_code', ''))
   call assert_equal('', get(l:session.target, 'source', ''))
   call assert_equal('', get(l:session.target, 'alias', ''))
-  call assert_equal('', l:session.prepared.id)
-  call assert_equal('missing', l:session.prepared.state)
-  call assert_equal('shutdown', l:session.prepared.client_state)
-  call assert_equal(-1, l:session.prepared.bufnr)
+  call assert_false(has_key(l:session, 'prepared'))
 endfunction
 
 function! Test_adapter_builds_start_session_request_envelope() abort
@@ -798,9 +756,7 @@ function! Test_start_kernel_uses_adapter_and_records_connected_session() abort
     call assert_equal('', l:session.target.value)
     call assert_equal('start', l:session.last_action)
     call assert_equal('', l:session.last_error)
-    call assert_equal('client-1', l:session.prepared.id)
-    call assert_equal('binding', l:session.prepared.state)
-    call assert_equal(-1, l:session.prepared.bufnr)
+    call assert_equal({}, get(l:session, 'prepared', {}))
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
@@ -1227,7 +1183,7 @@ function! Test_prepared_replacement_allocates_new_local_buffer_and_keeps_client_
           \ 'print("hello")',
           \ ])
     call jusi#session#start('python3')
-    let l:prepared = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+    let l:prepared = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
     call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:prepared})
     call jusi#session#callback_prepared({'id': 'client-2', 'state': 'binding', 'bufnr': -1})
     call assert_equal('client-2', b:jusi_nb.session.prepared.id)
@@ -1256,7 +1212,7 @@ function! Test_execute_consumes_ready_prepared_buffer_and_starts_replacement_bin
           \ 'print("hello")',
           \ ])
     call jusi#session#start('python3')
-    let l:prepared = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+    let l:prepared = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
     call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:prepared})
     call jusi#session#execute_current()
     call assert_equal('connected', b:jusi_nb.session.state)
@@ -1279,7 +1235,7 @@ function! Test_transport_execute_consumes_prepared_buffer_locally_before_async_u
           \ '##',
           \ 'print("hello")',
           \ ])
-    let l:prepared = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+    let l:prepared = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
     call jusi#session#apply({'id': 'sess-1', 'state': 'connected'})
     call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:prepared})
     let s:last_request_envelope = {}
@@ -1310,7 +1266,7 @@ function! Test_execute_failure_preserves_prepared_and_cell_runtime_state() abort
           \ 'print("hello")',
           \ ])
     call jusi#session#start('python3')
-    let l:prepared = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+    let l:prepared = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
     call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:prepared})
     call jusi#session#execute_current()
     call assert_equal('failed', b:jusi_nb.session.state)
@@ -1364,7 +1320,7 @@ function! Test_close_client_resets_terminal_cell_state_and_destroys_buffer() abo
           \ 'print("hello")',
           \ ])
     call jusi#session#start('python3')
-    let l:client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-done')
+    let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-done')
     let b:jusi_nb.cells[0].status = 'done'
     let b:jusi_nb.cells[0].client_id = 'client-done'
     let b:jusi_nb.cells[0].client_state = 'active'
@@ -1395,7 +1351,7 @@ function! Test_close_client_uses_shutdown_client_for_followup_cells() abort
           \ 'select 1',
           \ ])
     call jusi#session#start('python3')
-    let l:client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+    let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
     let b:jusi_nb.cells[0].status = 'follow-up'
     let b:jusi_nb.cells[0].client_id = 'client-1'
     let b:jusi_nb.cells[0].client_state = 'active'
@@ -1426,7 +1382,7 @@ function! Test_close_client_transport_response_closes_local_followup_buffer() ab
           \ ])
     let b:jusi_nb.session.id = 'sess-1'
     let b:jusi_nb.session.state = 'connected'
-    let l:client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+    let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
     let b:jusi_nb.cells[0].status = 'follow-up'
     let b:jusi_nb.cells[0].client_id = 'client-1'
     let b:jusi_nb.cells[0].client_state = 'active'
@@ -1465,7 +1421,7 @@ function! Test_close_client_transport_response_closes_visible_native_terminal_bu
     let l:cell_id = b:jusi_nb.cells[0].id
     let b:jusi_nb.session.id = 'sess-1'
     let b:jusi_nb.session.state = 'connected'
-    let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
     call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
     call setbufvar(l:client, 'jusi_client_transport_kind', 'native_terminal')
     let b:jusi_nb.cells[0].status = 'follow-up'
@@ -1496,7 +1452,7 @@ function! Test_toggle_park_marks_terminal_client_and_restores_status() abort
         \ '##',
         \ 'print("hello")',
         \ ])
-  let l:client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-done')
+  let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-done')
   let b:jusi_nb.cells[0].status = 'done'
   let b:jusi_nb.cells[0].client_id = 'client-done'
   let b:jusi_nb.cells[0].client_state = 'active'
@@ -1517,7 +1473,7 @@ function! Test_toggle_park_rejects_followup_clients() abort
         \ '%%sql main',
         \ 'select 1',
         \ ])
-  let l:client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+  let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
   let b:jusi_nb.cells[0].status = 'follow-up'
   let b:jusi_nb.cells[0].client_id = 'client-1'
   let b:jusi_nb.cells[0].client_state = 'active'
@@ -1535,7 +1491,7 @@ function! Test_toggle_focus_opens_current_cell_client_buffer() abort
         \ 'print("hello")',
         \ ])
   let l:cell_id = b:jusi_nb.cells[0].id
-  let l:client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+  let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
   let b:jusi_nb.cells[0].status = 'done'
   let b:jusi_nb.cells[0].client_id = 'client-1'
   let b:jusi_nb.cells[0].client_state = 'active'
@@ -1556,7 +1512,7 @@ function! Test_toggle_focus_returns_from_client_to_notebook_cell() abort
         \ ])
   let l:notebook = bufnr('%')
   let l:cell_id = b:jusi_nb.cells[1].id
-  let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-2')
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-2')
   let b:jusi_nb.cells[1].status = 'done'
   let b:jusi_nb.cells[1].client_id = 'client-2'
   let b:jusi_nb.cells[1].client_state = 'active'
@@ -1578,12 +1534,7 @@ function! Test_toggle_focus_recovers_stale_cell_client_bufnr_from_managed_client
         \ ])
   let l:notebook = bufnr('%')
   let l:cell_id = b:jusi_nb.cells[0].id
-  let l:client = bufadd('!jusi-native-terminal-recovered')
-  call bufload(l:client)
-  call setbufvar(l:client, '&buftype', 'terminal')
-  call setbufvar(l:client, '&bufhidden', 'hide')
-  call setbufvar(l:client, '&swapfile', 0)
-  call setbufline(l:client, 1, ['terminal attached'])
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
   call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
   call setbufvar(l:client, 'jusi_client_transport_kind', 'native_terminal')
   let b:jusi_nb.cells[0].status = 'follow-up'
@@ -1596,7 +1547,32 @@ function! Test_toggle_focus_recovers_stale_cell_client_bufnr_from_managed_client
   call jusi#focus#toggle()
 
   call assert_equal(l:client, bufnr('%'))
-  call assert_equal(l:client, b:jusi_nb.cells[0].client_bufnr)
+  call assert_equal(l:client, getbufvar(l:notebook, 'jusi_nb').cells[0].client_bufnr)
+endfunction
+
+function! Test_toggle_focus_recovers_from_mismatched_existing_client_bufnr() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd pods',
+        \ '##',
+        \ 'print("other")',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[1].id
+  let l:wrong = jusi#client#create_managed_buffer(l:notebook, 'client-wrong')
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-2')
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-2', l:client)
+  let b:jusi_nb.cells[1].status = 'follow-up'
+  let b:jusi_nb.cells[1].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[1].client_id = 'client-2'
+  let b:jusi_nb.cells[1].client_state = 'active'
+  let b:jusi_nb.cells[1].client_bufnr = l:wrong
+
+  call cursor(4, 1)
+  call jusi#focus#toggle()
+
+  call assert_equal(l:client, bufnr('%'))
+  call assert_equal(l:client, getbufvar(l:notebook, 'jusi_nb').cells[1].client_bufnr)
 endfunction
 
 function! Test_cell_callback_recovers_stale_attached_client_bufnr_from_managed_client_metadata() abort
@@ -1606,12 +1582,7 @@ function! Test_cell_callback_recovers_stale_attached_client_bufnr_from_managed_c
         \ ])
   let l:notebook = bufnr('%')
   let l:cell_id = b:jusi_nb.cells[0].id
-  let l:client = bufadd('!jusi-native-terminal-recovered-callback')
-  call bufload(l:client)
-  call setbufvar(l:client, '&buftype', 'terminal')
-  call setbufvar(l:client, '&bufhidden', 'hide')
-  call setbufvar(l:client, '&swapfile', 0)
-  call setbufline(l:client, 1, ['terminal attached'])
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
   call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
   call setbufvar(l:client, 'jusi_client_transport_kind', 'native_terminal')
   call jusi#session#apply({'state': 'connected', 'id': 'sess-1'})
@@ -1628,6 +1599,42 @@ function! Test_cell_callback_recovers_stale_attached_client_bufnr_from_managed_c
   call assert_equal('', get(b:jusi_nb.session, 'last_error', ''))
 endfunction
 
+function! Test_cell_callback_reuses_existing_attached_buffer_for_same_client() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd',
+        \ 'a',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+  call jusi#session#apply({'state': 'connected', 'id': 'sess-1'})
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = -1
+
+  call jusi#session#callback_cell(l:cell_id, {
+        \ 'status': 'done',
+        \ 'client_id': 'client-1',
+        \ 'client_state': 'active',
+        \ 'client_bufnr': -1,
+        \ 'owner': {'kind': 'handler'},
+        \ })
+
+  let l:matches = []
+  for l:bufnr in range(1, bufnr('$'))
+    if getbufvar(l:bufnr, 'jusi_client_id', '') ==# 'client-1'
+          \ && getbufvar(l:bufnr, 'jusi_client_notebook_bufnr', -1) ==# l:notebook
+      call add(l:matches, l:bufnr)
+    endif
+  endfor
+  call assert_equal(l:client, b:jusi_nb.cells[0].client_bufnr)
+  call assert_equal([l:client], l:matches)
+endfunction
+
 function! Test_cell_callback_places_attached_client_in_default_split_and_returns_focus() abort
   let l:save_layout = get(g:, 'jusi_client_layout', 'bsplit')
   try
@@ -1639,7 +1646,7 @@ function! Test_cell_callback_places_attached_client_in_default_split_and_returns
     let l:notebook = bufnr('%')
     let l:cell_id = b:jusi_nb.cells[0].id
     let l:notebook_win = win_getid()
-    let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
     call jusi#session#callback_cell(l:cell_id, {
           \ 'status': 'done',
           \ 'client_id': 'client-1',
@@ -1667,7 +1674,7 @@ function! Test_cell_callback_places_attached_client_in_tab_layout() abort
     let l:cell_id = b:jusi_nb.cells[0].id
     let l:notebook_tab = tabpagenr()
     let l:notebook_win = win_getid()
-    let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
     call jusi#session#callback_cell(l:cell_id, {
           \ 'status': 'done',
           \ 'client_id': 'client-1',
@@ -1700,7 +1707,7 @@ function! Test_client_refresh_attached_view_renders_inspect_snapshot() abort
           \ ])
     let l:notebook = bufnr('%')
     let l:cell_id = b:jusi_nb.cells[0].id
-    let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
     let b:jusi_nb.session.id = 'sess-1'
     let b:jusi_nb.session.state = 'connected'
     let b:jusi_nb.cells[0].status = 'done'
@@ -1763,7 +1770,7 @@ function! Test_client_refresh_attached_view_rebinds_native_terminal_transport() 
           \ ])
     let l:notebook = bufnr('%')
     let l:cell_id = b:jusi_nb.cells[0].id
-    let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
     let b:jusi_nb.session.id = 'sess-1'
     let b:jusi_nb.session.state = 'connected'
     let b:jusi_nb.cells[0].status = 'follow-up'
@@ -1811,7 +1818,7 @@ function! Test_client_updated_event_schedules_inspect_refresh_for_matching_attac
           \ ])
     let l:notebook = bufnr('%')
     let l:cell_id = b:jusi_nb.cells[0].id
-    let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
     let b:jusi_nb.session.id = 'sess-1'
     let b:jusi_nb.session.state = 'connected'
     let b:jusi_nb.cells[0].status = 'done'
@@ -1858,7 +1865,7 @@ function! Test_client_updated_event_ignores_mismatched_or_already_current_revisi
           \ ])
     let l:notebook = bufnr('%')
     let l:cell_id = b:jusi_nb.cells[0].id
-    let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
     let b:jusi_nb.session.id = 'sess-1'
     let b:jusi_nb.session.state = 'connected'
     let b:jusi_nb.cells[0].status = 'done'
@@ -1914,7 +1921,7 @@ function! Test_client_updated_event_skips_inspect_pull_for_handler_client() abor
           \ ])
     let l:notebook = bufnr('%')
     let l:cell_id = b:jusi_nb.cells[0].id
-    let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
     let b:jusi_nb.session.id = 'sess-1'
     let b:jusi_nb.session.state = 'connected'
     let b:jusi_nb.cells[0].status = 'follow-up'
@@ -1954,7 +1961,7 @@ function! Test_handler_cell_update_skips_scheduled_refresh_for_handler_client() 
           \ ])
     let l:notebook = bufnr('%')
     let l:cell_id = b:jusi_nb.cells[0].id
-    let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
     let b:jusi_nb.session.id = 'sess-1'
     let b:jusi_nb.session.state = 'connected'
     let b:jusi_nb.cells[0].status = 'follow-up'
@@ -1981,7 +1988,7 @@ function! Test_handler_snapshot_updates_state_and_stops_existing_refresh_timer()
         \ ])
   let l:notebook = bufnr('%')
   let l:cell_id = b:jusi_nb.cells[0].id
-  let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
   let b:jusi_nb.session.id = 'sess-1'
   let b:jusi_nb.session.state = 'connected'
   let b:jusi_nb.cells[0].status = 'follow-up'
@@ -2018,7 +2025,7 @@ function! Test_handler_message_event_updates_attached_cell_and_client_buffer_sta
         \ ])
   let l:notebook = bufnr('%')
   let l:cell_id = b:jusi_nb.cells[0].id
-  let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
   let b:jusi_nb.session.id = 'sess-1'
   let b:jusi_nb.session.state = 'connected'
   let b:jusi_nb.cells[0].status = 'follow-up'
@@ -2062,7 +2069,7 @@ function! Test_handler_message_event_ignores_mismatched_session() abort
         \ ])
   let l:notebook = bufnr('%')
   let l:cell_id = b:jusi_nb.cells[0].id
-  let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
   let b:jusi_nb.session.id = 'sess-1'
   let b:jusi_nb.session.state = 'connected'
   let b:jusi_nb.cells[0].status = 'follow-up'
@@ -2125,7 +2132,7 @@ function! Test_client_window_disables_line_numbers_on_placement() abort
         \ ])
   let l:notebook = bufnr('%')
   setlocal number relativenumber
-  let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
   call setbufvar(l:client, 'jusi_client_managed', 1)
   call jusi#focus#place_client_buffer(l:client, 'bsplit', 0)
 
@@ -2145,7 +2152,7 @@ function! Test_send_handler_input_current_builds_send_input_message() abort
           \ '##',
           \ '%%vd pods',
           \ ])
-    let l:client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+    let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
     call jusi#session#apply({'state': 'connected', 'id': 'sess-1'})
     let b:jusi_nb.cells[0].status = 'follow-up'
     let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
@@ -2181,7 +2188,7 @@ function! Test_cell_callback_schedules_client_view_refresh() abort
           \ ])
     let l:notebook = bufnr('%')
     let l:cell_id = b:jusi_nb.cells[0].id
-    let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
     let b:jusi_nb.session.id = 'sess-1'
     let b:jusi_nb.session.state = 'connected'
 
@@ -2233,7 +2240,7 @@ function! Test_busy_client_polling_advances_output_before_terminal_update() abor
           \ ])
     let l:notebook = bufnr('%')
     let l:cell_id = b:jusi_nb.cells[0].id
-    let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
     let b:jusi_nb.session.id = 'sess-1'
     let b:jusi_nb.session.state = 'connected'
 
@@ -2293,7 +2300,7 @@ function! Test_client_refresh_hides_transcript_noise_in_display_buffer() abort
           \ ])
     let l:notebook = bufnr('%')
     let l:cell_id = b:jusi_nb.cells[0].id
-    let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
     let b:jusi_nb.session.id = 'sess-1'
     let b:jusi_nb.session.state = 'connected'
     let b:jusi_nb.cells[0].status = 'done'
@@ -2326,7 +2333,7 @@ function! Test_client_refresh_tracks_pending_input_from_inspect_snapshot() abort
           \ ])
     let l:notebook = bufnr('%')
     let l:cell_id = b:jusi_nb.cells[0].id
-    let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
     let b:jusi_nb.session.id = 'sess-1'
     let b:jusi_nb.session.state = 'connected'
     let b:jusi_nb.cells[0].status = 'busy'
@@ -2362,7 +2369,7 @@ function! Test_reply_input_current_sends_input_reply_request_and_clears_pending_
           \ '##',
           \ 'print("hello")',
           \ ])
-    let l:client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+    let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
     let b:jusi_nb.session.id = 'sess-1'
     let b:jusi_nb.session.state = 'connected'
     let b:jusi_nb.cells[0].status = 'busy'
@@ -2409,8 +2416,7 @@ function! Test_stop_kernel_moves_local_session_to_stopped() abort
     call jusi#session#stop()
     call assert_equal('stopped', b:jusi_nb.session.state)
     call assert_equal('', b:jusi_nb.session.last_error)
-    call assert_equal('missing', b:jusi_nb.session.prepared.state)
-    call assert_equal(-1, b:jusi_nb.session.prepared.bufnr)
+    call assert_false(has_key(b:jusi_nb.session, 'prepared'))
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
@@ -2423,7 +2429,7 @@ function! Test_disconnect_uses_disconnected_state_for_recoverable_link_loss() ab
         \ ])
   call jusi#session#set_disconnected()
   call assert_equal('disconnected', b:jusi_nb.session.state)
-  call assert_equal('missing', b:jusi_nb.session.prepared.state)
+  call assert_false(has_key(b:jusi_nb.session, 'prepared'))
 endfunction
 
 function! Test_notebook_quit_guard_allows_exit_without_active_sessions() abort
@@ -2496,7 +2502,7 @@ function! Test_cleanup_skips_transport_and_client_shutdown_when_marked_for_aband
           \ ])
     call jusi#session#set_connected()
     let b:jusi_nb.session.id = 'sess-1'
-    let l:client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+    let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
     let b:jusi_nb.cells[0].client_id = 'client-1'
     let b:jusi_nb.cells[0].client_state = 'active'
     let b:jusi_nb.cells[0].client_bufnr = l:client
@@ -2521,7 +2527,7 @@ function! Test_disconnect_requires_connected_session() abort
   call assert_match('Cannot disconnect unless the session is connected', b:jusi_nb.session.last_error)
 endfunction
 
-function! Test_disconnect_connected_session_uses_adapter_and_clears_prepared() abort
+function! Test_disconnect_connected_session_uses_adapter_and_preserves_direct_session_shape() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   try
     let g:jusi_session_adapter = {
@@ -2533,13 +2539,11 @@ function! Test_disconnect_connected_session_uses_adapter_and_clears_prepared() a
           \ 'print("hello")',
           \ ])
     call jusi#session#start('python3')
-    call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'bufnr': 91})
     call jusi#session#disconnect()
     call assert_equal('disconnected', b:jusi_nb.session.state)
     call assert_equal('disconnect', b:jusi_nb.session.last_action)
     call assert_equal('2030-01-01T00:00:00Z', b:jusi_nb.session.expires_at)
-    call assert_equal('missing', b:jusi_nb.session.prepared.state)
-    call assert_equal(-1, b:jusi_nb.session.prepared.bufnr)
+    call assert_false(has_key(b:jusi_nb.session, 'prepared'))
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
@@ -2556,7 +2560,7 @@ function! Test_reconnect_requires_disconnected_session() abort
   call assert_match('Can only reconnect a disconnected session', b:jusi_nb.session.last_error)
 endfunction
 
-function! Test_reconnect_disconnected_session_restores_binding_state() abort
+function! Test_reconnect_disconnected_session_restores_connected_state() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   try
     let g:jusi_session_adapter = {
@@ -2571,8 +2575,7 @@ function! Test_reconnect_disconnected_session_restores_binding_state() abort
     call jusi#session#reconnect()
     call assert_equal('connected', b:jusi_nb.session.state)
     call assert_equal('reconnect', b:jusi_nb.session.last_action)
-    call assert_equal('client-2', b:jusi_nb.session.prepared.id)
-    call assert_equal('binding', b:jusi_nb.session.prepared.state)
+    call assert_false(has_key(b:jusi_nb.session, 'prepared'))
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
@@ -2592,7 +2595,7 @@ function! Test_stop_kernel_moves_disconnected_capable_session_to_stopped() abort
     call jusi#session#start('python3')
     call jusi#session#stop()
     call assert_equal('stopped', b:jusi_nb.session.state)
-    call assert_equal('missing', b:jusi_nb.session.prepared.state)
+    call assert_false(has_key(b:jusi_nb.session, 'prepared'))
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
@@ -2681,7 +2684,6 @@ function! Test_disconnect_transport_response_updates_state_without_separate_even
           \ 'print("hello")',
           \ ])
     call jusi#session#start('python3')
-    call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'bufnr': 91})
     call jusi#session#disconnect()
     call assert_equal('disconnected', b:jusi_nb.session.state)
     call assert_equal('2030-01-01T00:00:00Z', b:jusi_nb.session.expires_at)
@@ -2705,8 +2707,7 @@ function! Test_reconnect_transport_response_updates_state_without_separate_event
     call jusi#session#reconnect()
     call assert_equal('connected', b:jusi_nb.session.state)
     call assert_equal('reconnect', b:jusi_nb.session.last_action)
-    call assert_equal('client-2', b:jusi_nb.session.prepared.id)
-    call assert_equal('binding', b:jusi_nb.session.prepared.state)
+    call assert_false(has_key(b:jusi_nb.session, 'prepared'))
     call assert_equal('sess-1', get(get(s:last_request_envelope, 'payload', {}), 'session_id', ''))
   finally
     let g:jusi_session_adapter = l:save_adapter
@@ -2843,8 +2844,7 @@ function! Test_execute_releases_disposable_client_buffers_before_starting_next_r
           \ ])
     call jusi#session#start('python3')
     let b:jusi_nb.session.id = 'sess-1'
-    let l:old_client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-old')
-    let l:prepared = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+    let l:old_client = jusi#client#create_managed_buffer(bufnr('%'), 'client-old')
     let b:jusi_nb.cells[0].status = 'done'
     let b:jusi_nb.cells[0].client_id = 'client-old'
     let b:jusi_nb.cells[0].client_state = 'active'
@@ -2853,7 +2853,6 @@ function! Test_execute_releases_disposable_client_buffers_before_starting_next_r
     call jusi#client#mark_attached_buffer(bufnr('%'), b:jusi_nb.cells[0].id, 'client-old', l:old_client)
     let s:shutdown_requests = []
     call cursor(4, 1)
-    call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:prepared})
     call jusi#session#execute_current()
     call assert_false(bufexists(l:old_client))
     call assert_equal('client-old', b:jusi_nb.cells[0].client_id)
@@ -2886,8 +2885,7 @@ function! Test_execute_keeps_retained_client_buffers_before_starting_next_run() 
           \ ])
     call jusi#session#start('python3')
     let b:jusi_nb.session.id = 'sess-1'
-    let l:old_client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-old')
-    let l:prepared = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+    let l:old_client = jusi#client#create_managed_buffer(bufnr('%'), 'client-old')
     let b:jusi_nb.cells[0].status = 'parked'
     let b:jusi_nb.cells[0].client_id = 'client-old'
     let b:jusi_nb.cells[0].client_state = 'active'
@@ -2895,7 +2893,6 @@ function! Test_execute_keeps_retained_client_buffers_before_starting_next_run() 
     call jusi#client#mark_attached_buffer(bufnr('%'), b:jusi_nb.cells[0].id, 'client-old', l:old_client)
     let s:shutdown_requests = []
     call cursor(5, 1)
-    call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:prepared})
     call jusi#session#execute_current()
     call assert_true(bufexists(l:old_client))
     call assert_equal([], s:shutdown_requests)
@@ -2927,8 +2924,8 @@ function! Test_execute_new_duplicate_magic_cell_keeps_existing_followup_client_i
           \ ])
     call jusi#session#start('python3')
     let l:notebook = bufnr('%')
-    let l:live_client = jusi#client#create_prepared_buffer(l:notebook, 'client-old')
-    let l:prepared = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+    let l:live_client = jusi#client#create_managed_buffer(l:notebook, 'client-old')
+    let l:prepared = jusi#client#create_managed_buffer(l:notebook, 'client-1')
     let b:jusi_nb.cells[2].status = 'follow-up'
     let b:jusi_nb.cells[2].owner = {'kind': 'handler'}
     let b:jusi_nb.cells[2].client_id = 'client-old'
@@ -2952,7 +2949,6 @@ function! Test_execute_new_duplicate_magic_cell_keeps_existing_followup_client_i
     stopinsert
 
     let s:shutdown_requests = []
-    call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:prepared})
     call assert_equal('follow-up', b:jusi_nb.cells[3].status)
     call assert_equal('client-old', b:jusi_nb.cells[3].client_id)
     call assert_equal(l:live_client, b:jusi_nb.cells[3].client_bufnr)
@@ -2961,7 +2957,8 @@ function! Test_execute_new_duplicate_magic_cell_keeps_existing_followup_client_i
 
     call assert_equal(4, len(b:jusi_nb.cells))
     call assert_equal('busy', b:jusi_nb.cells[2].status)
-    call assert_equal(l:prepared, b:jusi_nb.cells[2].client_bufnr)
+    call assert_equal('client-2', b:jusi_nb.cells[2].client_id)
+    call assert_true(b:jusi_nb.cells[2].client_bufnr > 0)
     call assert_equal('follow-up', b:jusi_nb.cells[3].status)
     call assert_equal('client-old', b:jusi_nb.cells[3].client_id)
     call assert_equal(l:live_client, b:jusi_nb.cells[3].client_bufnr)
@@ -2987,8 +2984,7 @@ function! Test_execute_releases_current_parked_client_before_rerun() abort
           \ ])
     call jusi#session#start('python3')
     let b:jusi_nb.session.id = 'sess-1'
-    let l:old_client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-old')
-    let l:prepared = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+    let l:old_client = jusi#client#create_managed_buffer(bufnr('%'), 'client-old')
     let b:jusi_nb.cells[0].status = 'parked'
     let b:jusi_nb.cells[0].parked_status = 'done'
     let b:jusi_nb.cells[0].client_id = 'client-old'
@@ -2996,12 +2992,12 @@ function! Test_execute_releases_current_parked_client_before_rerun() abort
     let b:jusi_nb.cells[0].client_bufnr = l:old_client
     call jusi#client#mark_attached_buffer(bufnr('%'), b:jusi_nb.cells[0].id, 'client-old', l:old_client)
     let s:shutdown_requests = []
-    call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:prepared})
     call jusi#session#execute_current()
     call assert_false(bufexists(l:old_client))
     call assert_equal('busy', b:jusi_nb.cells[0].status)
     call assert_equal('', get(b:jusi_nb.cells[0], 'parked_status', ''))
-    call assert_equal(l:prepared, b:jusi_nb.cells[0].client_bufnr)
+    call assert_equal('client-2', b:jusi_nb.cells[0].client_id)
+    call assert_true(b:jusi_nb.cells[0].client_bufnr > 0)
     call assert_equal('healthcheck', get(s:shutdown_requests[0], 'reason', ''))
     call assert_equal('client-old', get(s:shutdown_requests[0], 'client_id', ''))
   finally
@@ -3026,8 +3022,7 @@ function! Test_execute_releases_interrupted_client_buffers_before_starting_next_
           \ ])
     call jusi#session#start('python3')
     let b:jusi_nb.session.id = 'sess-1'
-    let l:old_client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-old')
-    let l:prepared = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+    let l:old_client = jusi#client#create_managed_buffer(bufnr('%'), 'client-old')
     let b:jusi_nb.cells[0].status = 'interrupted'
     let b:jusi_nb.cells[0].client_id = 'client-old'
     let b:jusi_nb.cells[0].client_state = 'active'
@@ -3036,7 +3031,6 @@ function! Test_execute_releases_interrupted_client_buffers_before_starting_next_
     call jusi#client#mark_attached_buffer(bufnr('%'), b:jusi_nb.cells[0].id, 'client-old', l:old_client)
     let s:shutdown_requests = []
     call cursor(4, 1)
-    call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:prepared})
     call jusi#session#execute_current()
     call assert_false(bufexists(l:old_client))
     call assert_equal('interrupted', b:jusi_nb.cells[0].status)
@@ -3068,8 +3062,7 @@ function! Test_execute_releases_error_client_buffers_before_starting_next_run() 
           \ ])
     call jusi#session#start('python3')
     let b:jusi_nb.session.id = 'sess-1'
-    let l:old_client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-old')
-    let l:prepared = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+    let l:old_client = jusi#client#create_managed_buffer(bufnr('%'), 'client-old')
     let b:jusi_nb.cells[0].status = 'error'
     let b:jusi_nb.cells[0].client_id = 'client-old'
     let b:jusi_nb.cells[0].client_state = 'active'
@@ -3078,7 +3071,6 @@ function! Test_execute_releases_error_client_buffers_before_starting_next_run() 
     call jusi#client#mark_attached_buffer(bufnr('%'), b:jusi_nb.cells[0].id, 'client-old', l:old_client)
     let s:shutdown_requests = []
     call cursor(4, 1)
-    call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:prepared})
     call jusi#session#execute_current()
     call assert_false(bufexists(l:old_client))
     call assert_equal('error', b:jusi_nb.cells[0].status)
@@ -3098,9 +3090,8 @@ function! Test_notebook_cleanup_destroys_managed_client_buffers() abort
         \ '##',
         \ 'print("hello")',
         \ ])
-  let l:prepared = jusi#client#create_prepared_buffer(bufnr('%'), 'client-prepared')
-  let l:attached = jusi#client#create_prepared_buffer(bufnr('%'), 'client-attached')
-  call jusi#session#apply_prepared({'id': 'client-prepared', 'state': 'ready', 'bufnr': l:prepared})
+  let l:prepared = jusi#client#create_managed_buffer(bufnr('%'), 'client-prepared')
+  let l:attached = jusi#client#create_managed_buffer(bufnr('%'), 'client-attached')
   let b:jusi_nb.cells[0].client_id = 'client-attached'
   let b:jusi_nb.cells[0].client_bufnr = l:attached
   call jusi#notebook#cleanup(bufnr('%'))
@@ -3123,7 +3114,7 @@ function! Test_rebuild_shutdowns_lost_cell_clients_on_structural_delete() abort
           \ ])
     let s:shutdown_requests = []
     call jusi#session#start('python3')
-    let l:client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-old')
+    let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-old')
     let b:jusi_nb.cells[0].status = 'done'
     let b:jusi_nb.cells[0].client_id = 'client-old'
     let b:jusi_nb.cells[0].client_state = 'active'
@@ -3153,7 +3144,7 @@ function! Test_stop_shutdowns_attached_and_prepared_clients_before_stop() abort
           \ ])
     let s:shutdown_requests = []
     call jusi#session#start('python3')
-    let l:attached = jusi#client#create_prepared_buffer(bufnr('%'), 'client-attached')
+    let l:attached = jusi#client#create_managed_buffer(bufnr('%'), 'client-attached')
     call jusi#session#apply_prepared({'id': 'client-prepared', 'state': 'ready', 'client_state': 'active', 'bufnr': 91})
     let b:jusi_nb.cells[0].status = 'follow-up'
     let b:jusi_nb.cells[0].client_id = 'client-attached'
@@ -3186,8 +3177,7 @@ function! Test_cleanup_shutdowns_clients_with_frontend_unload_reason() abort
           \ ])
     let s:shutdown_requests = []
     call jusi#session#start('python3')
-    let l:attached = jusi#client#create_prepared_buffer(bufnr('%'), 'client-attached')
-    call jusi#session#apply_prepared({'id': 'client-prepared', 'state': 'ready', 'client_state': 'active', 'bufnr': 92})
+    let l:attached = jusi#client#create_managed_buffer(bufnr('%'), 'client-attached')
     let b:jusi_nb.cells[0].client_id = 'client-attached'
     let b:jusi_nb.cells[0].client_state = 'active'
     let b:jusi_nb.cells[0].client_bufnr = l:attached
@@ -3199,7 +3189,6 @@ function! Test_cleanup_shutdowns_clients_with_frontend_unload_reason() abort
       endif
     endfor
     call assert_true(index(l:frontend_unload_ids, 'client-attached') >= 0)
-    call assert_true(index(l:frontend_unload_ids, 'client-prepared') >= 0)
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
@@ -3211,7 +3200,7 @@ function! Test_cell_shutdown_event_keeps_status_and_clears_binding() abort
         \ '%%sql main',
         \ 'select 1',
         \ ])
-  let l:client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
+  let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
   let l:cell_id = b:jusi_nb.cells[0].id
   let b:jusi_nb.cells[0].status = 'follow-up'
   let b:jusi_nb.cells[0].client_id = 'client-1'
@@ -3247,8 +3236,6 @@ function! Test_execute_healthcheck_shutdowns_stale_attached_client() abort
     let b:jusi_nb.cells[0].client_state = 'active'
     let b:jusi_nb.cells[0].client_bufnr = 9999
     call cursor(4, 1)
-    let l:prepared = jusi#client#create_prepared_buffer(bufnr('%'), 'client-1')
-    call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:prepared})
     let s:shutdown_requests = []
     call jusi#session#execute_current()
     call assert_equal('follow-up', b:jusi_nb.cells[0].status)
@@ -3278,13 +3265,12 @@ function! Test_execute_healthcheck_shutdowns_inconsistent_attached_client_bindin
           \ ])
     call jusi#session#start('python3')
     let b:jusi_nb.session.id = 'sess-1'
-    let l:client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-stale')
+    let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-stale')
     call setbufvar(l:client, 'jusi_client_role', 'prepared')
     let b:jusi_nb.cells[0].status = 'follow-up'
     let b:jusi_nb.cells[0].client_id = 'client-stale'
     let b:jusi_nb.cells[0].client_state = 'active'
     let b:jusi_nb.cells[0].client_bufnr = l:client
-    call jusi#session#apply_prepared({'id': 'client-next', 'state': 'ready', 'client_state': 'active', 'bufnr': jusi#client#create_prepared_buffer(bufnr('%'), 'client-next')})
     let s:shutdown_requests = []
     call cursor(4, 1)
     call jusi#session#execute_current()
@@ -3315,14 +3301,13 @@ function! Test_execute_clears_inconsistent_attached_client_without_trusted_ident
           \ 'print("two")',
           \ ])
     call jusi#session#start('python3')
-    let l:client = jusi#client#create_prepared_buffer(bufnr('%'), 'client-stale')
+    let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-stale')
     call jusi#client#mark_attached_buffer(bufnr('%'), b:jusi_nb.cells[0].id, 'client-stale', l:client)
     call setbufvar(l:client, 'jusi_client_cell_id', 999)
     let b:jusi_nb.cells[0].status = 'follow-up'
     let b:jusi_nb.cells[0].client_id = ''
     let b:jusi_nb.cells[0].client_state = 'active'
     let b:jusi_nb.cells[0].client_bufnr = l:client
-    call jusi#session#apply_prepared({'id': 'client-next', 'state': 'ready', 'client_state': 'active', 'bufnr': jusi#client#create_prepared_buffer(bufnr('%'), 'client-next')})
     let s:shutdown_requests = []
     call cursor(4, 1)
     call jusi#session#execute_current()
@@ -3376,7 +3361,7 @@ function! Test_callback_prepared_healthcheck_shutdowns_inconsistent_binding() ab
           \ ])
     call jusi#session#start('python3')
     let b:jusi_nb.session.id = 'sess-1'
-    let l:prepared = jusi#client#create_prepared_buffer(bufnr('%'), 'client-prepared-stale')
+    let l:prepared = jusi#client#create_managed_buffer(bufnr('%'), 'client-prepared-stale')
     call setbufvar(l:prepared, 'jusi_client_notebook_bufnr', bufnr('%') + 100)
     call jusi#session#apply_prepared({'id': 'client-prepared-stale', 'state': 'ready', 'client_state': 'active', 'bufnr': l:prepared})
     let s:shutdown_requests = []
@@ -3400,14 +3385,11 @@ function! Test_session_callback_response_can_update_multiple_areas() abort
   let l:cell_id = b:jusi_nb.cells[0].id
   call jusi#session#callback_response({
         \ 'session': {'state': 'connected', 'backend': 'mock'},
-        \ 'prepared': {'id': 'client-66', 'state': 'ready', 'bufnr': 66},
         \ 'cell': {'id': l:cell_id, 'status': 'done', 'client_bufnr': 55},
         \ })
   call assert_equal('connected', b:jusi_nb.session.state)
   call assert_equal('mock', b:jusi_nb.session.backend)
-  call assert_equal('client-66', b:jusi_nb.session.prepared.id)
-  call assert_equal('ready', b:jusi_nb.session.prepared.state)
-  call assert_equal(66, b:jusi_nb.session.prepared.bufnr)
+  call assert_false(has_key(b:jusi_nb.session, 'prepared'))
   call assert_equal('done', b:jusi_nb.cells[0].status)
   call assert_equal(55, b:jusi_nb.cells[0].client_bufnr)
 endfunction
@@ -3425,19 +3407,12 @@ function! Test_transport_receive_routes_backend_events_to_callbacks() abort
         \ })
   call jusi#transport#receive(bufnr('%'), {
         \ 'kind': 'event',
-        \ 'type': 'prepared_updated',
-        \ 'payload': {'prepared': {'id': 'client-9', 'state': 'ready', 'bufnr': 99}},
-        \ })
-  call jusi#transport#receive(bufnr('%'), {
-        \ 'kind': 'event',
         \ 'type': 'cell_updated',
         \ 'payload': {'cell': {'id': l:cell_id, 'status': 'busy', 'client_id': 'client-9', 'client_bufnr': 99, 'owner': {'kind': 'kernel'}}},
         \ })
   call assert_equal('sess-1', b:jusi_nb.session.id)
   call assert_equal('connected', b:jusi_nb.session.state)
-  call assert_equal('client-9', b:jusi_nb.session.prepared.id)
-  call assert_equal('ready', b:jusi_nb.session.prepared.state)
-  call assert_equal(99, b:jusi_nb.session.prepared.bufnr)
+  call assert_false(has_key(b:jusi_nb.session, 'prepared'))
   call assert_equal('busy', b:jusi_nb.cells[0].status)
   call assert_equal('client-9', b:jusi_nb.cells[0].client_id)
   call assert_equal(99, b:jusi_nb.cells[0].client_bufnr)
@@ -3715,7 +3690,7 @@ function! Test_client_buffer_gets_toggle_focus_mappings() abort
         \ ])
   let l:notebook = bufnr('%')
   let l:cell_id = b:jusi_nb.cells[0].id
-  let l:client = jusi#client#create_prepared_buffer(l:notebook, 'client-1')
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
   call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
 
   call jusi#focus#place_client_buffer(l:client, 'bsplit', 0)

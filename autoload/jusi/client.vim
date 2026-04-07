@@ -1,9 +1,5 @@
 let s:debug_clock = {'sec': localtime(), 'rel': reltime()}
 
-function! jusi#client#prepared_name(notebook_bufnr, client_id) abort
-  return '!jusi-prepared-client:' . a:notebook_bufnr . ':' . a:client_id
-endfunction
-
 function! s:native_terminal_debug_enabled() abort
   return type(get(g:, 'jusi_native_terminal_debug_log', 0)) == type('')
         \ && !empty(get(g:, 'jusi_native_terminal_debug_log', ''))
@@ -23,6 +19,10 @@ function! s:native_terminal_debug(message, payload) abort
   let l:path = get(g:, 'jusi_native_terminal_debug_log', '')
   let l:parts = [s:debug_timestamp(), a:message, string(a:payload)]
   call writefile([join(l:parts, ' | ')], l:path, 'a')
+endfunction
+
+function! s:client_debug(message, payload) abort
+  call s:native_terminal_debug(a:message, a:payload)
 endfunction
 
 function! s:exit_terminal_job_mode() abort
@@ -216,6 +216,7 @@ function! s:set_managed_vars(bufnr, notebook_bufnr, client_id, role, ...) abort
   call setbufvar(a:bufnr, 'jusi_client_notebook_bufnr', a:notebook_bufnr)
   call setbufvar(a:bufnr, 'jusi_client_id', a:client_id)
   call setbufvar(a:bufnr, 'jusi_client_role', a:role)
+  call setbufvar(a:bufnr, 'jusi_client_editor_close_blocked', 1)
   if a:0 >= 1
     call setbufvar(a:bufnr, 'jusi_client_cell_id', a:1)
   elseif getbufvar(a:bufnr, 'jusi_client_cell_id', 0) != 0
@@ -223,9 +224,22 @@ function! s:set_managed_vars(bufnr, notebook_bufnr, client_id, role, ...) abort
   endif
 endfunction
 
-function! jusi#client#create_prepared_buffer(notebook_bufnr, client_id) abort
-  let l:name = jusi#client#prepared_name(a:notebook_bufnr, a:client_id)
-  let l:bufnr = bufadd(l:name)
+function! jusi#client#allow_editor_close(bufnr) abort
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
+    return 0
+  endif
+  call setbufvar(a:bufnr, 'jusi_client_editor_close_blocked', 0)
+  call s:client_debug('allow-editor-close', {
+        \ 'bufnr': a:bufnr,
+        \ 'role': getbufvar(a:bufnr, 'jusi_client_role', ''),
+        \ 'cell_id': getbufvar(a:bufnr, 'jusi_client_cell_id', 0),
+        \ 'displayed': bufwinid(a:bufnr) > 0,
+        \ })
+  return 1
+endfunction
+
+function! s:create_managed_buffer(name, notebook_bufnr, client_id, role, ...) abort
+  let l:bufnr = bufadd(a:name)
   call bufload(l:bufnr)
   call setbufvar(l:bufnr, '&buftype', 'nofile')
   call setbufvar(l:bufnr, '&bufhidden', 'hide')
@@ -240,13 +254,41 @@ function! jusi#client#create_prepared_buffer(notebook_bufnr, client_id) abort
   call setbufvar(l:bufnr, 'jusi_client_title', '')
   call setbufvar(l:bufnr, 'jusi_client_execution_status', '')
   call setbufvar(l:bufnr, 'jusi_client_pending_input', {})
-  call s:set_managed_vars(l:bufnr, a:notebook_bufnr, a:client_id, 'prepared')
+  if a:0 >= 1
+    call s:set_managed_vars(l:bufnr, a:notebook_bufnr, a:client_id, a:role, a:1)
+  else
+    call s:set_managed_vars(l:bufnr, a:notebook_bufnr, a:client_id, a:role)
+  endif
+  call s:client_debug('managed-buffer-created', {
+        \ 'bufnr': l:bufnr,
+        \ 'name': a:name,
+        \ 'notebook_bufnr': a:notebook_bufnr,
+        \ 'client_id': a:client_id,
+        \ 'role': a:role,
+        \ 'cell_id': a:0 >= 1 ? a:1 : 0,
+        \ 'displayed': bufwinid(l:bufnr) > 0,
+        \ })
   return l:bufnr
 endfunction
 
-function! jusi#client#mark_prepared_buffer(notebook_bufnr, client_id, bufnr) abort
-  call s:set_managed_vars(a:bufnr, a:notebook_bufnr, a:client_id, 'prepared')
-  return a:bufnr
+function! jusi#client#create_managed_buffer(notebook_bufnr, client_id, ...) abort
+  let l:role = a:0 >= 1 ? a:1 : 'detached'
+  let l:cell_id = a:0 >= 2 ? a:2 : 0
+  let l:name = '!jusi-client:' . a:notebook_bufnr . ':' . l:role . ':' . a:client_id
+  if l:cell_id > 0
+    return s:create_managed_buffer(l:name, a:notebook_bufnr, a:client_id, l:role, l:cell_id)
+  endif
+  return s:create_managed_buffer(l:name, a:notebook_bufnr, a:client_id, l:role)
+endfunction
+
+function! jusi#client#create_attached_buffer(notebook_bufnr, cell_id, client_id) abort
+  let l:existing = jusi#client#recover_attached_buffer(a:notebook_bufnr, a:cell_id, a:client_id)
+  if l:existing > 0
+    call jusi#client#mark_attached_buffer(a:notebook_bufnr, a:cell_id, a:client_id, l:existing)
+    return l:existing
+  endif
+  let l:name = '!jusi-client:' . a:notebook_bufnr . ':' . a:cell_id . ':' . a:client_id
+  return s:create_managed_buffer(l:name, a:notebook_bufnr, a:client_id, 'cell', a:cell_id)
 endfunction
 
 function! jusi#client#mark_attached_buffer(notebook_bufnr, cell_id, client_id, bufnr) abort
@@ -395,16 +437,32 @@ function! jusi#client#handle_editor_close(bufnr) abort
   if !jusi#client#is_managed_buffer(a:bufnr)
     return 0
   endif
+  call s:client_debug('handle-editor-close-begin', {
+        \ 'bufnr': a:bufnr,
+        \ 'role': getbufvar(a:bufnr, 'jusi_client_role', ''),
+        \ 'cell_id': getbufvar(a:bufnr, 'jusi_client_cell_id', 0),
+        \ 'blocked': getbufvar(a:bufnr, 'jusi_client_editor_close_blocked', 0),
+        \ 'observed': getbufvar(a:bufnr, 'jusi_client_close_observed', 0),
+        \ 'displayed': bufwinid(a:bufnr) > 0,
+        \ 'mode': mode(),
+        \ })
+  if getbufvar(a:bufnr, 'jusi_client_editor_close_blocked', 0)
+    call s:client_debug('handle-editor-close-skip-blocked', {'bufnr': a:bufnr})
+    return 1
+  endif
   if getbufvar(a:bufnr, 'jusi_client_close_observed', 0)
+    call s:client_debug('handle-editor-close-skip-observed', {'bufnr': a:bufnr})
     return 1
   endif
   call setbufvar(a:bufnr, 'jusi_client_close_observed', 1)
 
   let l:notebook_bufnr = getbufvar(a:bufnr, 'jusi_client_notebook_bufnr', 0)
   if l:notebook_bufnr <= 0 || !bufexists(l:notebook_bufnr)
+    call s:client_debug('handle-editor-close-skip-no-notebook', {'bufnr': a:bufnr})
     return 1
   endif
   if getbufvar(l:notebook_bufnr, 'jusi_skip_cleanup_once', 0)
+    call s:client_debug('handle-editor-close-skip-cleanup', {'bufnr': a:bufnr, 'notebook_bufnr': l:notebook_bufnr})
     return 1
   endif
 
@@ -417,43 +475,22 @@ function! jusi#client#handle_editor_close(bufnr) abort
     if l:cell_id > 0
       let l:update = s:closed_cell_update()
       let l:update._preserve_local_buffer = 1
+      call s:client_debug('handle-editor-close-apply-cell-reset', {
+            \ 'bufnr': a:bufnr,
+            \ 'notebook_bufnr': l:notebook_bufnr,
+            \ 'cell_id': l:cell_id,
+            \ })
       call jusi#session#callback_cell(l:cell_id, l:update, l:notebook_bufnr)
     endif
     return 1
   endif
 
-  if l:role ==# 'prepared'
-    call jusi#session#apply_prepared(l:notebook_bufnr, {
-          \ 'id': '',
-          \ 'state': 'missing',
-          \ 'client_state': 'shutdown',
-          \ 'bufnr': -1,
-          \ '_preserve_local_buffer': 1,
-          \ })
-    return 1
-  endif
-
+  call s:client_debug('handle-editor-close-end', {'bufnr': a:bufnr, 'role': l:role})
   return 1
 endfunction
 
 function! s:binding_mismatch(message) abort
   return {'ok': 0, 'message': a:message}
-endfunction
-
-function! jusi#client#validate_prepared_binding(notebook_bufnr, client_id, bufnr) abort
-  if !jusi#buffer#is_valid_bufnr(a:bufnr)
-    return s:binding_mismatch('Prepared client buffer is missing locally')
-  endif
-  if getbufvar(a:bufnr, 'jusi_client_notebook_bufnr', -1) != a:notebook_bufnr
-    return s:binding_mismatch('Prepared client buffer belongs to another notebook')
-  endif
-  if getbufvar(a:bufnr, 'jusi_client_role', '') !=# 'prepared'
-    return s:binding_mismatch('Prepared client buffer has inconsistent role metadata')
-  endif
-  if !empty(a:client_id) && getbufvar(a:bufnr, 'jusi_client_id', '') !=# a:client_id
-    return s:binding_mismatch('Prepared client buffer has inconsistent client metadata')
-  endif
-  return {'ok': 1}
 endfunction
 
 function! jusi#client#validate_attached_binding(notebook_bufnr, cell_id, client_id, bufnr) abort
@@ -476,31 +513,43 @@ function! jusi#client#validate_attached_binding(notebook_bufnr, cell_id, client_
 endfunction
 
 function! jusi#client#recover_attached_buffer(notebook_bufnr, cell_id, client_id) abort
-  let l:fallback = 0
-  for l:info in getbufinfo()
-    let l:bufnr = get(l:info, 'bufnr', 0)
+  let l:best = 0
+  let l:best_score = -1
+  for l:bufnr in range(1, bufnr('$'))
     if !jusi#buffer#is_valid_bufnr(l:bufnr)
       continue
     endif
     if getbufvar(l:bufnr, 'jusi_client_notebook_bufnr', -1) != a:notebook_bufnr
       continue
     endif
-    if getbufvar(l:bufnr, 'jusi_client_role', '') !=# 'cell'
+    if !getbufvar(l:bufnr, 'jusi_client_managed', 0)
       continue
     endif
+    let l:role = getbufvar(l:bufnr, 'jusi_client_role', '')
     let l:cell_match = getbufvar(l:bufnr, 'jusi_client_cell_id', 0) == a:cell_id
     let l:client_match = !empty(a:client_id) && getbufvar(l:bufnr, 'jusi_client_id', '') ==# a:client_id
     if !l:cell_match && !l:client_match
       continue
     endif
-    if jusi#client#is_native_terminal_buffer(l:bufnr)
-      return l:bufnr
+    let l:score = 0
+    if l:role ==# 'cell'
+      let l:score += 100
     endif
-    if l:fallback <= 0
-      let l:fallback = l:bufnr
+    if l:cell_match
+      let l:score += 50
+    endif
+    if l:client_match
+      let l:score += 25
+    endif
+    if jusi#client#is_native_terminal_buffer(l:bufnr)
+      let l:score += 10
+    endif
+    if l:score > l:best_score
+      let l:best = l:bufnr
+      let l:best_score = l:score
     endif
   endfor
-  return l:fallback
+  return l:best
 endfunction
 
 function! s:notebook_cell(notebook_bufnr, cell_id) abort

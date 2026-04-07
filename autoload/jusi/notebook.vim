@@ -475,10 +475,11 @@ function! s:take_local_overlap_match(prev_cells, used_prev, parsed, parsed_idx) 
 endfunction
 
 function! s:reconcile_cells(parsed_cells, prev_cells, state) abort
-  let l:cells = []
+  let l:cells = repeat([{}], len(a:parsed_cells))
   let l:used_prev = {}
   let l:signature_map = {}
   let l:inserted_hint = get(a:state, 'inserted_cell_hint', {})
+  let l:unmatched = []
   let l:i = 0
 
   while l:i < len(a:prev_cells)
@@ -492,26 +493,31 @@ function! s:reconcile_cells(parsed_cells, prev_cells, state) abort
       let l:hint_idx = s:find_prev_cell_by_id(a:prev_cells, l:used_prev, get(l:inserted_hint, 'id', 0))
       if l:hint_idx >= 0
         let l:used_prev[l:hint_idx] = 1
-        call add(l:cells, s:merge_runtime_cell(a:prev_cells[l:hint_idx], l:parsed))
+        let l:cells[l:parsed_idx] = s:merge_runtime_cell(a:prev_cells[l:hint_idx], l:parsed)
       else
-        call add(l:cells, s:init_runtime_cell(l:parsed, a:state))
+        let l:cells[l:parsed_idx] = s:init_runtime_cell(l:parsed, a:state)
       endif
       let l:parsed_idx += 1
       continue
     endif
     let l:best_idx = s:take_signature_match(l:signature_map, a:prev_cells, l:used_prev, get(l:parsed, 'signature', ''), l:parsed)
-    if l:best_idx < 0
-      let l:best_idx = s:take_local_overlap_match(a:prev_cells, l:used_prev, l:parsed, l:parsed_idx)
-    endif
-
     if l:best_idx >= 0
-      let l:cell = s:merge_runtime_cell(a:prev_cells[l:best_idx], l:parsed)
       let l:used_prev[l:best_idx] = 1
-      call add(l:cells, l:cell)
+      let l:cells[l:parsed_idx] = s:merge_runtime_cell(a:prev_cells[l:best_idx], l:parsed)
     else
-      call add(l:cells, s:init_runtime_cell(l:parsed, a:state))
+      call add(l:unmatched, {'idx': l:parsed_idx, 'parsed': l:parsed})
     endif
     let l:parsed_idx += 1
+  endfor
+
+  for l:item in l:unmatched
+    let l:best_idx = s:take_local_overlap_match(a:prev_cells, l:used_prev, l:item.parsed, l:item.idx)
+    if l:best_idx >= 0
+      let l:used_prev[l:best_idx] = 1
+      let l:cells[l:item.idx] = s:merge_runtime_cell(a:prev_cells[l:best_idx], l:item.parsed)
+    else
+      let l:cells[l:item.idx] = s:init_runtime_cell(l:item.parsed, a:state)
+    endif
   endfor
 
   return l:cells
@@ -1107,10 +1113,6 @@ function! jusi#notebook#cleanup(...) abort
   if s:is_notebook_buffer(l:bufnr) && !l:skip_cleanup
     call jusi#session#shutdown_all_clients('frontend_unload', l:bufnr)
     let l:state = getbufvar(l:bufnr, 'jusi_nb', {})
-    let l:prepared = get(get(l:state, 'session', {}), 'prepared', {})
-    if get(l:prepared, 'bufnr', -1) > 0
-      call jusi#client#destroy_buffer(l:prepared.bufnr)
-    endif
     for l:cell in get(l:state, 'cells', [])
       if get(l:cell, 'client_bufnr', -1) > 0
         call jusi#client#destroy_buffer(l:cell.client_bufnr)

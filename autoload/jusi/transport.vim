@@ -335,10 +335,6 @@ function! s:on_message(bufnr, envelope) abort
     call jusi#session#callback_session(get(l:payload, 'session', {}), a:bufnr)
     return
   endif
-  if l:type ==# 'prepared_updated'
-    call jusi#session#callback_prepared(get(l:payload, 'prepared', {}), a:bufnr)
-    return
-  endif
   if l:type ==# 'cell_updated'
     let l:cell = get(l:payload, 'cell', {})
     call jusi#session#callback_cell(get(l:cell, 'id', 0), l:cell, a:bufnr)

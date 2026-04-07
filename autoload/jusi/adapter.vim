@@ -54,7 +54,6 @@ function! s:request_type(op) abort
         \ 'input_reply': 'input_reply',
         \ 'shutdown_client': 'shutdown_client',
         \ 'stop': 'stop_session',
-        \ 'bind_prepared_client': 'bind_prepared_client',
         \ 'disconnect': 'disconnect_session',
         \ 'reconnect': 'reconnect_session',
         \ }
@@ -175,15 +174,6 @@ function! s:request_payload(op, bufnr, payload) abort
           \ 'cell_id': get(l:cell, 'id', 0),
           \ 'client_id': get(a:payload, 'client_id', get(l:cell, 'client_id', '')),
           \ 'reason': get(a:payload, 'reason', ''),
-          \ }
-  endif
-
-  if a:op ==# 'bind_prepared_client'
-    return {
-          \ 'notebook_id': l:notebook_id,
-          \ 'session_id': l:session_id,
-          \ 'client_id': get(a:payload, 'client_id', ''),
-          \ 'client_bufnr': get(a:payload, 'client_bufnr', -1),
           \ }
   endif
 
