@@ -508,6 +508,32 @@ function! s:reject_action(bufnr, update, message) abort
   return l:state
 endfunction
 
+function! s:is_transport_failure(response) abort
+  return index(['transport_unreachable', 'transport_timeout'], get(a:response, 'error_code', '')) >= 0
+endfunction
+
+function! s:transport_message(response, fallback) abort
+  let l:error = get(a:response, 'error', '')
+  if empty(l:error)
+    let l:error = a:fallback
+  endif
+  return 'Backend is unreachable: ' . l:error
+endfunction
+
+function! s:reject_transport_failure(bufnr, update, response, fallback) abort
+  let l:update = extend(copy(a:update), {
+        \ 'last_error_code': get(a:response, 'error_code', ''),
+        \ })
+  if has_key(l:update, 'state')
+    let l:state = s:update_session(a:bufnr, extend(l:update, {
+          \ 'last_error': s:transport_message(a:response, a:fallback),
+          \ }))
+    call s:echo_error(get(l:state.session, 'last_error', s:transport_message(a:response, a:fallback)))
+    return l:state
+  endif
+  return s:reject_action(a:bufnr, l:update, s:transport_message(a:response, a:fallback))
+endfunction
+
 function! s:require_notebook_buffer(bufnr, action) abort
   if s:is_notebook_buffer(a:bufnr)
     return 1
@@ -826,6 +852,20 @@ function! s:resolve_attach_target(target) abort
     let l:resolved.kind = 'connection_file'
   endif
   return l:resolved
+endfunction
+
+function! s:is_probable_connection_file_target(target) abort
+  if type(a:target) != type('') || empty(a:target)
+    return 0
+  endif
+  if !empty(s:target_kind_from_value(a:target))
+    return 0
+  endif
+  return a:target =~# '[/\\]'
+        \ || a:target =~# '^\.\./'
+        \ || a:target =~# '^\./'
+        \ || a:target =~# '^\~[/\\]'
+        \ || a:target =~# '\.json$'
 endfunction
 
 function! jusi#session#default_state() abort
@@ -1323,9 +1363,14 @@ function! jusi#session#attach(target) abort
     return s:fail_session(l:bufnr, {'last_action': 'attach'}, 'Kernel session is already active for this notebook')
   endif
 
-  call s:clear_all_cell_runtime(l:bufnr)
-
   let l:registry_entry = type(a:target) == type('') ? s:attach_registry_entry(a:target) : {}
+  if type(a:target) == type('')
+        \ && empty(l:registry_entry)
+        \ && empty(s:target_kind_from_value(a:target))
+        \ && !s:is_probable_connection_file_target(a:target)
+    return s:reject_action(l:bufnr, {'last_action': 'attach'}, 'Unknown attach target alias: ' . a:target)
+  endif
+
   if !empty(l:registry_entry) && !empty(get(l:registry_entry, 'session_id', ''))
     let l:reconnect_target = s:resolve_attach_target(a:target)
     call s:update_session(l:bufnr, {
@@ -1341,6 +1386,7 @@ function! jusi#session#attach(target) abort
           \ })
     let l:response = jusi#adapter#call('reconnect', l:bufnr, {'session': copy(jusi#session#state(l:bufnr))})
     if get(l:response, 'ok', 0)
+      call s:clear_all_cell_runtime(l:bufnr)
       if get(l:response, '_transport', 0) && !s:response_has_state_updates(l:response)
         return jusi#notebook#state(l:bufnr)
       endif
@@ -1351,6 +1397,14 @@ function! jusi#session#attach(target) abort
     endif
     if index(['session_not_found', 'session_stopped', 'session_expired'], get(l:response, 'error_code', '')) >= 0
       call s:remove_attach_registry_session({'id': get(l:registry_entry, 'session_id', '')})
+    endif
+    if s:is_transport_failure(l:response)
+      return s:reject_transport_failure(l:bufnr, {
+            \ 'state': 'disconnected',
+            \ 'id': get(l:registry_entry, 'session_id', ''),
+            \ 'attach_name': a:target,
+            \ 'target': l:reconnect_target,
+            \ }, l:response, 'Failed to attach session')
     endif
     return s:fail_session(l:bufnr, {
           \ 'last_action': 'attach',
@@ -1371,10 +1425,11 @@ function! jusi#session#attach(target) abort
         \ 'last_action': 'attach',
         \ 'last_error': '',
         \ 'last_error_code': '',
-        \ 'request': l:request,
-        \ })
+          \ 'request': l:request,
+          \ })
   let l:response = jusi#adapter#call('attach', l:bufnr, l:request)
   if get(l:response, 'ok', 0)
+    call s:clear_all_cell_runtime(l:bufnr)
     if get(l:response, '_transport', 0) && !s:response_has_state_updates(l:response)
       call s:update_session(l:bufnr, {'target': l:resolved_target})
       return jusi#notebook#state(l:bufnr)
@@ -1383,6 +1438,19 @@ function! jusi#session#attach(target) abort
           \ l:bufnr,
           \ l:response,
           \ {'state': 'connected', 'connection': a:target, 'target': l:resolved_target})
+  endif
+  if s:is_transport_failure(l:response)
+    return s:reject_transport_failure(l:bufnr, {
+          \ 'state': get(l:session, 'state', 'idle'),
+          \ 'id': get(l:session, 'id', ''),
+          \ 'backend': get(l:session, 'backend', ''),
+          \ 'kernel_name': get(l:session, 'kernel_name', ''),
+          \ 'connection': get(l:session, 'connection', ''),
+          \ 'attach_name': get(l:session, 'attach_name', ''),
+          \ 'target': copy(get(l:session, 'target', jusi#session#default_target())),
+          \ 'expires_at': get(l:session, 'expires_at', ''),
+          \ 'last_action': 'attach',
+          \ }, l:response, 'Failed to attach kernel session')
   endif
   return s:fail_session(l:bufnr, {
         \ 'last_action': 'attach',
@@ -1406,6 +1474,9 @@ function! jusi#session#execute_current() abort
   let l:session = jusi#session#state(l:bufnr)
   call s:debug_log(l:bufnr, 'execute-after-refresh', l:session)
   if get(l:session, 'state', 'idle') !=# 'connected'
+    if get(l:session, 'state', 'idle') ==# 'disconnected'
+      return s:reject_action(l:bufnr, {'last_action': 'execute'}, 'Cannot execute while the session is disconnected; reconnect or attach first')
+    endif
     return s:fail_session(l:bufnr, {'last_action': 'execute'}, 'Cannot execute cell without a connected session')
   endif
 
@@ -1455,6 +1526,13 @@ function! jusi#session#execute_current() abort
 
   call s:update_cell(l:bufnr, l:cell.id, s:restore_cell_update(l:previous_cell))
 
+  if s:is_transport_failure(l:response)
+    return s:reject_transport_failure(l:bufnr, {
+          \ 'last_action': 'execute',
+          \ 'request': {'cell_id': l:cell.id},
+          \ }, l:response, 'Failed to execute cell')
+  endif
+
   return s:fail_session(l:bufnr, {
         \ 'last_action': 'execute',
         \ 'request': {'cell_id': l:cell.id},
@@ -1483,6 +1561,11 @@ function! jusi#session#interrupt_current() abort
       return jusi#notebook#state(l:bufnr)
     endif
     return s:apply_response(l:bufnr, l:response, {'state': 'connected'})
+  endif
+  if s:is_transport_failure(l:response)
+    return s:reject_transport_failure(l:bufnr, {
+          \ 'last_action': 'interrupt',
+          \ }, l:response, 'Failed to interrupt current cell')
   endif
   return s:fail_session(l:bufnr, {
         \ 'last_action': 'interrupt',
@@ -1555,6 +1638,11 @@ function! jusi#session#reply_input_current(...) abort
             \ l:cell.client_bufnr)
     endif
     return jusi#notebook#state(l:bufnr)
+  endif
+  if s:is_transport_failure(l:response)
+    return s:reject_transport_failure(l:bufnr, {
+          \ 'last_action': 'input_reply',
+          \ }, l:response, 'Failed to reply to input')
   endif
   return s:fail_session(l:bufnr, {
         \ 'last_action': 'input_reply',
@@ -1648,6 +1736,11 @@ function! jusi#session#close_current_client() abort
   endif
 
   call s:update_cell(l:bufnr, l:cell.id, {'close_requested': 0, 'client_state': 'active'})
+  if s:is_transport_failure(l:response)
+    return s:reject_transport_failure(l:bufnr, {
+          \ 'last_action': 'close_client',
+          \ }, l:response, 'Failed to close client')
+  endif
   return s:fail_session(l:bufnr, {
         \ 'last_action': 'close_client',
         \ }, get(l:response, 'error', 'Failed to close client'))
@@ -1820,6 +1913,13 @@ function! jusi#session#reconnect() abort
 
   if index(['session_not_found', 'session_stopped', 'session_expired'], get(l:response, 'error_code', '')) >= 0
     call s:remove_attach_registry_session(l:session)
+  endif
+  if s:is_transport_failure(l:response)
+    return s:reject_transport_failure(l:bufnr, {
+          \ 'state': 'disconnected',
+          \ 'last_action': 'reconnect',
+          \ 'last_error_code': get(l:response, 'error_code', ''),
+          \ }, l:response, 'Failed to reconnect session')
   endif
   return s:fail_session(l:bufnr, {
         \ 'last_action': 'reconnect',

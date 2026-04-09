@@ -244,9 +244,11 @@ Backend session payloads currently keep only explicit target metadata. Durable-s
 
 For attached `connection_file` sessions, frontend may also persist a local alias registry so user-facing attach UX does not depend on remembering raw connection-file paths. That registry is a frontend convenience layer over explicit target identity, not a replacement for backend session ids or reconnect behavior.
 
+Unknown bare attach aliases should fail locally rather than being silently reinterpreted as `connection_file` targets. Frontend should only treat a plain `:JusiAttach {value}` string as `connection_file` when it looks path-like enough to be a real connection-file target.
+
 While a session is `connected`, backend may also emit explicit `healthcheck` events. Frontend should answer those with `healthcheck_reply` for the matching connected session only. Missed replies are backend-owned liveness decisions and should feed the ordinary backend-driven `disconnected` timeout path rather than a separate frontend timeout model.
 
-Fresh session establishment in an already-open notebook should clear stale cell runtime bindings before the new session becomes authoritative. Old cell-local `client_id` / `client_bufnr` state must not be allowed to collide with a newly created execution client after reconnect failure or transport loss.
+Fresh session establishment in an already-open notebook should clear stale cell runtime bindings only once the new session establishment has actually succeeded and become authoritative. Failed or timed-out attach/reconnect attempts must preserve the previous notebook runtime state. Old cell-local `client_id` / `client_bufnr` state must not be allowed to collide with a newly created execution client after successful reattach, reconnect, or start.
 
 ## Backend Boundary
 

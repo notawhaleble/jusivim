@@ -225,6 +225,14 @@ Current durable-session compatibility:
 - frontend answers `healthcheck` with `healthcheck_reply` only for the matching connected session
 - missed replies may move the backend session into the ordinary `disconnected` timeout path
 - suspended Vim may still look like link loss to backend healthchecks for now
+- frontend treats transport timeout or transport unreachability during attach/reconnect as ambiguous reachability loss, not as authoritative backend disconnect/expiry truth
+- authoritative backend recovery errors remain:
+  - `session_not_found`
+  - `session_stopped`
+  - `session_expired`
+- attach-registry entries are only pruned on those authoritative backend recovery errors, not on timeout or temporary unreachability
+- unknown bare `:JusiAttach` aliases fail locally and must not be reinterpreted as `connection_file` targets
+- a failed or timed-out attach/reconnect attempt must not clear the notebook's existing cell-runtime bindings unless the new session establishment actually succeeds
 
 Current native-terminal compatibility:
 

@@ -503,7 +503,7 @@ function! jusi#transport#request(bufnr, envelope) abort
 
   if !s:start_job(l:bufnr, a:envelope)
     call s:debug_log(l:bufnr, 'request-no-transport')
-    return {'ok': 0, 'error': 'Transport is not configured'}
+    return {'ok': 0, 'error': 'Transport is not configured', 'error_code': 'transport_unreachable'}
   endif
 
   let l:state = s:ensure_state(l:bufnr)
@@ -535,7 +535,7 @@ function! jusi#transport#request(bufnr, envelope) abort
   endif
   if !get(l:pending, 'done', 0)
     call s:debug_log(l:bufnr, 'request-timeout', l:request_id, 'timeout_ms=' . l:timeout)
-    return {'ok': 0, 'error': 'Timed out waiting for backend response'}
+    return {'ok': 0, 'error': 'Timed out waiting for backend response', 'error_code': 'transport_timeout'}
   endif
   call s:debug_log(l:bufnr, 'request-complete', l:request_id, l:pending.response)
   return l:pending.response
@@ -553,7 +553,7 @@ function! jusi#transport#notify(bufnr, envelope) abort
 
   if !s:start_job(l:bufnr, a:envelope)
     call s:debug_log(l:bufnr, 'notify-no-transport')
-    return {'ok': 0, 'error': 'Transport is not configured'}
+    return {'ok': 0, 'error': 'Transport is not configured', 'error_code': 'transport_unreachable'}
   endif
 
   call s:channel_send(l:bufnr, json_encode(a:envelope) . "\n")

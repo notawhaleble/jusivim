@@ -387,6 +387,10 @@ function! s:test_session_adapter_attach_without_ids(bufnr, payload) abort
         \ }
 endfunction
 
+function! s:test_session_adapter_attach_transport_unreachable(bufnr, payload) abort
+  return {'ok': 0, 'error': 'Timed out waiting for backend response', 'error_code': 'transport_timeout'}
+endfunction
+
 let s:last_bound_prepared = {}
 let s:shutdown_requests = []
 let s:inspect_client_response = {}
@@ -518,6 +522,18 @@ function! s:test_session_adapter_execute_failure(bufnr, payload) abort
   return {'ok': 0, 'error': 'mock execute failure'}
 endfunction
 
+function! s:test_session_adapter_execute_transport_unreachable(bufnr, payload) abort
+  return {'ok': 0, 'error': 'Transport is not configured', 'error_code': 'transport_unreachable'}
+endfunction
+
+function! s:test_session_adapter_interrupt_transport_unreachable(bufnr, payload) abort
+  return {'ok': 0, 'error': 'Timed out waiting for backend response', 'error_code': 'transport_timeout'}
+endfunction
+
+function! s:test_session_adapter_input_reply_transport_unreachable(bufnr, payload) abort
+  return {'ok': 0, 'error': 'Transport is not configured', 'error_code': 'transport_unreachable'}
+endfunction
+
 function! s:test_session_adapter_interrupt(bufnr, payload) abort
   return {
         \ 'ok': 1,
@@ -546,6 +562,10 @@ function! s:test_session_adapter_shutdown_client(bufnr, payload) abort
         \   'owner': get(get(a:payload, 'cell', {}), 'owner', {'kind': ''}),
         \   },
         \ }
+endfunction
+
+function! s:test_session_adapter_shutdown_client_transport_unreachable(bufnr, payload) abort
+  return {'ok': 0, 'error': 'Timed out waiting for backend response', 'error_code': 'transport_timeout'}
 endfunction
 
 function! s:test_session_adapter_stop(bufnr, payload) abort
@@ -581,6 +601,14 @@ endfunction
 
 function! s:test_session_adapter_reconnect_error(bufnr, payload) abort
   return {'ok': 0, 'error': 'Session expired', 'error_code': 'session_expired'}
+endfunction
+
+function! s:test_session_adapter_reconnect_transport_unreachable(bufnr, payload) abort
+  return {'ok': 0, 'error': 'Timed out waiting for backend response', 'error_code': 'transport_timeout'}
+endfunction
+
+function! s:test_session_adapter_reconnect_not_found(bufnr, payload) abort
+  return {'ok': 0, 'error': 'Session not found', 'error_code': 'session_not_found'}
 endfunction
 
 function! Test_default_session_state_is_initialized_for_notebook() abort
@@ -1081,6 +1109,168 @@ function! Test_attach_registry_alias_resolves_to_connection_file_target() abort
   endtry
 endfunction
 
+function! Test_attach_unknown_alias_preserves_existing_registry_entry() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_registry = get(g:, 'jusi_attach_registry_file', '')
+  try
+    let g:jusi_session_adapter = {'request': function('s:test_request_adapter')}
+    let g:jusi_attach_registry_file = tempname()
+    call writefile([
+          \ json_encode({
+          \   'ololo-jusi': {
+          \     'session_id': 'sess-attach-1',
+          \     'kernel_id': 'kernel-attach-1',
+          \     'target': {'kind': 'connection_file', 'value': '/tmp/kernel-abc.json'},
+          \   },
+          \ }),
+          \ ], g:jusi_attach_registry_file)
+    let s:last_request_envelope = {}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    let b:jusi_nb.session.state = 'disconnected'
+    let b:jusi_nb.session.id = 'sess-attach-1'
+    let b:jusi_nb.session.attach_name = 'ololo-jusi'
+    let b:jusi_nb.session.target = {'source': 'attach', 'alias': 'ololo-jusi', 'kind': 'connection_file', 'value': '/tmp/kernel-abc.json', 'config': {}}
+    call jusi#session#attach('ololo-jusi-typo')
+    call assert_equal('disconnected', b:jusi_nb.session.state)
+    call assert_equal('sess-attach-1', b:jusi_nb.session.id)
+    call assert_equal('ololo-jusi', b:jusi_nb.session.attach_name)
+    call assert_match('Unknown attach target alias: ololo-jusi-typo', b:jusi_nb.session.last_error)
+    call assert_equal({}, s:last_request_envelope)
+    let l:registry = jusi#session#attach_registry()
+    call assert_true(has_key(l:registry, 'ololo-jusi'))
+    call assert_false(has_key(l:registry, 'ololo-jusi-typo'))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_attach_registry_file = l:save_registry
+  endtry
+endfunction
+
+function! Test_attach_registry_alias_timeout_preserves_registry_entry() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_registry = get(g:, 'jusi_attach_registry_file', '')
+  try
+    let g:jusi_session_adapter = {'reconnect': function('s:test_session_adapter_reconnect_transport_unreachable')}
+    let g:jusi_attach_registry_file = tempname()
+    call writefile([
+          \ json_encode({
+          \   'ololo-jusi': {
+          \     'session_id': 'sess-attach-1',
+          \     'kernel_id': 'kernel-attach-1',
+          \     'target': {'kind': 'connection_file', 'value': '/tmp/kernel-abc.json'},
+          \   },
+          \ }),
+          \ ], g:jusi_attach_registry_file)
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#attach('ololo-jusi')
+    call assert_equal('disconnected', b:jusi_nb.session.state)
+    call assert_equal('transport_timeout', b:jusi_nb.session.last_error_code)
+    call assert_match('Backend is unreachable', b:jusi_nb.session.last_error)
+    let l:registry = jusi#session#attach_registry()
+    call assert_true(has_key(l:registry, 'ololo-jusi'))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_attach_registry_file = l:save_registry
+  endtry
+endfunction
+
+function! Test_attach_registry_alias_timeout_preserves_existing_cell_runtime() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_registry = get(g:, 'jusi_attach_registry_file', '')
+  try
+    let g:jusi_session_adapter = {'reconnect': function('s:test_session_adapter_reconnect_transport_unreachable')}
+    let g:jusi_attach_registry_file = tempname()
+    call writefile([
+          \ json_encode({
+          \   'ololo-jusi': {
+          \     'session_id': 'sess-attach-1',
+          \     'kernel_id': 'kernel-attach-1',
+          \     'target': {'kind': 'connection_file', 'value': '/tmp/kernel-abc.json'},
+          \   },
+          \ }),
+          \ ], g:jusi_attach_registry_file)
+    call Test_open_scratch([
+          \ '##',
+          \ '%%vd data',
+          \ ])
+    let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-old')
+    call jusi#client#mark_attached_buffer(bufnr('%'), b:jusi_nb.cells[0].id, 'client-old', l:client)
+    let b:jusi_nb.session.state = 'disconnected'
+    let b:jusi_nb.session.id = 'sess-attach-1'
+    let b:jusi_nb.session.attach_name = 'ololo-jusi'
+    let b:jusi_nb.session.target = {'source': 'attach', 'alias': 'ololo-jusi', 'kind': 'connection_file', 'value': '/tmp/kernel-abc.json', 'config': {}}
+    let b:jusi_nb.cells[0].status = 'follow-up'
+    let b:jusi_nb.cells[0].client_id = 'client-old'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = l:client
+
+    call jusi#session#attach('ololo-jusi')
+
+    call assert_equal('disconnected', b:jusi_nb.session.state)
+    call assert_equal('client-old', b:jusi_nb.cells[0].client_id)
+    call assert_equal('active', b:jusi_nb.cells[0].client_state)
+    call assert_equal(l:client, b:jusi_nb.cells[0].client_bufnr)
+    call assert_true(bufexists(l:client))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_attach_registry_file = l:save_registry
+  endtry
+endfunction
+
+function! Test_attach_registry_alias_authoritative_reconnect_error_removes_registry_entry() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_registry = get(g:, 'jusi_attach_registry_file', '')
+  try
+    let g:jusi_session_adapter = {'reconnect': function('s:test_session_adapter_reconnect_not_found')}
+    let g:jusi_attach_registry_file = tempname()
+    call writefile([
+          \ json_encode({
+          \   'ololo-jusi': {
+          \     'session_id': 'sess-attach-1',
+          \     'kernel_id': 'kernel-attach-1',
+          \     'target': {'kind': 'connection_file', 'value': '/tmp/kernel-abc.json'},
+          \   },
+          \ }),
+          \ ], g:jusi_attach_registry_file)
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#attach('ololo-jusi')
+    call assert_equal('failed', b:jusi_nb.session.state)
+    call assert_equal('session_not_found', b:jusi_nb.session.last_error_code)
+    let l:registry = jusi#session#attach_registry()
+    call assert_false(has_key(l:registry, 'ololo-jusi'))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_attach_registry_file = l:save_registry
+  endtry
+endfunction
+
+function! Test_attach_direct_transport_failure_keeps_previous_session_state() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {'attach': function('s:test_session_adapter_attach_transport_unreachable')}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#attach('ssh://user@host1')
+    call assert_equal('idle', b:jusi_nb.session.state)
+    call assert_equal('transport_timeout', b:jusi_nb.session.last_error_code)
+    call assert_match('Backend is unreachable', b:jusi_nb.session.last_error)
+    call assert_equal('', get(b:jusi_nb.session, 'id', ''))
+    call assert_equal('', get(get(b:jusi_nb.session, 'target', {}), 'kind', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
 function! Test_reconnect_terminal_failure_removes_attach_registry_entry() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   let l:save_registry = get(g:, 'jusi_attach_registry_file', '')
@@ -1308,6 +1498,83 @@ function! Test_interrupt_allows_followup_cells() abort
   endtry
 endfunction
 
+function! Test_execute_transport_failure_keeps_connected_session_state() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'start': function('s:test_session_adapter_start'),
+          \ 'execute': function('s:test_session_adapter_execute_transport_unreachable'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#start('python3')
+    call jusi#session#execute_current()
+    call assert_equal('connected', b:jusi_nb.session.state)
+    call assert_equal('transport_unreachable', b:jusi_nb.session.last_error_code)
+    call assert_match('Backend is unreachable', b:jusi_nb.session.last_error)
+    call assert_equal('initial', b:jusi_nb.cells[0].status)
+    call assert_equal(-1, b:jusi_nb.cells[0].client_bufnr)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_interrupt_transport_failure_keeps_connected_session_state() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'start': function('s:test_session_adapter_start'),
+          \ 'interrupt': function('s:test_session_adapter_interrupt_transport_unreachable'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ '%%sql main',
+          \ 'select 1',
+          \ ])
+    call jusi#session#start('python3')
+    let b:jusi_nb.cells[0].status = 'follow-up'
+    let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = 91
+    call jusi#session#interrupt_current()
+    call assert_equal('connected', b:jusi_nb.session.state)
+    call assert_equal('transport_timeout', b:jusi_nb.session.last_error_code)
+    call assert_match('Backend is unreachable', b:jusi_nb.session.last_error)
+    call assert_equal('follow-up', b:jusi_nb.cells[0].status)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_reply_input_transport_failure_keeps_connected_session_state() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'start': function('s:test_session_adapter_start'),
+          \ 'input_reply': function('s:test_session_adapter_input_reply_transport_unreachable'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#start('python3')
+    let b:jusi_nb.cells[0].status = 'busy'
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].pending_input = {'prompt': 'value', 'password': 0}
+    call jusi#session#reply_input_current('hello')
+    call assert_equal('connected', b:jusi_nb.session.state)
+    call assert_equal('transport_unreachable', b:jusi_nb.session.last_error_code)
+    call assert_match('Backend is unreachable', b:jusi_nb.session.last_error)
+    call assert_equal({'prompt': 'value', 'password': 0}, b:jusi_nb.cells[0].pending_input)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
 function! Test_close_client_resets_terminal_cell_state_and_destroys_buffer() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   try
@@ -1402,6 +1669,42 @@ function! Test_close_client_transport_response_closes_local_followup_buffer() ab
     call assert_equal(0, get(b:jusi_nb.cells[0], 'close_requested', 0))
     call assert_equal('shutdown_client', get(s:last_request_envelope, 'type', ''))
     call assert_equal('user_close', get(s:last_request_envelope, 'payload', {}).reason)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_close_client_transport_failure_keeps_connected_session_state() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'start': function('s:test_session_adapter_start'),
+          \ 'shutdown_client': function('s:test_session_adapter_shutdown_client_transport_unreachable'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ '%%sql main',
+          \ 'select 1',
+          \ ])
+    call jusi#session#start('python3')
+    let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
+    let b:jusi_nb.cells[0].status = 'follow-up'
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = l:client
+    let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+    call jusi#client#mark_attached_buffer(bufnr('%'), b:jusi_nb.cells[0].id, 'client-1', l:client)
+
+    call jusi#session#close_current_client()
+
+    call assert_equal('connected', b:jusi_nb.session.state)
+    call assert_equal('transport_timeout', b:jusi_nb.session.last_error_code)
+    call assert_match('Backend is unreachable', b:jusi_nb.session.last_error)
+    call assert_equal('follow-up', b:jusi_nb.cells[0].status)
+    call assert_equal('active', b:jusi_nb.cells[0].client_state)
+    call assert_equal(l:client, b:jusi_nb.cells[0].client_bufnr)
+    call assert_equal(0, get(b:jusi_nb.cells[0], 'close_requested', 0))
+    call assert_true(bufexists(l:client))
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
@@ -2432,6 +2735,17 @@ function! Test_disconnect_uses_disconnected_state_for_recoverable_link_loss() ab
   call assert_false(has_key(b:jusi_nb.session, 'prepared'))
 endfunction
 
+function! Test_execute_while_disconnected_keeps_disconnected_state() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  call jusi#session#set_disconnected()
+  call jusi#session#execute_current()
+  call assert_equal('disconnected', b:jusi_nb.session.state)
+  call assert_match('Cannot execute while the session is disconnected', b:jusi_nb.session.last_error)
+endfunction
+
 function! Test_notebook_quit_guard_allows_exit_without_active_sessions() abort
   call Test_open_scratch([
         \ '##',
@@ -2576,6 +2890,27 @@ function! Test_reconnect_disconnected_session_restores_connected_state() abort
     call assert_equal('connected', b:jusi_nb.session.state)
     call assert_equal('reconnect', b:jusi_nb.session.last_action)
     call assert_false(has_key(b:jusi_nb.session, 'prepared'))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_reconnect_transport_failure_preserves_disconnected_state() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'reconnect': function('s:test_session_adapter_reconnect_transport_unreachable'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#set_disconnected()
+    let b:jusi_nb.session.id = 'sess-1'
+    call jusi#session#reconnect()
+    call assert_equal('disconnected', b:jusi_nb.session.state)
+    call assert_equal('transport_timeout', b:jusi_nb.session.last_error_code)
+    call assert_match('Backend is unreachable', b:jusi_nb.session.last_error)
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
