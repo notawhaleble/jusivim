@@ -234,6 +234,18 @@ Current durable-session compatibility:
 - unknown bare `:JusiAttach` aliases fail locally and must not be reinterpreted as `connection_file` targets
 - a failed or timed-out attach/reconnect attempt must not clear the notebook's existing cell-runtime bindings unless the new session establishment actually succeeds
 
+Current frontend-owned config compatibility:
+
+- frontend owns the local Jusi user config file
+- default path is `~/.jusi/jusi.toml`
+- the path may be overridden with `g:jusi_config_file`
+- frontend creates that file with a minimal default template if it does not exist
+- local config is loaded and merged into `target.config` for new session establishment paths:
+  - `:JusiStartKernel`
+  - direct `:JusiAttach {path}` / `:JusiAttach {scheme}://...`
+- invalid local config fails the frontend action locally with a clear error instead of sending a broken session request
+- reconnect to an already-existing durable backend session does not currently renegotiate config through a separate reconnect payload
+
 Current native-terminal compatibility:
 
 - backend may advertise a client view with `transport.kind=native_terminal`

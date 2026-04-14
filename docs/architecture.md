@@ -244,6 +244,8 @@ Backend session payloads currently keep only explicit target metadata. Durable-s
 
 For attached `connection_file` sessions, frontend may also persist a local alias registry so user-facing attach UX does not depend on remembering raw connection-file paths. That registry is a frontend convenience layer over explicit target identity, not a replacement for backend session ids or reconnect behavior.
 
+Frontend-owned user config should be modeled as a local file, currently `~/.jusi/jusi.toml`, with an override hook for local testing. Until backend grows a separate session-config payload, frontend may merge that config into `target.config` for new session establishment paths. Invalid local config should block start/attach locally instead of sending malformed or ambiguous config downstream.
+
 Unknown bare attach aliases should fail locally rather than being silently reinterpreted as `connection_file` targets. Frontend should only treat a plain `:JusiAttach {value}` string as `connection_file` when it looks path-like enough to be a real connection-file target.
 
 While a session is `connected`, backend may also emit explicit `healthcheck` events. Frontend should answer those with `healthcheck_reply` for the matching connected session only. Missed replies are backend-owned liveness decisions and should feed the ordinary backend-driven `disconnected` timeout path rather than a separate frontend timeout model.

@@ -1,4 +1,5 @@
 let s:debug_clock = {'sec': localtime(), 'rel': reltime()}
+let s:native_terminal_pending = {}
 
 function! s:native_terminal_debug_enabled() abort
   return type(get(g:, 'jusi_native_terminal_debug_log', 0)) == type('')
@@ -98,8 +99,21 @@ function! s:sanitize_native_terminal_transport(transport) abort
 endfunction
 
 function! s:native_terminal_launcher() abort
-  let l:launcher = get(g:, 'jusi_native_terminal_launcher', 0)
-  return type(l:launcher) == type(function('tr')) ? l:launcher : function('s:launch_native_terminal_default')
+  let l:launcher = get(g:, 'jusi_native_terminal_launcher', get(g:, 'JusiNativeTerminalLauncher', 0))
+  if type(l:launcher) == type(function('tr'))
+    return l:launcher
+  endif
+  if type(l:launcher) == type('') && !empty(l:launcher)
+    try
+      return function(l:launcher)
+    catch
+    endtry
+  endif
+  return function('s:launch_native_terminal_default')
+endfunction
+
+function! s:native_terminal_key(notebook_bufnr, cell_id, client_id) abort
+  return a:notebook_bufnr . ':' . a:cell_id . ':' . a:client_id
 endfunction
 
 function! s:is_reusable_native_terminal_buffer(bufnr, client_id) abort
@@ -168,28 +182,72 @@ endfunction
 
 function! s:ensure_native_terminal_buffer(notebook_bufnr, cell_id, client_id, client_bufnr, transport) abort
   let l:transport = s:sanitize_native_terminal_transport(a:transport)
+  let l:key = s:native_terminal_key(a:notebook_bufnr, a:cell_id, a:client_id)
+  let l:existing = jusi#client#recover_attached_buffer(a:notebook_bufnr, a:cell_id, a:client_id)
+  if l:existing > 0 && s:is_reusable_native_terminal_buffer(l:existing, a:client_id)
+    call s:set_native_terminal_buffer_transport(l:existing, l:transport)
+    call s:bind_native_terminal_buffer(a:notebook_bufnr, a:cell_id, a:client_id, l:existing, l:transport)
+    if jusi#buffer#is_valid_bufnr(a:client_bufnr) && a:client_bufnr != l:existing
+      call jusi#client#destroy_buffer(a:client_bufnr)
+    endif
+    return l:existing
+  endif
+  if has_key(s:native_terminal_pending, l:key)
+    let l:pending_bufnr = get(s:native_terminal_pending, l:key, 0)
+    if type(l:pending_bufnr) == type(0) && l:pending_bufnr > 0 && bufexists(l:pending_bufnr)
+      call s:native_terminal_debug('ensure-native-terminal-buffer-pending-reuse', {
+            \ 'notebook_bufnr': a:notebook_bufnr,
+            \ 'cell_id': a:cell_id,
+            \ 'client_id': a:client_id,
+            \ 'pending_bufnr': l:pending_bufnr,
+            \ 'old_bufnr': a:client_bufnr,
+            \ })
+      call s:bind_native_terminal_buffer(a:notebook_bufnr, a:cell_id, a:client_id, l:pending_bufnr, l:transport)
+      if jusi#buffer#is_valid_bufnr(a:client_bufnr) && a:client_bufnr != l:pending_bufnr
+        call jusi#client#destroy_buffer(a:client_bufnr)
+      endif
+      return l:pending_bufnr
+    endif
+    call s:native_terminal_debug('ensure-native-terminal-buffer-pending-skip', {
+          \ 'notebook_bufnr': a:notebook_bufnr,
+          \ 'cell_id': a:cell_id,
+          \ 'client_id': a:client_id,
+          \ 'old_bufnr': a:client_bufnr,
+          \ })
+    return 0
+  endif
   if s:is_reusable_native_terminal_buffer(a:client_bufnr, a:client_id)
     call s:set_native_terminal_buffer_transport(a:client_bufnr, l:transport)
     return a:client_bufnr
   endif
   let l:Launcher = s:native_terminal_launcher()
-  let l:new_bufnr = call(l:Launcher, [a:notebook_bufnr, a:cell_id, a:client_id, l:transport])
-  call s:native_terminal_debug('ensure-native-terminal-buffer', {
-        \ 'notebook_bufnr': a:notebook_bufnr,
-        \ 'cell_id': a:cell_id,
-        \ 'client_id': a:client_id,
-        \ 'old_bufnr': a:client_bufnr,
-        \ 'new_bufnr': l:new_bufnr,
-        \ 'transport': l:transport,
-        \ })
-  if type(l:new_bufnr) != type(0) || l:new_bufnr <= 0 || !bufexists(l:new_bufnr)
-    return 0
-  endif
-  call s:bind_native_terminal_buffer(a:notebook_bufnr, a:cell_id, a:client_id, l:new_bufnr, l:transport)
-  if jusi#buffer#is_valid_bufnr(a:client_bufnr) && a:client_bufnr != l:new_bufnr
-    call jusi#client#destroy_buffer(a:client_bufnr)
-  endif
-  return l:new_bufnr
+  let s:native_terminal_pending[l:key] = 0
+  try
+    let l:new_bufnr = call(l:Launcher, [a:notebook_bufnr, a:cell_id, a:client_id, l:transport])
+    if type(l:new_bufnr) == type(0) && l:new_bufnr > 0
+      let s:native_terminal_pending[l:key] = l:new_bufnr
+    endif
+    call s:native_terminal_debug('ensure-native-terminal-buffer', {
+          \ 'notebook_bufnr': a:notebook_bufnr,
+          \ 'cell_id': a:cell_id,
+          \ 'client_id': a:client_id,
+          \ 'old_bufnr': a:client_bufnr,
+          \ 'new_bufnr': l:new_bufnr,
+          \ 'transport': l:transport,
+          \ })
+    if type(l:new_bufnr) != type(0) || l:new_bufnr <= 0 || !bufexists(l:new_bufnr)
+      return 0
+    endif
+    call s:bind_native_terminal_buffer(a:notebook_bufnr, a:cell_id, a:client_id, l:new_bufnr, l:transport)
+    if jusi#buffer#is_valid_bufnr(a:client_bufnr) && a:client_bufnr != l:new_bufnr
+      call jusi#client#destroy_buffer(a:client_bufnr)
+    endif
+    return l:new_bufnr
+  finally
+    if has_key(s:native_terminal_pending, l:key)
+      call remove(s:native_terminal_pending, l:key)
+    endif
+  endtry
 endfunction
 
 function! s:stop_refresh_timer(bufnr) abort
@@ -775,6 +833,10 @@ endfunction
 
 function! jusi#client#schedule_attached_refresh(notebook_bufnr, cell_id, client_id, client_bufnr) abort
   if !jusi#buffer#is_valid_bufnr(a:client_bufnr)
+    return 0
+  endif
+  if jusi#client#is_native_terminal_buffer(a:client_bufnr)
+    call s:stop_refresh_timer(a:client_bufnr)
     return 0
   endif
   call s:stop_refresh_timer(a:client_bufnr)

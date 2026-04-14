@@ -47,8 +47,12 @@ function! jusi#focus#place_client_buffer(bufnr, ...) abort
   endif
   let l:layout = a:0 >= 1 ? a:1 : get(g:, 'jusi_client_layout', 'bsplit')
   let l:return_focus = a:0 >= 2 ? a:2 : 1
+  let l:source_bufnr = bufnr('%')
   let l:source_winid = win_getid()
   let l:wininfo = filter(copy(getwininfo()), {_, v -> v.bufnr == a:bufnr})
+  if l:return_focus && !empty(l:wininfo) && l:source_bufnr != a:bufnr
+    return a:bufnr
+  endif
   if empty(l:wininfo)
     execute jusi#window#client_layout_command(l:layout) . ' | buffer ' . a:bufnr
   else

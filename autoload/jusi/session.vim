@@ -868,6 +868,10 @@ function! s:is_probable_connection_file_target(target) abort
         \ || a:target =~# '\.json$'
 endfunction
 
+function! s:load_session_config_result() abort
+  return jusi#config#load()
+endfunction
+
 function! jusi#session#default_state() abort
   return {
         \ 'state': 'idle',
@@ -1312,7 +1316,13 @@ function! jusi#session#start(...) abort
   endif
 
   let l:kernel_name = a:0 >= 1 && !empty(a:1) ? a:1 : 'python3'
-  let l:target = s:resolve_start_target(l:kernel_name)
+  let l:config_result = s:load_session_config_result()
+  if !get(l:config_result, 'ok', 0)
+    return s:reject_action(l:bufnr, {'last_action': 'start'}, get(l:config_result, 'error', 'Failed to load Jusi config'))
+  endif
+  let l:target = jusi#config#merge_target_config(
+        \ s:resolve_start_target(l:kernel_name),
+        \ get(l:config_result, 'config', {}))
   let l:session = jusi#session#state(l:bufnr)
   if s:connected_session_state(l:session)
     return s:fail_session(l:bufnr, {'last_action': 'start'}, 'Kernel session is already active for this notebook')
@@ -1362,6 +1372,10 @@ function! jusi#session#attach(target) abort
   if s:connected_session_state(l:session)
     return s:fail_session(l:bufnr, {'last_action': 'attach'}, 'Kernel session is already active for this notebook')
   endif
+  let l:config_result = s:load_session_config_result()
+  if !get(l:config_result, 'ok', 0)
+    return s:reject_action(l:bufnr, {'last_action': 'attach'}, get(l:config_result, 'error', 'Failed to load Jusi config'))
+  endif
 
   let l:registry_entry = type(a:target) == type('') ? s:attach_registry_entry(a:target) : {}
   if type(a:target) == type('')
@@ -1372,7 +1386,9 @@ function! jusi#session#attach(target) abort
   endif
 
   if !empty(l:registry_entry) && !empty(get(l:registry_entry, 'session_id', ''))
-    let l:reconnect_target = s:resolve_attach_target(a:target)
+    let l:reconnect_target = jusi#config#merge_target_config(
+          \ s:resolve_attach_target(a:target),
+          \ get(l:config_result, 'config', {}))
     call s:update_session(l:bufnr, {
           \ 'state': 'starting',
           \ 'id': get(l:registry_entry, 'session_id', ''),
@@ -1415,7 +1431,9 @@ function! jusi#session#attach(target) abort
           \ }, get(l:response, 'error', 'Failed to attach session'))
   endif
 
-  let l:resolved_target = s:resolve_attach_target(a:target)
+  let l:resolved_target = jusi#config#merge_target_config(
+        \ s:resolve_attach_target(a:target),
+        \ get(l:config_result, 'config', {}))
   let l:request = {'target': copy(l:resolved_target)}
   call s:update_session(l:bufnr, {
         \ 'state': 'starting',

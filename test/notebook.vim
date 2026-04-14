@@ -397,6 +397,7 @@ let s:inspect_client_response = {}
 let s:inspect_client_calls = 0
 let s:inspect_client_sequence = []
 let s:native_terminal_launches = []
+let s:reentrant_native_terminal_refresh = {}
 
 function! s:test_session_adapter_bind_prepared(bufnr, payload) abort
   let s:last_bound_prepared = copy(a:payload)
@@ -438,6 +439,27 @@ function! s:test_native_terminal_launcher(notebook_bufnr, cell_id, client_id, tr
         \ 'bufnr': l:bufnr,
         \ })
   return l:bufnr
+endfunction
+
+function! s:test_native_terminal_reentrant_launcher(notebook_bufnr, cell_id, client_id, transport) abort
+  let l:bufnr = s:test_native_terminal_launcher(a:notebook_bufnr, a:cell_id, a:client_id, a:transport)
+  if !get(s:reentrant_native_terminal_refresh, 'done', 0)
+    let s:reentrant_native_terminal_refresh.done = 1
+    call jusi#client#refresh_attached_view(
+          \ a:notebook_bufnr,
+          \ a:cell_id,
+          \ a:client_id,
+          \ get(s:reentrant_native_terminal_refresh, 'old_client_bufnr', 0))
+  endif
+  return l:bufnr
+endfunction
+
+function! TestNativeTerminalLauncher(notebook_bufnr, cell_id, client_id, transport) abort
+  return s:test_native_terminal_launcher(a:notebook_bufnr, a:cell_id, a:client_id, a:transport)
+endfunction
+
+function! TestNativeTerminalReentrantLauncher(notebook_bufnr, cell_id, client_id, transport) abort
+  return s:test_native_terminal_reentrant_launcher(a:notebook_bufnr, a:cell_id, a:client_id, a:transport)
 endfunction
 
 let s:last_request_envelope = {}
@@ -629,6 +651,42 @@ function! Test_default_session_state_is_initialized_for_notebook() abort
   call assert_false(has_key(l:session, 'prepared'))
 endfunction
 
+function! Test_config_ensure_file_creates_default_jusi_toml() abort
+  let l:save_config = get(g:, 'jusi_config_file', '')
+  try
+    let g:jusi_config_file = tempname() . '/jusi.toml'
+    let l:path = jusi#config#ensure_file()
+    call assert_equal(fnamemodify(g:jusi_config_file, ':p'), l:path)
+    call assert_true(filereadable(l:path))
+    let l:lines = readfile(l:path)
+    call assert_true(index(l:lines, '[plugins]') >= 0)
+  finally
+    let g:jusi_config_file = l:save_config
+  endtry
+endfunction
+
+function! Test_config_load_parses_nested_plugin_sections() abort
+  let l:save_config = get(g:, 'jusi_config_file', '')
+  try
+    let g:jusi_config_file = tempname()
+    call writefile([
+          \ '[plugins.sqlite]',
+          \ 'database = "/tmp/app.db"',
+          \ 'readonly = true',
+          \ 'limit = 10',
+          \ 'columns = ["id", "name"]',
+          \ ], g:jusi_config_file)
+    let l:result = jusi#config#load()
+    call assert_equal(1, l:result.ok)
+    call assert_equal('/tmp/app.db', get(get(get(l:result.config, 'plugins', {}), 'sqlite', {}), 'database', ''))
+    call assert_equal(v:true, get(get(get(l:result.config, 'plugins', {}), 'sqlite', {}), 'readonly', v:false))
+    call assert_equal(10, get(get(get(l:result.config, 'plugins', {}), 'sqlite', {}), 'limit', 0))
+    call assert_equal(['id', 'name'], get(get(get(l:result.config, 'plugins', {}), 'sqlite', {}), 'columns', []))
+  finally
+    let g:jusi_config_file = l:save_config
+  endtry
+endfunction
+
 function! Test_adapter_builds_start_session_request_envelope() abort
   call Test_open_scratch([
         \ '##',
@@ -793,6 +851,7 @@ endfunction
 function! Test_start_kernel_request_includes_resolved_target() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   let l:save_targets = get(g:, 'jusi_kernel_targets', {})
+  let l:save_config = get(g:, 'jusi_config_file', '')
   try
     let g:jusi_session_adapter = {'request': function('s:test_request_adapter')}
     let g:jusi_kernel_targets = {
@@ -802,6 +861,11 @@ function! Test_start_kernel_request_includes_resolved_target() abort
           \   'label': 'local venv',
           \   },
           \ }
+    let g:jusi_config_file = tempname()
+    call writefile([
+          \ '[plugins.sqlite]',
+          \ 'database = "/tmp/start.db"',
+          \ ], g:jusi_config_file)
     let s:last_request_envelope = {}
     call Test_open_scratch([
           \ '##',
@@ -813,9 +877,11 @@ function! Test_start_kernel_request_includes_resolved_target() abort
     call assert_equal('venv', get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'kind', ''))
     call assert_equal('venv://myenv1', get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'value', ''))
     call assert_equal('local venv', get(get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'config', {}), 'label', ''))
+    call assert_equal('/tmp/start.db', get(get(get(get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'config', {}), 'plugins', {}), 'sqlite', {}), 'database', ''))
   finally
     let g:jusi_session_adapter = l:save_adapter
     let g:jusi_kernel_targets = l:save_targets
+    let g:jusi_config_file = l:save_config
   endtry
 endfunction
 
@@ -997,9 +1063,15 @@ endfunction
 function! Test_attach_connection_file_uses_explicit_target_kind() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   let l:save_registry = get(g:, 'jusi_attach_registry_file', '')
+  let l:save_config = get(g:, 'jusi_config_file', '')
   try
     let g:jusi_session_adapter = {'request': function('s:test_request_adapter')}
     let g:jusi_attach_registry_file = tempname()
+    let g:jusi_config_file = tempname()
+    call writefile([
+          \ '[plugins.sqlite]',
+          \ 'database = "/tmp/attach.db"',
+          \ ], g:jusi_config_file)
     let s:last_request_envelope = {}
     call Test_open_scratch([
           \ '##',
@@ -1010,11 +1082,35 @@ function! Test_attach_connection_file_uses_explicit_target_kind() abort
     call assert_equal('attach', get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'source', ''))
     call assert_equal('connection_file', get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'kind', ''))
     call assert_equal('/tmp/kernel-123.json', get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'value', ''))
+    call assert_equal('/tmp/attach.db', get(get(get(get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'config', {}), 'plugins', {}), 'sqlite', {}), 'database', ''))
     call assert_equal('connection_file', get(get(b:jusi_nb.session, 'target', {}), 'kind', ''))
     call assert_equal('/tmp/kernel-123.json', get(get(b:jusi_nb.session, 'target', {}), 'value', ''))
   finally
     let g:jusi_session_adapter = l:save_adapter
     let g:jusi_attach_registry_file = l:save_registry
+    let g:jusi_config_file = l:save_config
+  endtry
+endfunction
+
+function! Test_start_rejects_invalid_local_jusi_config() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_config = get(g:, 'jusi_config_file', '')
+  try
+    let g:jusi_session_adapter = {'request': function('s:test_request_adapter')}
+    let g:jusi_config_file = tempname()
+    call writefile(['[plugins.sqlite]', 'database = {'], g:jusi_config_file)
+    let s:last_request_envelope = {}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#start('python3')
+    call assert_equal('idle', b:jusi_nb.session.state)
+    call assert_match('Invalid Jusi config', b:jusi_nb.session.last_error)
+    call assert_equal({}, s:last_request_envelope)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_config_file = l:save_config
   endtry
 endfunction
 
@@ -2040,12 +2136,13 @@ endfunction
 function! Test_client_refresh_attached_view_rebinds_native_terminal_transport() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   let l:save_launcher = get(g:, 'jusi_native_terminal_launcher', 0)
+  let l:save_launcher_ref = get(g:, 'JusiNativeTerminalLauncher', 0)
   try
     let g:jusi_session_adapter = {
           \ 'inspect_client': function('s:test_session_adapter_inspect_client'),
           \ 'request': function('s:test_request_adapter'),
           \ }
-    let g:jusi_native_terminal_launcher = function('s:test_native_terminal_launcher')
+    let g:JusiNativeTerminalLauncher = function('TestNativeTerminalLauncher')
     let s:inspect_client_calls = 0
     let s:native_terminal_launches = []
     let s:request_envelopes = []
@@ -2096,10 +2193,80 @@ function! Test_client_refresh_attached_view_rebinds_native_terminal_transport() 
     call assert_false(bufexists(l:client))
   finally
     let g:jusi_session_adapter = l:save_adapter
-    if type(l:save_launcher) == type(function('tr'))
-      let g:jusi_native_terminal_launcher = l:save_launcher
+    let g:jusi_native_terminal_launcher = l:save_launcher
+    if type(l:save_launcher_ref) == type(function('tr'))
+      let g:JusiNativeTerminalLauncher = l:save_launcher_ref
     else
-      unlet! g:jusi_native_terminal_launcher
+      unlet! g:JusiNativeTerminalLauncher
+    endif
+  endtry
+endfunction
+
+function! Test_client_refresh_attached_view_does_not_double_launch_native_terminal_transport() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_launcher = get(g:, 'jusi_native_terminal_launcher', 0)
+  let l:save_launcher_ref = get(g:, 'JusiNativeTerminalLauncher', 0)
+  try
+    let g:jusi_session_adapter = {
+          \ 'inspect_client': function('s:test_session_adapter_inspect_client'),
+          \ 'request': function('s:test_request_adapter'),
+          \ }
+    let g:JusiNativeTerminalLauncher = function('TestNativeTerminalReentrantLauncher')
+    let s:inspect_client_calls = 0
+    let s:native_terminal_launches = []
+    let s:request_envelopes = []
+    let s:reentrant_native_terminal_refresh = {'done': 0}
+    let s:inspect_client_response = {
+          \ 'revision': 1,
+          \ 'title': 'sql',
+          \ 'lines': [],
+          \ 'execution_status': 'follow-up',
+          \ 'transport': {
+          \   'kind': 'native_terminal',
+          \   'attach_cmd': ['python', '-m', 'jusi', 'client-process', 'terminal-attach'],
+          \   'attach_env': {
+          \     'JUSI_SESSION_ID': 'sess-1',
+          \     'JUSI_CLIENT_ID': 'client-1',
+          \     'JUSI_HANDLER_ID': 'sqlite',
+          \     },
+          \   'session_id': 'sess-1',
+          \   'client_id': 'client-1',
+          \   'handler_id': 'sqlite',
+          \   },
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ '%%sql',
+          \ 'select 1',
+          \ ])
+    let l:notebook = bufnr('%')
+    let l:cell_id = b:jusi_nb.cells[0].id
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+    let s:reentrant_native_terminal_refresh.old_client_bufnr = l:client
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.state = 'connected'
+    let b:jusi_nb.cells[0].status = 'follow-up'
+    let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+    let b:jusi_nb.cells[0].handler = {'id': 'sqlite', 'last_message_type': 'handler_snapshot', 'payload': {}, 'snapshot': {'transport': 'native_terminal'}}
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = l:client
+    call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+
+    call jusi#client#refresh_attached_view(l:notebook, l:cell_id, 'client-1', l:client)
+
+    call assert_equal(1, len(s:native_terminal_launches))
+    let l:new_client = get(b:jusi_nb.cells[0], 'client_bufnr', -1)
+    call assert_notequal(l:client, l:new_client)
+    call assert_true(bufexists(l:new_client))
+    call assert_false(bufexists(l:client))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_native_terminal_launcher = l:save_launcher
+    if type(l:save_launcher_ref) == type(function('tr'))
+      let g:JusiNativeTerminalLauncher = l:save_launcher_ref
+    else
+      unlet! g:JusiNativeTerminalLauncher
     endif
   endtry
 endfunction
