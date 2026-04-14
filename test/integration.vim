@@ -1410,9 +1410,11 @@ function! Test_integration_client_editor_close_clears_cell_binding_without_disco
   call assert_equal(1, jusi#client#handle_editor_close(l:client))
 
   call assert_equal('connected', b:jusi_nb.session.state)
-  call assert_equal('follow-up', b:jusi_nb.cells[0].status)
+  call assert_equal('initial', b:jusi_nb.cells[0].status)
+  call assert_equal('', b:jusi_nb.cells[0].client_id)
   call assert_equal('shutdown', b:jusi_nb.cells[0].client_state)
   call assert_equal(-1, b:jusi_nb.cells[0].client_bufnr)
+  call assert_equal('', get(get(b:jusi_nb.cells[0], 'owner', {}), 'kind', ''))
 endfunction
 
 function! Test_integration_quit_guard_allows_closing_one_of_multiple_visible_notebook_tabs() abort

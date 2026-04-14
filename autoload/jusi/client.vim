@@ -491,6 +491,18 @@ function! s:closed_cell_update() abort
         \ }
 endfunction
 
+function! s:closed_cell_update_for_cell(cell) abort
+  let l:update = copy(s:closed_cell_update())
+  if index(['busy', 'parked', 'follow-up'], get(a:cell, 'status', '')) >= 0
+    let l:update.status = 'initial'
+  endif
+  if get(get(a:cell, 'owner', {}), 'kind', '') ==# 'handler'
+    let l:update.client_id = ''
+    let l:update.owner = {'kind': ''}
+  endif
+  return l:update
+endfunction
+
 function! jusi#client#handle_editor_close(bufnr) abort
   if !jusi#client#is_managed_buffer(a:bufnr)
     return 0
@@ -531,7 +543,8 @@ function! jusi#client#handle_editor_close(bufnr) abort
 
   if l:role ==# 'cell'
     if l:cell_id > 0
-      let l:update = s:closed_cell_update()
+      let l:cell = jusi#notebook#cell_by_id(l:cell_id, l:notebook_bufnr)
+      let l:update = empty(l:cell) ? s:closed_cell_update() : s:closed_cell_update_for_cell(l:cell)
       let l:update._preserve_local_buffer = 1
       call s:client_debug('handle-editor-close-apply-cell-reset', {
             \ 'bufnr': a:bufnr,
@@ -667,6 +680,19 @@ function! s:display_lines_from_view(view) abort
 
   let l:display = []
   for l:line in l:raw_lines
+    if type(l:line) == type({})
+      let l:type = get(l:line, 'type', '')
+      if l:type ==# 'error'
+        let l:message = get(l:line, 'message', '')
+        if empty(l:message)
+          let l:message = string(get(l:line, 'payload', {}))
+        endif
+        call add(l:display, 'error: ' . l:message)
+        continue
+      endif
+      call add(l:display, string(l:line))
+      continue
+    endif
     if type(l:line) != type('')
       call add(l:display, string(l:line))
       continue

@@ -221,6 +221,18 @@ function! s:cell_runtime_reset_update(cell) abort
   return l:update
 endfunction
 
+function! s:cell_close_final_update(cell) abort
+  let l:update = copy(s:cell_close_reset_update())
+  if index(['busy', 'parked', 'follow-up'], get(a:cell, 'status', '')) >= 0
+    let l:update.status = 'initial'
+  endif
+  if get(get(a:cell, 'owner', {}), 'kind', '') ==# 'handler'
+    let l:update.client_id = ''
+    let l:update.owner = {'kind': ''}
+  endif
+  return l:update
+endfunction
+
 function! s:release_current_cell_client_for_execute(bufnr, session, cell) abort
   if empty(a:cell) || get(a:cell, 'client_bufnr', -1) < 0
     return a:cell
@@ -310,7 +322,7 @@ function! s:maybe_finalize_closed_cell(bufnr, cell) abort
   if get(a:cell, 'client_state', '') !=# 'shutdown'
     return a:cell
   endif
-  return s:update_cell(a:bufnr, a:cell.id, s:cell_close_reset_update())
+  return s:update_cell(a:bufnr, a:cell.id, s:cell_close_final_update(a:cell))
 endfunction
 
 function! s:refresh_stale_cells(bufnr) abort
@@ -967,6 +979,11 @@ function! jusi#session#callback_cell(cell_id, update, ...) abort
   let l:idx = empty(l:state) ? -1 : s:find_cell_index(l:state, a:cell_id)
   if l:idx >= 0
     let l:current_cell = l:state.cells[l:idx]
+    if get(get(l:current_cell, 'owner', {}), 'kind', '') ==# 'handler'
+          \ && get(l:update, 'client_state', get(l:current_cell, 'client_state', '')) ==# 'shutdown'
+          \ && get(l:update, 'client_bufnr', get(l:current_cell, 'client_bufnr', -1)) < 0
+      let l:update = extend(copy(s:cell_close_final_update(l:current_cell)), l:update, 'force')
+    endif
     if get(l:current_cell, 'client_bufnr', -1) > 0
       let l:validation = jusi#client#validate_attached_binding(
             \ l:bufnr,
@@ -1127,6 +1144,14 @@ function! jusi#session#callback_handler_message(payload, ...) abort
       continue
     endif
     let l:message_type = get(l:payload, 'message_type', '')
+    if l:message_type ==# 'complete_result'
+      call jusi#session#apply_handler_completion_result(
+            \ l:bufnr,
+            \ l:cell.id,
+            \ get(l:payload, 'client_id', ''),
+            \ get(l:payload, 'handler_id', ''),
+            \ get(l:payload, 'payload', {}))
+    endif
     let l:handler_update = {
           \ 'id': get(l:payload, 'handler_id', ''),
           \ 'last_message_type': l:message_type,
@@ -1187,6 +1212,69 @@ function! jusi#session#send_handler_message(client_id, handler_id, message_type,
         \ }, get(l:response, 'error', 'Failed to send handler message'))
 endfunction
 
+function! jusi#session#apply_handler_completion_result(bufnr, cell_id, client_id, handler_id, payload) abort
+  let l:bufnr = s:normalize_bufnr(a:bufnr)
+  let l:items = get(a:payload, 'items', [])
+  if type(l:items) != type([])
+    let l:items = []
+  endif
+
+  let l:vim_items = []
+  for l:item in l:items
+    if type(l:item) != type({})
+      continue
+    endif
+    let l:value = get(l:item, 'value', '')
+    if empty(l:value)
+      continue
+    endif
+    call add(l:vim_items, {
+          \ 'word': l:value,
+          \ 'abbr': get(l:item, 'label', l:value),
+          \ 'menu': get(l:item, 'detail', ''),
+          \ 'info': get(l:item, 'documentation', ''),
+          \ 'kind': get(l:item, 'kind', ''),
+          \ })
+  endfor
+
+  call setbufvar(l:bufnr, 'jusi_handler_completion_result', {
+        \ 'cell_id': a:cell_id,
+        \ 'client_id': a:client_id,
+        \ 'handler_id': a:handler_id,
+        \ 'items': copy(l:vim_items),
+        \ })
+
+  let l:request_ctx = getbufvar(l:bufnr, 'jusi_handler_completion_request', {})
+
+  if bufnr('%') != l:bufnr || mode() !~# '^[iR]'
+    return copy(l:vim_items)
+  endif
+
+  let l:cell = jusi#notebook#cell_at_line(l:bufnr, line('.'))
+  if empty(l:cell)
+        \ || get(l:cell, 'id', 0) != a:cell_id
+        \ || get(l:cell, 'client_id', '') !=# a:client_id
+        \ || get(get(l:cell, 'handler', {}), 'id', '') !=# a:handler_id
+    return copy(l:vim_items)
+  endif
+
+  let l:startcol = get(l:request_ctx, 'startcol', 0)
+  if get(l:request_ctx, 'cell_id', 0) != a:cell_id
+        \ || get(l:request_ctx, 'client_id', '') !=# a:client_id
+        \ || get(l:request_ctx, 'handler_id', '') !=# a:handler_id
+        \ || l:startcol < 1
+    let l:current_word = expand('<cword>')
+    let l:startcol = col('.') - len(l:current_word)
+    if l:startcol < 1
+      let l:startcol = col('.')
+    endif
+  endif
+  if !empty(l:vim_items)
+    call complete(l:startcol, l:vim_items)
+  endif
+  return copy(l:vim_items)
+endfunction
+
 function! s:current_handler_context(bufnr) abort
   let l:session = jusi#session#state(a:bufnr)
   if get(l:session, 'state', 'idle') !=# 'connected'
@@ -1238,6 +1326,89 @@ function! jusi#session#send_handler_input_current(...) abort
         \ get(l:ctx, 'handler_id', ''),
         \ 'send_input',
         \ {'text': l:text},
+        \ l:bufnr)
+endfunction
+
+function! s:cell_cursor_row(cell) abort
+  return max([0, line('.') - get(a:cell, 'start', 0)])
+endfunction
+
+function! s:line_prefix_before_cursor() abort
+  let l:line_text = getline('.')
+  let l:cursor_col = col('.')
+  if l:cursor_col <= 1
+    return ''
+  endif
+  return strpart(l:line_text, 0, l:cursor_col - 1)
+endfunction
+
+function! s:current_word_before_cursor() abort
+  return matchstr(s:line_prefix_before_cursor(), '\k\+$')
+endfunction
+
+function! s:completion_startcol() abort
+  let l:current_word = s:current_word_before_cursor()
+  let l:startcol = col('.') - len(l:current_word)
+  return l:startcol < 1 ? col('.') : l:startcol
+endfunction
+
+function! s:handler_followup_payload(bufnr, cell) abort
+  let l:cursor_row = s:cell_cursor_row(a:cell)
+  let l:line_text = getline('.')
+  return {
+        \ 'cell_text': join(jusi#notebook#cell_main_lines(a:cell), "\n"),
+        \ 'cursor_row': l:cursor_row,
+        \ 'cursor_col': col('.'),
+        \ 'line_text': l:line_text,
+        \ 'current_word': s:current_word_before_cursor(),
+        \ }
+endfunction
+
+function! jusi#session#send_handler_followup_current() abort
+  let l:bufnr = s:normalize_bufnr(bufnr('%'))
+  if !s:require_notebook_buffer(l:bufnr, 'send handler followup')
+    return {}
+  endif
+
+  let l:ctx = s:current_handler_context(l:bufnr)
+  if !get(l:ctx, 'ok', 0)
+    return s:fail_session(l:bufnr, {'last_action': 'handler_message'}, get(l:ctx, 'error', 'Cannot send handler followup'))
+  endif
+
+  let l:cell = l:ctx.cell
+  return jusi#session#send_handler_message(
+        \ get(l:cell, 'client_id', ''),
+        \ get(l:ctx, 'handler_id', ''),
+        \ 'followup',
+        \ s:handler_followup_payload(l:bufnr, l:cell),
+        \ l:bufnr)
+endfunction
+
+function! jusi#session#request_handler_completion_current() abort
+  let l:bufnr = s:normalize_bufnr(bufnr('%'))
+  if !s:require_notebook_buffer(l:bufnr, 'request handler completion')
+    return {}
+  endif
+
+  let l:ctx = s:current_handler_context(l:bufnr)
+  if !get(l:ctx, 'ok', 0)
+    return s:fail_session(l:bufnr, {'last_action': 'handler_message'}, get(l:ctx, 'error', 'Cannot request handler completion'))
+  endif
+
+  let l:cell = l:ctx.cell
+  let l:payload = s:handler_followup_payload(l:bufnr, l:cell)
+  call setbufvar(l:bufnr, 'jusi_handler_completion_request', {
+        \ 'cell_id': get(l:cell, 'id', 0),
+        \ 'client_id': get(l:cell, 'client_id', ''),
+        \ 'handler_id': get(l:ctx, 'handler_id', ''),
+        \ 'current_word': get(l:payload, 'current_word', ''),
+        \ 'startcol': s:completion_startcol(),
+        \ })
+  return jusi#session#send_handler_message(
+        \ get(l:cell, 'client_id', ''),
+        \ get(l:ctx, 'handler_id', ''),
+        \ 'complete',
+        \ l:payload,
         \ l:bufnr)
 endfunction
 
@@ -1502,6 +1673,10 @@ function! jusi#session#execute_current() abort
   if empty(l:cell)
     return s:fail_session(l:bufnr, {'last_action': 'execute'}, 'Cannot execute without an active cell')
   endif
+  if get(l:cell, 'status', '') ==# 'follow-up'
+        \ && get(get(l:cell, 'owner', {}), 'kind', '') ==# 'handler'
+    return jusi#session#send_handler_followup_current()
+  endif
   let l:previous_cell = copy(l:cell)
 
   call s:update_session(l:bufnr, {
@@ -1712,7 +1887,7 @@ function! jusi#session#close_current_client() abort
           \ 'last_error': '',
           \ 'request': {'cell_id': l:cell.id},
           \ })
-    return s:update_cell(l:bufnr, l:cell.id, s:cell_close_reset_update())
+    return s:update_cell(l:bufnr, l:cell.id, s:cell_close_final_update(l:cell))
   endif
 
   call s:update_session(l:bufnr, {
@@ -1737,7 +1912,7 @@ function! jusi#session#close_current_client() abort
       if l:client_bufnr > 0
         call jusi#client#detach_buffer(l:client_bufnr)
       endif
-      let l:update = s:cell_close_reset_update()
+      let l:update = s:cell_close_final_update(l:cell)
       let l:update._preserve_local_buffer = l:client_bufnr > 0 ? 1 : 0
       return s:update_cell(l:bufnr, l:cell.id, l:update)
     endif

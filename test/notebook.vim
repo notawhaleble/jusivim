@@ -1722,11 +1722,11 @@ function! Test_close_client_uses_shutdown_client_for_followup_cells() abort
     let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
     call jusi#session#close_current_client()
     call assert_false(bufexists(l:client))
-    call assert_equal('follow-up', b:jusi_nb.cells[0].status)
-    call assert_equal('client-1', b:jusi_nb.cells[0].client_id)
+    call assert_equal('initial', b:jusi_nb.cells[0].status)
+    call assert_equal('', b:jusi_nb.cells[0].client_id)
     call assert_equal('shutdown', b:jusi_nb.cells[0].client_state)
     call assert_equal(-1, b:jusi_nb.cells[0].client_bufnr)
-    call assert_equal('handler', get(get(b:jusi_nb.cells[0], 'owner', {}), 'kind', ''))
+    call assert_equal('', get(get(b:jusi_nb.cells[0], 'owner', {}), 'kind', ''))
     call assert_equal(0, get(b:jusi_nb.cells[0], 'close_requested', 0))
   finally
     let g:jusi_session_adapter = l:save_adapter
@@ -1758,10 +1758,11 @@ function! Test_close_client_transport_response_closes_local_followup_buffer() ab
     call assert_true(bufexists(l:client))
     call assert_equal('detached', getbufvar(l:client, 'jusi_client_role', ''))
     call assert_equal(0, getbufvar(l:client, 'jusi_client_cell_id', -1))
-    call assert_equal('follow-up', b:jusi_nb.cells[0].status)
-    call assert_equal('client-1', b:jusi_nb.cells[0].client_id)
+    call assert_equal('initial', b:jusi_nb.cells[0].status)
+    call assert_equal('', b:jusi_nb.cells[0].client_id)
     call assert_equal('shutdown', b:jusi_nb.cells[0].client_state)
     call assert_equal(-1, b:jusi_nb.cells[0].client_bufnr)
+    call assert_equal('', get(get(b:jusi_nb.cells[0], 'owner', {}), 'kind', ''))
     call assert_equal(0, get(b:jusi_nb.cells[0], 'close_requested', 0))
     call assert_equal('shutdown_client', get(s:last_request_envelope, 'type', ''))
     call assert_equal('user_close', get(s:last_request_envelope, 'payload', {}).reason)
@@ -2532,6 +2533,55 @@ function! Test_handler_message_event_updates_attached_cell_and_client_buffer_sta
   call assert_equal('%%vd pods', get(getbufvar(l:client, 'jusi_handler_last_payload', {}), 'entry', ''))
 endfunction
 
+function! Test_handler_complete_result_event_normalizes_and_stores_completion_items() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select na',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+  let b:jusi_nb.session.id = 'sess-1'
+  let b:jusi_nb.session.state = 'connected'
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  let b:jusi_nb.cells[0].handler = {'id': 'sqlite', 'last_message_type': 'handler_snapshot', 'payload': {}}
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+
+  call jusi#transport#receive(l:notebook, {
+        \ 'kind': 'event',
+        \ 'type': 'handler_message',
+        \ 'version': 1,
+        \ 'payload': {
+        \   'notebook_id': 'nb-' . l:notebook,
+        \   'session_id': 'sess-1',
+        \   'client_id': 'client-1',
+        \   'handler_id': 'sqlite',
+        \   'message_type': 'complete_result',
+        \   'payload': {
+        \     'items': [
+        \       {'value': 'name', 'label': 'name', 'kind': 'column', 'detail': 'users.name', 'documentation': 'column users.name'},
+        \       {'value': 'namespace', 'label': 'namespace', 'kind': 'keyword'},
+        \     ],
+        \   },
+        \   },
+        \ })
+
+  let l:result = getbufvar(l:notebook, 'jusi_handler_completion_result', {})
+  call assert_equal(l:cell_id, get(l:result, 'cell_id', 0))
+  call assert_equal('client-1', get(l:result, 'client_id', ''))
+  call assert_equal('sqlite', get(l:result, 'handler_id', ''))
+  call assert_equal([
+        \ {'word': 'name', 'abbr': 'name', 'menu': 'users.name', 'info': 'column users.name', 'kind': 'column'},
+        \ {'word': 'namespace', 'abbr': 'namespace', 'menu': '', 'info': '', 'kind': 'keyword'},
+        \ ], get(l:result, 'items', []))
+  call assert_equal('complete_result', get(get(b:jusi_nb.cells[0], 'handler', {}), 'last_message_type', ''))
+endfunction
+
 function! Test_handler_message_event_ignores_mismatched_session() abort
   call Test_open_scratch([
         \ '##',
@@ -2636,6 +2686,106 @@ function! Test_send_handler_input_current_builds_send_input_message() abort
     call assert_equal('handler_message', get(s:last_request_envelope, 'type', ''))
     call assert_equal('send_input', get(get(s:last_request_envelope, 'payload', {}), 'message_type', ''))
     call assert_equal('j', get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'text', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_send_handler_followup_current_builds_generic_followup_message() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'request': function('s:test_request_adapter'),
+          \ }
+    let s:last_request_envelope = {}
+    call Test_open_scratch([
+          \ '##',
+          \ '%%sql main',
+          \ 'select 1',
+          \ ])
+    let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
+    call jusi#session#apply({'state': 'connected', 'id': 'sess-1'})
+    let b:jusi_nb.cells[0].status = 'follow-up'
+    let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = l:client
+    let b:jusi_nb.cells[0].handler = {'id': 'sqlite', 'last_message_type': 'handler_snapshot', 'payload': {}}
+    call cursor(3, 4)
+
+    call jusi#session#send_handler_followup_current()
+    call assert_equal('handler_message', get(s:last_request_envelope, 'type', ''))
+    call assert_equal('followup', get(get(s:last_request_envelope, 'payload', {}), 'message_type', ''))
+    call assert_equal("%%sql main\nselect 1", get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'cell_text', ''))
+    call assert_equal(2, get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'cursor_row', -1))
+    call assert_equal(4, get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'cursor_col', -1))
+    call assert_equal('select 1', get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'line_text', ''))
+    call assert_equal('select', get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'current_word', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_request_handler_completion_current_builds_generic_complete_message() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'request': function('s:test_request_adapter'),
+          \ }
+    let s:last_request_envelope = {}
+    call Test_open_scratch([
+          \ '##',
+          \ '%%sql main',
+          \ 'select value from items',
+          \ ])
+    let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
+    call jusi#session#apply({'state': 'connected', 'id': 'sess-1'})
+    let b:jusi_nb.cells[0].status = 'follow-up'
+    let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = l:client
+    let b:jusi_nb.cells[0].handler = {'id': 'sqlite', 'last_message_type': 'handler_snapshot', 'payload': {}}
+    call cursor(3, 10)
+
+    call jusi#session#request_handler_completion_current()
+    call assert_equal('handler_message', get(s:last_request_envelope, 'type', ''))
+    call assert_equal('complete', get(get(s:last_request_envelope, 'payload', {}), 'message_type', ''))
+    call assert_equal("%%sql main\nselect value from items", get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'cell_text', ''))
+    call assert_equal(2, get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'cursor_row', -1))
+    call assert_equal(10, get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'cursor_col', -1))
+    call assert_equal('select value from items', get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'line_text', ''))
+    call assert_equal('value', get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'current_word', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_execute_current_uses_handler_followup_for_handler_owned_followup_cells() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'request': function('s:test_request_adapter'),
+          \ }
+    let s:last_request_envelope = {}
+    call Test_open_scratch([
+          \ '##',
+          \ '%%sql main',
+          \ 'select 1',
+          \ ])
+    let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
+    call jusi#session#apply({'state': 'connected', 'id': 'sess-1'})
+    let b:jusi_nb.cells[0].status = 'follow-up'
+    let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = l:client
+    let b:jusi_nb.cells[0].handler = {'id': 'sqlite', 'last_message_type': 'handler_snapshot', 'payload': {}}
+    call cursor(3, 1)
+
+    call jusi#session#execute_current()
+    call assert_equal('handler_message', get(s:last_request_envelope, 'type', ''))
+    call assert_equal('followup', get(get(s:last_request_envelope, 'payload', {}), 'message_type', ''))
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
@@ -2782,6 +2932,42 @@ function! Test_client_refresh_hides_transcript_noise_in_display_buffer() abort
     call jusi#client#refresh_attached_view(l:notebook, l:cell_id, 'client-1', l:client)
 
     call assert_equal(['lalala'], getbufline(l:client, 1, '$'))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_client_refresh_formats_structured_error_events_in_display_buffer() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {'inspect_client': function('s:test_session_adapter_inspect_client')}
+    let s:inspect_client_response = {
+          \ 'revision': 1,
+          \ 'title': 'cell 1: error',
+          \ 'lines': [
+          \   {'type': 'error', 'message': 'sqlite database is locked'},
+          \ ],
+          \ 'execution_status': 'done',
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ '%%sql main',
+          \ 'select 1',
+          \ ])
+    let l:notebook = bufnr('%')
+    let l:cell_id = b:jusi_nb.cells[0].id
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.state = 'connected'
+    let b:jusi_nb.cells[0].status = 'error'
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = l:client
+    call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+
+    call jusi#client#refresh_attached_view(l:notebook, l:cell_id, 'client-1', l:client)
+
+    call assert_equal(['error: sqlite database is locked'], getbufline(l:client, 1, '$'))
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
@@ -3696,7 +3882,7 @@ function! Test_cleanup_shutdowns_clients_with_frontend_unload_reason() abort
   endtry
 endfunction
 
-function! Test_cell_shutdown_event_keeps_status_and_clears_binding() abort
+function! Test_handler_cell_shutdown_event_resets_followup_identity_and_clears_binding() abort
   call Test_open_scratch([
         \ '##',
         \ '%%sql main',
@@ -3708,12 +3894,15 @@ function! Test_cell_shutdown_event_keeps_status_and_clears_binding() abort
   let b:jusi_nb.cells[0].client_id = 'client-1'
   let b:jusi_nb.cells[0].client_state = 'active'
   let b:jusi_nb.cells[0].client_bufnr = l:client
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
   call jusi#client#mark_attached_buffer(bufnr('%'), l:cell_id, 'client-1', l:client)
   call jusi#session#callback_cell(l:cell_id, {'client_state': 'shutdown', 'client_bufnr': -1})
   call assert_false(bufexists(l:client))
-  call assert_equal('follow-up', b:jusi_nb.cells[0].status)
+  call assert_equal('initial', b:jusi_nb.cells[0].status)
+  call assert_equal('', b:jusi_nb.cells[0].client_id)
   call assert_equal('shutdown', b:jusi_nb.cells[0].client_state)
   call assert_equal(-1, b:jusi_nb.cells[0].client_bufnr)
+  call assert_equal('', get(get(b:jusi_nb.cells[0], 'owner', {}), 'kind', ''))
 endfunction
 
 function! Test_execute_healthcheck_shutdowns_stale_attached_client() abort
