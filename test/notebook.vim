@@ -2791,6 +2791,28 @@ function! Test_execute_current_uses_handler_followup_for_handler_owned_followup_
   endtry
 endfunction
 
+function! Test_execute_followup_context_error_does_not_fail_session() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ ])
+  call jusi#session#apply({'state': 'connected', 'id': 'sess-1'})
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'shutdown'
+  let b:jusi_nb.cells[0].client_bufnr = -1
+  let b:jusi_nb.cells[0].handler = {'id': '', 'last_message_type': '', 'payload': {}, 'snapshot': {}}
+  call cursor(3, 1)
+
+  call jusi#session#execute_current()
+
+  call assert_equal('connected', b:jusi_nb.session.state)
+  call assert_equal('handler_message', get(b:jusi_nb.session, 'last_action', ''))
+  call assert_match('Current cell has no tracked handler id', get(b:jusi_nb.session, 'last_error', ''))
+endfunction
+
 function! Test_cell_callback_schedules_client_view_refresh() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   try

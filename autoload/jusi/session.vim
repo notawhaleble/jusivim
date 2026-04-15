@@ -1316,7 +1316,7 @@ function! jusi#session#send_handler_input_current(...) abort
 
   let l:ctx = s:current_handler_context(l:bufnr)
   if !get(l:ctx, 'ok', 0)
-    return s:fail_session(l:bufnr, {'last_action': 'handler_message'}, get(l:ctx, 'error', 'Cannot send handler input'))
+    return s:reject_action(l:bufnr, {'last_action': 'handler_message'}, get(l:ctx, 'error', 'Cannot send handler input'))
   endif
 
   let l:text = a:0 >= 1 && !empty(a:1) ? a:1 : input('handler> ')
@@ -1372,7 +1372,7 @@ function! jusi#session#send_handler_followup_current() abort
 
   let l:ctx = s:current_handler_context(l:bufnr)
   if !get(l:ctx, 'ok', 0)
-    return s:fail_session(l:bufnr, {'last_action': 'handler_message'}, get(l:ctx, 'error', 'Cannot send handler followup'))
+    return s:reject_action(l:bufnr, {'last_action': 'handler_message'}, get(l:ctx, 'error', 'Cannot send handler followup'))
   endif
 
   let l:cell = l:ctx.cell
@@ -1392,7 +1392,7 @@ function! jusi#session#request_handler_completion_current() abort
 
   let l:ctx = s:current_handler_context(l:bufnr)
   if !get(l:ctx, 'ok', 0)
-    return s:fail_session(l:bufnr, {'last_action': 'handler_message'}, get(l:ctx, 'error', 'Cannot request handler completion'))
+    return s:reject_action(l:bufnr, {'last_action': 'handler_message'}, get(l:ctx, 'error', 'Cannot request handler completion'))
   endif
 
   let l:cell = l:ctx.cell
