@@ -137,6 +137,9 @@ augroup jusi_notebook
   au BufUnload *.vipynb call jusi#notebook#cleanup(expand('<abuf>'))
   au BufEnter,InsertEnter,InsertLeave *.vipynb call jusi#cellmode#update_indicator()
   au BufLeave *.vipynb call jusi#cellmode#update_indicator(v:true)
+  if exists('##CompleteDone')
+    au CompleteDone *.vipynb call jusi#session#handle_completion_done(expand('<abuf>'))
+  endif
   if exists('##ModeChanged')
     au ModeChanged *.vipynb call jusi#cellmode#update_indicator()
   endif

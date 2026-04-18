@@ -1151,6 +1151,13 @@ function! jusi#session#callback_handler_message(payload, ...) abort
             \ get(l:payload, 'client_id', ''),
             \ get(l:payload, 'handler_id', ''),
             \ get(l:payload, 'payload', {}))
+    elseif l:message_type ==# 'action_request'
+      call s:handle_handler_action_request(
+            \ l:bufnr,
+            \ l:cell.id,
+            \ get(l:payload, 'client_id', ''),
+            \ get(l:payload, 'handler_id', ''),
+            \ get(l:payload, 'payload', {}))
     endif
     let l:handler_update = {
           \ 'id': get(l:payload, 'handler_id', ''),
@@ -1182,6 +1189,71 @@ function! jusi#session#callback_handler_message(payload, ...) abort
   endfor
 
   return l:session
+endfunction
+
+function! s:open_path_command(open_in) abort
+  let l:open_in = tolower(type(a:open_in) == type('') ? a:open_in : '')
+  if empty(l:open_in)
+    return 'belowright split'
+  endif
+  let l:map = {
+        \ 'current': 'edit',
+        \ 'edit': 'edit',
+        \ 'split': 'belowright split',
+        \ 'hsplit': 'belowright split',
+        \ 'vsplit': 'vertical belowright split',
+        \ 'tab': 'tabedit',
+        \ 'tabedit': 'tabedit',
+        \ }
+  return get(l:map, l:open_in, '')
+endfunction
+
+function! s:open_path_action(payload) abort
+  if type(a:payload) != type({})
+    return 0
+  endif
+  let l:path = get(a:payload, 'path', '')
+  if empty(l:path)
+    return 0
+  endif
+  let l:cmd = s:open_path_command(get(a:payload, 'open_in', ''))
+  if empty(l:cmd)
+    return 0
+  endif
+
+  execute 'keepalt ' . l:cmd . ' ' . fnameescape(l:path)
+
+  let l:line = str2nr(get(a:payload, 'line', 1))
+  let l:column = str2nr(get(a:payload, 'column', 1))
+  if l:line > 0
+    call cursor(l:line, l:column > 0 ? l:column : 1)
+  endif
+  return 1
+endfunction
+
+function! s:handle_handler_action_request(bufnr, cell_id, client_id, handler_id, payload) abort
+  if type(a:payload) != type({})
+    return 0
+  endif
+  let l:action_type = get(a:payload, 'action_type', '')
+  let l:action_payload = get(a:payload, 'payload', {})
+  if l:action_type ==# 'open_path'
+    call s:debug_log(a:bufnr, 'handler-action-open-path', {
+          \ 'cell_id': a:cell_id,
+          \ 'client_id': a:client_id,
+          \ 'handler_id': a:handler_id,
+          \ 'payload': l:action_payload,
+          \ })
+    return s:open_path_action(l:action_payload)
+  endif
+  call s:debug_log(a:bufnr, 'handler-action-ignored', {
+        \ 'cell_id': a:cell_id,
+        \ 'client_id': a:client_id,
+        \ 'handler_id': a:handler_id,
+        \ 'action_type': l:action_type,
+        \ 'payload': l:action_payload,
+        \ })
+  return 0
 endfunction
 
 function! jusi#session#send_handler_message(client_id, handler_id, message_type, payload, ...) abort
@@ -1220,6 +1292,7 @@ function! jusi#session#apply_handler_completion_result(bufnr, cell_id, client_id
   endif
 
   let l:vim_items = []
+  let l:preview_startcol = -1
   for l:item in l:items
     if type(l:item) != type({})
       continue
@@ -1228,13 +1301,23 @@ function! jusi#session#apply_handler_completion_result(bufnr, cell_id, client_id
     if empty(l:value)
       continue
     endif
-    call add(l:vim_items, {
+    let l:vim_item = {
           \ 'word': l:value,
           \ 'abbr': get(l:item, 'label', l:value),
           \ 'menu': get(l:item, 'detail', ''),
           \ 'info': get(l:item, 'documentation', ''),
           \ 'kind': get(l:item, 'kind', ''),
-          \ })
+          \ }
+    if has_key(l:item, 'start_col') || has_key(l:item, 'end_col')
+      if l:preview_startcol < 0 && get(l:item, 'start_col', -1) >= 0
+        let l:preview_startcol = get(l:item, 'start_col', -1) + 1
+      endif
+      let l:vim_item.user_data = json_encode({
+            \ 'start_col': get(l:item, 'start_col', -1),
+            \ 'end_col': get(l:item, 'end_col', -1),
+            \ })
+    endif
+    call add(l:vim_items, l:vim_item)
   endfor
 
   call setbufvar(l:bufnr, 'jusi_handler_completion_result', {
@@ -1259,6 +1342,9 @@ function! jusi#session#apply_handler_completion_result(bufnr, cell_id, client_id
   endif
 
   let l:startcol = get(l:request_ctx, 'startcol', 0)
+  if l:preview_startcol > 0
+    let l:startcol = l:preview_startcol
+  endif
   if get(l:request_ctx, 'cell_id', 0) != a:cell_id
         \ || get(l:request_ctx, 'client_id', '') !=# a:client_id
         \ || get(l:request_ctx, 'handler_id', '') !=# a:handler_id
@@ -1306,6 +1392,72 @@ function! s:current_handler_context(bufnr) abort
         \ 'cell': l:cell,
         \ 'handler_id': l:handler_id,
         \ }
+endfunction
+
+function! s:completion_span_from_item(item) abort
+  if type(a:item) != type({})
+    return {}
+  endif
+  let l:user_data = get(a:item, 'user_data', '')
+  if type(l:user_data) != type('') || empty(l:user_data)
+    return {}
+  endif
+  try
+    let l:decoded = json_decode(l:user_data)
+  catch
+    return {}
+  endtry
+  if type(l:decoded) != type({})
+    return {}
+  endif
+  return l:decoded
+endfunction
+
+function! s:apply_completion_span(line_text, word, start_col, end_col) abort
+  let l:start_col = a:start_col
+  let l:end_col = a:end_col
+  if l:start_col < 0 || l:end_col < l:start_col
+    return a:line_text
+  endif
+  return strpart(a:line_text, 0, l:start_col) . a:word . strpart(a:line_text, l:end_col)
+endfunction
+
+function! jusi#session#handle_completion_done(...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if !s:is_notebook_buffer(l:bufnr)
+    return 0
+  endif
+  let l:item = exists('v:completed_item') ? v:completed_item : {}
+  if type(l:item) != type({}) || empty(l:item)
+    return 0
+  endif
+  let l:span = s:completion_span_from_item(l:item)
+  if empty(l:span)
+    return 0
+  endif
+
+  let l:request_ctx = getbufvar(l:bufnr, 'jusi_handler_completion_request', {})
+  if type(l:request_ctx) != type({}) || empty(l:request_ctx)
+    return 0
+  endif
+  let l:start_col = get(l:span, 'start_col', -1)
+  let l:end_col = get(l:span, 'end_col', -1)
+  if l:start_col < 0 || l:end_col < l:start_col
+    return 0
+  endif
+
+  let l:line_nr = get(l:request_ctx, 'line_nr', 0)
+  let l:line_text = get(l:request_ctx, 'line_text', '')
+  if l:line_nr <= 0
+    return 0
+  endif
+
+  let l:new_line = s:apply_completion_span(l:line_text, get(l:item, 'word', ''), l:start_col, l:end_col)
+  call setbufline(l:bufnr, l:line_nr, l:new_line)
+  if bufnr('%') == l:bufnr && line('.') == l:line_nr
+    call cursor(l:line_nr, l:start_col + len(get(l:item, 'word', '')) + 1)
+  endif
+  return 1
 endfunction
 
 function! jusi#session#send_handler_input_current(...) abort
@@ -1403,6 +1555,8 @@ function! jusi#session#request_handler_completion_current() abort
         \ 'handler_id': get(l:ctx, 'handler_id', ''),
         \ 'current_word': get(l:payload, 'current_word', ''),
         \ 'startcol': s:completion_startcol(),
+        \ 'line_nr': line('.'),
+        \ 'line_text': getline('.'),
         \ })
   return jusi#session#send_handler_message(
         \ get(l:cell, 'client_id', ''),

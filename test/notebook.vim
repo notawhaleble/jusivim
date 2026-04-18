@@ -2582,6 +2582,63 @@ function! Test_handler_complete_result_event_normalizes_and_stores_completion_it
   call assert_equal('complete_result', get(get(b:jusi_nb.cells[0], 'handler', {}), 'last_message_type', ''))
 endfunction
 
+function! Test_handler_action_request_open_path_opens_file_at_requested_position() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select * from users',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+  let l:path = tempname() . '-open-path.txt'
+  call writefile([
+        \ 'first line',
+        \ 'second line',
+        \ 'third line',
+        \ ], l:path)
+  let b:jusi_nb.session.id = 'sess-1'
+  let b:jusi_nb.session.state = 'connected'
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  let b:jusi_nb.cells[0].handler = {'id': 'sqlite', 'last_message_type': 'handler_snapshot', 'payload': {}}
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+
+  try
+    call jusi#transport#receive(l:notebook, {
+          \ 'kind': 'event',
+          \ 'type': 'handler_message',
+          \ 'version': 1,
+          \ 'payload': {
+          \   'notebook_id': 'nb-' . l:notebook,
+          \   'session_id': 'sess-1',
+          \   'client_id': 'client-1',
+          \   'handler_id': 'sqlite',
+          \   'message_type': 'action_request',
+          \   'payload': {
+          \     'action_type': 'open_path',
+          \     'payload': {
+          \       'path': l:path,
+          \       'line': 2,
+          \       'column': 4,
+          \     },
+          \   },
+          \ })
+
+    call assert_equal(fnamemodify(l:path, ':p'), expand('%:p'))
+    call assert_equal(2, line('.'))
+    call assert_equal(4, col('.'))
+    call assert_equal('action_request', get(get(b:jusi_nb.cells[0], 'handler', {}), 'last_message_type', ''))
+    call assert_equal('open_path', get(get(get(b:jusi_nb.cells[0], 'handler', {}), 'payload', {}), 'action_type', ''))
+  finally
+    silent! only
+    call delete(l:path)
+  endtry
+endfunction
+
 function! Test_handler_message_event_ignores_mismatched_session() abort
   call Test_open_scratch([
         \ '##',
