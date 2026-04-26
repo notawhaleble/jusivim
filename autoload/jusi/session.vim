@@ -57,6 +57,18 @@ function! s:terminal_debug_log(message, payload) abort
   call writefile([join(l:parts, ' | ')], l:path, 'a')
 endfunction
 
+function! s:apply_presentation_update(update) abort
+  let l:update = type(a:update) == type({}) ? copy(a:update) : {}
+  let l:presentation = get(l:update, 'presentation', {})
+  if type(l:presentation) == type({})
+    let l:syntax = get(l:presentation, 'syntax', '')
+    if type(l:syntax) == type('') && !empty(l:syntax)
+      let l:update.syntax = l:syntax
+    endif
+  endif
+  return l:update
+endfunction
+
 function! s:is_notebook_buffer(bufnr) abort
   return bufexists(a:bufnr) && getbufvar(a:bufnr, '&filetype') ==# 'jusinb'
 endfunction
@@ -130,6 +142,7 @@ function! s:update_cell(bufnr, cell_id, update) abort
   endif
 
   let l:previous_status = get(l:state.cells[l:idx], 'status', '')
+  let l:previous_syntax = get(l:state.cells[l:idx], 'syntax', '')
   let l:previous_bufnr = get(l:state.cells[l:idx], 'client_bufnr', -1)
   let l:update = copy(a:update)
   let l:client_effects_changed = has_key(l:update, 'client_bufnr')
@@ -194,6 +207,9 @@ function! s:update_cell(bufnr, cell_id, update) abort
   if get(l:state.cells[l:idx], 'status', '') !=# l:previous_status
     call s:update_cell_sign(a:bufnr, l:state.cells[l:idx])
   endif
+  if get(l:state.cells[l:idx], 'syntax', '') !=# l:previous_syntax
+    call jusi#syntax#sync(a:bufnr, l:state.cells)
+  endif
   return l:state.cells[l:idx]
 endfunction
 
@@ -212,6 +228,7 @@ function! s:cell_runtime_reset_update(cell) abort
   let l:update = extend(copy(s:cell_close_reset_update()), {
         \ 'client_id': '',
         \ 'handler': {'id': '', 'last_message_type': '', 'payload': {}, 'snapshot': {}},
+        \ 'presentation': {},
         \ 'owner': {'kind': ''},
         \ })
   let l:status = get(a:cell, 'status', 'initial')
@@ -897,6 +914,7 @@ function! jusi#session#default_state() abort
         \ 'last_error_code': '',
         \ 'last_action': '',
         \ 'request': {},
+        \ 'plugin_specs': {},
         \ }
 endfunction
 
@@ -941,7 +959,11 @@ function! jusi#session#apply(...) abort
     let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
     let l:update = a:0 >= 2 ? a:2 : {}
   endif
-  return s:update_session(l:bufnr, l:update)
+  let l:state = s:update_session(l:bufnr, l:update)
+  if has_key(l:update, 'plugin_specs')
+    call jusi#notebook#refresh_plugin_presentation(l:bufnr)
+  endif
+  return l:state
 endfunction
 
 function! jusi#session#apply_cell(cell_id, update, ...) abort
@@ -963,12 +985,15 @@ function! jusi#session#callback_session(update, ...) abort
   else
     call s:sync_attach_registry(l:bufnr, l:next_session)
   endif
+  if has_key(a:update, 'plugin_specs')
+    call jusi#notebook#refresh_plugin_presentation(l:bufnr)
+  endif
   return l:state
 endfunction
 
 function! jusi#session#callback_cell(cell_id, update, ...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
-  let l:update = type(a:update) == type({}) ? copy(a:update) : {}
+  let l:update = s:apply_presentation_update(a:update)
   let l:session = jusi#session#state(l:bufnr)
   call s:debug_log(l:bufnr, 'callback-cell-begin', a:cell_id, l:update, l:session)
   if !s:accept_runtime_callbacks(l:session)

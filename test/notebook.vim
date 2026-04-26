@@ -19,7 +19,7 @@ function! Test_parser_detects_cells_and_magic() abort
   call assert_equal(1, l:parsed.cells[0].id)
   call assert_equal(2, l:parsed.cells[1].id)
   call assert_equal('python', l:parsed.cells[0].syntax)
-  call assert_equal('sql', l:parsed.cells[1].syntax)
+  call assert_equal('python', l:parsed.cells[1].syntax)
   call assert_equal(2, l:parsed.cells[0].body_end)
   call assert_equal(0, l:parsed.cells[1].history_start)
 endfunction
@@ -648,6 +648,7 @@ function! Test_default_session_state_is_initialized_for_notebook() abort
   call assert_equal('', get(l:session, 'last_error_code', ''))
   call assert_equal('', get(l:session.target, 'source', ''))
   call assert_equal('', get(l:session.target, 'alias', ''))
+  call assert_equal({}, get(l:session, 'plugin_specs', {}))
   call assert_false(has_key(l:session, 'prepared'))
 endfunction
 
@@ -4274,7 +4275,113 @@ function! Test_syntax_updates_after_cell_type_change() abort
   call append(2, 'select 1')
   call jusi#notebook#rebuild()
   call assert_equal('jusiMagicHeader', Test_syn_name(2, 1))
+  call assert_equal('python', b:jusi_nb.cells[0].syntax)
+endfunction
+
+function! Test_builtin_plugin_metadata_maps_vd_to_python_dialect() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd',
+        \ '[1, 2, 3]',
+        \ ])
+  call assert_equal('magic', b:jusi_nb.cells[0].kind)
+  call assert_equal('vd', b:jusi_nb.cells[0].magic)
+  call assert_equal('python', b:jusi_nb.cells[0].syntax)
+
+  call cursor(3, 1)
+  call jusi#indent#refresh(bufnr('%'))
+  call assert_equal('jusi#indent#expr(v:lnum)', &l:indentexpr)
+  call assert_match('python#GetIndent', get(b:, 'jusi_indent_delegate_expr', ''))
+  call assert_equal('python', get(b:, 'jusi_indent_dialect', ''))
+  call assert_equal(1, &l:expandtab)
+  call assert_equal(4, &l:tabstop)
+  call assert_equal(4, &l:softtabstop)
+  call assert_equal(4, shiftwidth())
+endfunction
+
+function! Test_plugin_specs_declare_magic_syntax_and_indent_without_ftplugin() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%acme',
+        \ 'if true; then',
+        \ 'echo ok',
+        \ 'fi',
+        \ ])
+  call jusi#session#apply({'plugin_specs': {
+        \ 'acme': {'syntax': 'sh', 'indent': 'sh'},
+        \ }})
+  call assert_equal('magic', b:jusi_nb.cells[0].kind)
+  call assert_equal('acme', b:jusi_nb.cells[0].magic)
+  call assert_equal('sh', b:jusi_nb.cells[0].syntax)
+
+  call cursor(3, 1)
+  call jusi#indent#refresh(bufnr('%'))
+  call assert_equal('jusi#indent#expr(v:lnum)', &l:indentexpr)
+  call assert_match('GetShIndent', get(b:, 'jusi_indent_delegate_expr', ''))
+  call assert_equal('sh', get(b:, 'jusi_indent_dialect', ''))
+endfunction
+
+function! Test_session_plugin_specs_callback_refreshes_existing_magic_cells() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql',
+        \ 'select 1',
+        \ ])
+  let b:jusi_nb.session.id = 'sess-1'
+  let b:jusi_nb.session.state = 'connected'
+  call assert_equal('python', b:jusi_nb.cells[0].syntax)
+
+  call jusi#session#callback_session({
+        \ 'state': 'connected',
+        \ 'id': 'sess-1',
+        \ 'plugin_specs': {'sql': {'syntax': 'sql', 'indent': 'sql'}},
+        \ })
+
   call assert_equal('sql', b:jusi_nb.cells[0].syntax)
+  call assert_equal('sql', get(get(b:jusi_nb.session.plugin_specs, 'sql', {}), 'syntax', ''))
+endfunction
+
+function! Test_cell_presentation_overrides_session_plugin_specs() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql',
+        \ 'select 1',
+        \ ])
+  call jusi#session#apply({'state': 'connected', 'id': 'sess-1'})
+  call jusi#session#apply({'plugin_specs': {'sql': {'syntax': 'sql', 'indent': 'sql'}}})
+  let l:cell_id = b:jusi_nb.cells[0].id
+  call assert_equal('sql', b:jusi_nb.cells[0].syntax)
+
+  call jusi#session#callback_cell(l:cell_id, {
+        \ 'id': l:cell_id,
+        \ 'status': 'follow-up',
+        \ 'presentation': {'syntax': 'sh', 'indent': 'sh'},
+        \ })
+
+  call assert_equal('sh', b:jusi_nb.cells[0].syntax)
+  call assert_equal({'syntax': 'sh', 'indent': 'sh'}, get(b:jusi_nb.cells[0], 'presentation', {}))
+  call cursor(3, 1)
+  call jusi#indent#refresh(bufnr('%'))
+  call assert_equal('jusi#indent#expr(v:lnum)', &l:indentexpr)
+  call assert_match('GetShIndent', get(b:, 'jusi_indent_delegate_expr', ''))
+  call assert_equal('sh', get(b:, 'jusi_indent_dialect', ''))
+endfunction
+
+function! Test_unknown_magic_defaults_to_python_syntax_and_indent() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%unknown_magic',
+        \ 'some plugin text',
+        \ ])
+  call assert_equal('magic', b:jusi_nb.cells[0].kind)
+  call assert_equal('unknown_magic', b:jusi_nb.cells[0].magic)
+  call assert_equal('python', b:jusi_nb.cells[0].syntax)
+
+  call cursor(3, 1)
+  call jusi#indent#refresh(bufnr('%'))
+  call assert_equal('jusi#indent#expr(v:lnum)', &l:indentexpr)
+  call assert_match('python#GetIndent', get(b:, 'jusi_indent_delegate_expr', ''))
+  call assert_equal('python', get(b:, 'jusi_indent_dialect', ''))
 endfunction
 
 function! Test_visible_cell_body_gets_rich_syntax() abort
@@ -4315,6 +4422,7 @@ function! Test_rich_syntax_covers_partially_visible_cell() abort
           \ '##',
           \ 'print("tail")',
           \ ])
+    call jusi#session#apply({'plugin_specs': {'sql': {'syntax': 'sql'}}})
     call cursor(5, 1)
     normal! zt
     call jusi#syntax#schedule(bufnr('%'))
@@ -4334,6 +4442,7 @@ function! Test_rich_syntax_survives_jump_into_long_cell() abort
   call add(l:lines, 'print("tail")')
 
   call Test_open_scratch(l:lines)
+  call jusi#session#apply({'plugin_specs': {'sql': {'syntax': 'sql'}}})
   call cursor(1400, 1)
   call jusi#syntax#schedule(bufnr('%'))
   call assert_notequal('', Test_syn_name(1400, 1))
@@ -4353,7 +4462,8 @@ function! Test_default_cell_uses_python_indent() abort
         \ ])
   call cursor(2, 1)
   call jusi#indent#refresh(bufnr('%'))
-  call assert_match('python', &l:indentexpr)
+  call assert_equal('jusi#indent#expr(v:lnum)', &l:indentexpr)
+  call assert_match('python#GetIndent', get(b:, 'jusi_indent_delegate_expr', ''))
   call assert_equal('python', get(b:, 'jusi_indent_dialect', ''))
 endfunction
 
@@ -4368,34 +4478,144 @@ function! Test_magic_cell_updates_indent_dialect() abort
         \ 'echo ok',
         \ 'fi',
         \ ])
+  call jusi#session#apply({'plugin_specs': {'sh': {'syntax': 'sh', 'indent': 'sh'}}})
   call cursor(2, 1)
   call jusi#indent#refresh(bufnr('%'))
-  call assert_match('python', &l:indentexpr)
+  call assert_equal('jusi#indent#expr(v:lnum)', &l:indentexpr)
+  call assert_match('python#GetIndent', get(b:, 'jusi_indent_delegate_expr', ''))
 
   call cursor(6, 1)
   call jusi#indent#refresh(bufnr('%'))
-  call assert_match('GetShIndent', &l:indentexpr)
+  call assert_equal('jusi#indent#expr(v:lnum)', &l:indentexpr)
+  call assert_match('GetShIndent', get(b:, 'jusi_indent_delegate_expr', ''))
   call assert_equal('sh', get(b:, 'jusi_indent_dialect', ''))
 endfunction
 
-function! Test_magic_indent_map_overrides_builtin_lookup() abort
-  let l:save_map = copy(get(g:, 'jusi_indent_map', {}))
-  try
-    let g:jusi_indent_map = {'shell': 'indent/sh.vim'}
-    call Test_open_scratch([
-          \ '##',
-          \ '%%shell',
-          \ 'if true; then',
-          \ 'echo ok',
-          \ 'fi',
-          \ ])
-    call cursor(3, 1)
-    call jusi#indent#refresh(bufnr('%'))
-    call assert_match('GetShIndent', &l:indentexpr)
-    call assert_equal('shell', get(b:, 'jusi_indent_dialect', ''))
-  finally
-    let g:jusi_indent_map = l:save_map
-  endtry
+function! Test_sql_indent_does_not_keep_python_indentexpr() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'if True:',
+        \ '    pass',
+        \ '##',
+        \ '%%sql',
+        \ 'select * from (',
+        \ ])
+  call jusi#session#apply({'plugin_specs': {'sql': {'syntax': 'sql', 'indent': 'sql'}}})
+  call cursor(2, 1)
+  call jusi#indent#refresh(bufnr('%'))
+  call assert_equal('jusi#indent#expr(v:lnum)', &l:indentexpr)
+  call assert_match('python#GetIndent', get(b:, 'jusi_indent_delegate_expr', ''))
+
+  call cursor(6, 1)
+  call jusi#indent#refresh(bufnr('%'))
+  call assert_equal('sql', get(b:, 'jusi_indent_dialect', ''))
+  call assert_equal('jusi#indent#expr(v:lnum)', &l:indentexpr)
+  call assert_notequal('python#GetIndent(v:lnum)', get(b:, 'jusi_indent_delegate_expr', ''))
+endfunction
+
+function! Test_python_indent_returns_after_sql_cell() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'if True:',
+        \ '    pass',
+        \ '##',
+        \ '%%sql',
+        \ 'select * from (',
+        \ ])
+  call jusi#session#apply({'plugin_specs': {'sql': {'syntax': 'sql', 'indent': 'sql'}}})
+  call cursor(6, 1)
+  call jusi#indent#refresh(bufnr('%'))
+  call assert_equal('sql', get(b:, 'jusi_indent_dialect', ''))
+  call assert_notequal('python#GetIndent(v:lnum)', get(b:, 'jusi_indent_delegate_expr', ''))
+
+  call cursor(2, 1)
+  call jusi#indent#refresh(bufnr('%'))
+  call assert_equal('python', get(b:, 'jusi_indent_dialect', ''))
+  call assert_equal('python', get(b:, 'jusi_indent_loaded_dialect', ''))
+  call assert_equal('jusi#indent#expr(v:lnum)', &l:indentexpr)
+  call assert_match('python#GetIndent', get(b:, 'jusi_indent_delegate_expr', ''))
+endfunction
+
+function! Test_notebook_indent_does_not_cross_cell_boundaries() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql',
+        \ 'select * from (',
+        \ '##',
+        \ '',
+        \ 'if True:',
+        \ '',
+        \ ])
+  call jusi#session#apply({'plugin_specs': {'sql': {'syntax': 'sql', 'indent': 'sql'}}})
+
+  call cursor(5, 1)
+  call jusi#indent#refresh(bufnr('%'))
+  call assert_equal('python', get(b:, 'jusi_indent_dialect', ''))
+  call assert_equal('jusi#indent#expr(v:lnum)', &l:indentexpr)
+  call assert_match('python#GetIndent', get(b:, 'jusi_indent_delegate_expr', ''))
+  call assert_equal(4, shiftwidth())
+endfunction
+
+function! Test_indent_refresh_does_not_reload_when_cell_end_changes() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'if True:',
+        \ ])
+  call cursor(2, 1)
+  call jusi#indent#refresh(bufnr('%'))
+  let l:key = get(b:, 'jusi_indent_cell_key', '')
+  let l:did_indent = get(b:, 'did_indent', 0)
+
+  call append(2, '    pass')
+  call jusi#notebook#rebuild(bufnr('%'))
+  call cursor(3, 1)
+  call jusi#indent#refresh(bufnr('%'))
+
+  call assert_equal(l:key, get(b:, 'jusi_indent_cell_key', ''))
+  call assert_equal(l:did_indent, get(b:, 'did_indent', 0))
+  call assert_equal('jusi#indent#expr(v:lnum)', &l:indentexpr)
+  call assert_match('python#GetIndent', get(b:, 'jusi_indent_delegate_expr', ''))
+endfunction
+
+function! Test_insert_enter_uses_active_python_indent() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '',
+        \ ])
+  call cursor(2, 1)
+  call jusi#indent#refresh(bufnr('%'))
+
+  call feedkeys('iif True:' . "\<CR>" . 'pass' . "\<Esc>", 'tx')
+
+  call assert_equal(['##', 'if True:', '    pass'], getline(1, '$'))
+  call assert_equal(4, indent(3))
+  call assert_equal('jusi#indent#expr(v:lnum)', &l:indentexpr)
+  call assert_match('python#GetIndent', get(b:, 'jusi_indent_delegate_expr', ''))
+endfunction
+
+function! Test_python_indent_after_sql_cell_ignores_sql_brackets() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql',
+        \ 'select * from (',
+        \ '##',
+        \ '',
+        \ ])
+  call jusi#session#apply({'plugin_specs': {'sql': {'syntax': 'sql', 'indent': 'sql'}}})
+
+  call cursor(3, 1)
+  call jusi#indent#refresh(bufnr('%'))
+  call assert_equal('sql', get(b:, 'jusi_indent_dialect', ''))
+
+  call cursor(5, 1)
+  call jusi#indent#refresh(bufnr('%'))
+  call feedkeys('iif True:' . "\<CR>" . 'pass' . "\<Esc>", 'tx')
+
+  call assert_equal(['##', '%%sql', 'select * from (', '##', 'if True:', '    pass'], getline(1, '$'))
+  call assert_equal(4, indent(6))
+  call assert_equal('python', get(b:, 'jusi_indent_dialect', ''))
+  call assert_equal('jusi#indent#expr(v:lnum)', &l:indentexpr)
+  call assert_match('python#GetIndent', get(b:, 'jusi_indent_delegate_expr', ''))
 endfunction
 
 function! Test_default_buffer_mappings_exist() abort
@@ -4420,6 +4640,7 @@ function! Test_default_buffer_mappings_exist() abort
   call assert_equal('', maparg('d', 'n'))
   call assert_equal('', maparg('p', 'x'))
   call assert_equal('<C-R>=jusi#focus#toggle()<CR>', maparg("\<C-\\>\<C-\\>", 'i', 0, 1).rhs)
+  call assert_equal('', maparg('<CR>', 'i'))
   call assert_equal('<C-\><C-n>:call jusi#notebook#handle_insert_exit()<Bar>call jusi#cellmode#update_indicator()<CR>', maparg('<C-C>', 'i', 0, 1).rhs)
 endfunction
 

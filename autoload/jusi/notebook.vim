@@ -7,6 +7,7 @@ let s:buffer_cache = {}
 let s:buffer_listener = {}
 let s:bypass_quit_guard = 0
 let s:bypass_wipeout_guard = {}
+let s:parse_bufnr = 0
 
 function! s:perf_enabled() abort
   return get(g:, 'jusi_perf_log', 0) == 1
@@ -218,7 +219,7 @@ endfunction
 
 function! s:default_syntax(kind, magic) abort
   if a:kind ==# 'magic'
-    return a:magic
+    return jusi#plugins#syntax_for_magic(s:parse_bufnr, a:magic)
   endif
   return 'python'
 endfunction
@@ -295,6 +296,7 @@ function! s:init_runtime_cell(parsed, state) abort
   let l:cell.status = 'initial'
   let l:cell.pending_input = {}
   let l:cell.handler = {'id': '', 'last_message_type': '', 'payload': {}, 'snapshot': {}}
+  let l:cell.presentation = {}
   let l:cell.parked_status = ''
   let l:cell.sign_id = 0
   let l:cell.client_id = ''
@@ -312,6 +314,7 @@ function! s:merge_runtime_cell(prev, parsed) abort
   let l:cell.status = get(a:prev, 'status', 'initial')
   let l:cell.pending_input = copy(get(a:prev, 'pending_input', {}))
   let l:cell.handler = copy(get(a:prev, 'handler', {'id': '', 'last_message_type': '', 'payload': {}, 'snapshot': {}}))
+  let l:cell.presentation = copy(get(a:prev, 'presentation', {}))
   let l:cell.parked_status = get(a:prev, 'parked_status', '')
   let l:cell.sign_id = get(a:prev, 'sign_id', 0)
   let l:cell.client_id = get(a:prev, 'client_id', '')
@@ -543,6 +546,7 @@ endfunction
 
 function! jusi#notebook#parse_lines(lines, ...) abort
   let l:prev_state = a:0 >= 1 ? a:1 : {}
+  let s:parse_bufnr = get(l:prev_state, 'bufnr', bufnr('%'))
   let l:prev_cells = get(l:prev_state, 'cells', [])
   let l:next_cell_id = get(l:prev_state, 'next_cell_id', s:max_cell_id(l:prev_cells) + 1)
   let l:state = {
@@ -801,6 +805,36 @@ function! jusi#notebook#rebuild(...) abort
   call jusi#render#sync_signs(l:bufnr, l:state.cells)
   call jusi#syntax#sync(l:bufnr, l:state.cells)
   call s:perf_log('rebuild', l:perf_start, 'buf=' . l:bufnr . ' cells=' . len(l:state.cells))
+  return l:state
+endfunction
+
+function! jusi#notebook#refresh_plugin_presentation(...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if !s:is_notebook_buffer(l:bufnr)
+    return {}
+  endif
+  let l:state = s:ensure_state(l:bufnr)
+  let l:changed = 0
+  for l:idx in range(0, len(get(l:state, 'cells', [])) - 1)
+    let l:cell = l:state.cells[l:idx]
+    if get(l:cell, 'kind', '') !=# 'magic'
+      continue
+    endif
+    if !empty(get(get(l:cell, 'presentation', {}), 'syntax', ''))
+      continue
+    endif
+    let l:syntax = jusi#plugins#syntax_for_magic(l:bufnr, get(l:cell, 'magic', ''))
+    if !empty(l:syntax) && get(l:cell, 'syntax', '') !=# l:syntax
+      let l:state.cells[l:idx].syntax = l:syntax
+      let l:changed = 1
+    endif
+  endfor
+  if l:changed
+    let l:state.syntax_dirty = 0
+    let l:state.syntax_dirty_from = 0
+    call setbufvar(l:bufnr, 'jusi_nb', l:state)
+    call jusi#syntax#sync(l:bufnr, l:state.cells)
+  endif
   return l:state
 endfunction
 

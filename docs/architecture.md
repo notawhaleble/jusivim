@@ -204,6 +204,15 @@ Responsibilities:
 
 Implementation should favor local updates where practical, but correctness comes first.
 
+Plugin syntax and indentation should be described through declarative metadata rather than per-plugin Vim extension files. Unknown magic cells should not be treated as syntax dialect names. They should fall back to Python syntax and indentation until frontend metadata or backend metadata provides a better editor-facing dialect such as `sql`, `sh`, or `markdown`.
+
+Ownership rule:
+
+- frontend metadata may influence local syntax and indentation only
+- cell type still comes from notebook text
+- executed plugin identity and handler ownership still come from backend handoff
+- plugin-specific behavior should remain behind the generic handler channel unless it is a genuine editor action
+
 ### Statusline And UI Indicators
 
 Mode indicators, current-cell indicators, and related UI state should read from explicit notebook state rather than recalculate editor structure repeatedly.

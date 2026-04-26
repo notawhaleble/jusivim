@@ -76,6 +76,24 @@ Required properties:
 - syntax repair must be automatic when structure changes
 - users should not need manual reinitialization commands to restore correctness
 
+Current plugin syntax compatibility:
+
+- magic cells default to Python syntax and indentation unless frontend metadata or backend metadata says otherwise
+- frontend may resolve plugin syntax and indentation from declarative metadata instead of extension-specific Vim files
+- core frontend metadata only covers built-in plugin behavior, currently `%%vd` as ordinary Python syntax/indentation
+- session plugin metadata is stored notebook-locally in `b:jusi_nb.session.plugin_specs`, keyed by magic name
+- declarative metadata affects editor syntax/indent behavior only; backend/kernel handoff remains authoritative for actual plugin identity after execution starts
+
+Example:
+
+```vim
+let b:jusi_nb.session.plugin_specs = {
+      \ 'shell': {'syntax': 'sh', 'indent': 'sh'},
+      \ 'sql': {'syntax': 'sql'},
+      \ 'mydsl': {'syntax': 'sql', 'indent': 'sql'},
+      \ }
+```
+
 ## Signs And Status
 
 Each cell may be associated with a visible status sign.
