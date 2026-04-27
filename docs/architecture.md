@@ -206,6 +206,10 @@ Implementation should favor local updates where practical, but correctness comes
 
 Plugin syntax and indentation should be described through declarative metadata rather than per-plugin Vim extension files. Unknown magic cells should not be treated as syntax dialect names. They should fall back to Python syntax and indentation until frontend metadata or backend metadata provides a better editor-facing dialect such as `sql`, `sh`, or `markdown`.
 
+The frontend should receive plugin presentation metadata from the backend and store it in notebook-local session state. Core should not hardcode editor behavior for plugin names beyond true built-ins. `%%vd` is the only current built-in and uses ordinary Python syntax and indentation.
+
+Notebook indentation must remain cell-bounded. Runtime language indentation may be delegated to Vim runtime indent files, but their result must not let syntax, brackets, or other context from a different cell become authoritative for the current cell.
+
 Ownership rule:
 
 - frontend metadata may influence local syntax and indentation only
@@ -454,18 +458,51 @@ Initial automated focus should be on:
 - follow-up workflows
 - recovery from dead buffers
 
-### Phase 6: Cleanup And Recovery
+### Phase 6: Session Targets And Kernel Types
 
-- process and session cleanup
-- exit and unload hooks
-- failure-state inspection and recovery behavior
+- target identity and aliasing
+- local, virtualenv, ssh, docker, and related launch surfaces
+- attach/start/reconnect behavior across target classes
+- notebook editing isolated from target-specific transport details
 
-### Phase 7: Compatibility Refinement
+### Phase 7: Plugin Subsystem
 
-- command and mapping coverage
-- output placement rules
-- user workflow polish
-- performance tuning on large notebooks
+- backend-owned plugin presentation metadata
+- generic follow-up and completion requests
+- generic backend-to-frontend action requests
+- plugin syntax and indentation without per-plugin frontend shims
+- real validation through `%%sql`, `%%shell`, and `jusi-open`
+
+This phase is considered complete for the frontend core. Future plugin commands should use the generic action-request path and be handled as incremental issues unless they disprove the model.
+
+### Phase 8: External Session Recovery
+
+- explicit disconnected state
+- attach and reconnect behavior
+- transport timeout ambiguity handling
+- recovery errors without destructive local state loss
+
+This phase is considered done enough to stop proactive work. Revisit only for concrete recovery bugs.
+
+### Phase 9: Magic History Workflow
+
+- connect history capture to explicit execution-attempt semantics
+- add history navigation and toggle UX
+- preserve the structural split between main body and history region
+- keep history frontend-local unless the backend contract requires otherwise
+
+Initial capture rule:
+
+- accepted normal execute requests and accepted handler follow-up requests for magic cells record the active body without the `%%...` header in the cell-local history region
+- new entries are prepended so recent history reads top-to-bottom
+- duplicate entries are removed before the newest copy is inserted
+- regular code cells do not create magic history
+- non-follow-up handler control messages do not create magic history
+- history insertion updates notebook ranges in place instead of forcing identity reconciliation
+- history fold/apply/navigation behavior is cell-mode UX on top of the notebook model
+- applying a history entry replaces the magic body after the `%%...` header and does not execute the cell
+- history mutation must clear affected manual folds before editing history lines
+- history fold creation must be idempotent to avoid nested fold layers
 
 ## Immediate Implementation Target
 

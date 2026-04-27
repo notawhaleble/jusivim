@@ -34,6 +34,20 @@ Core rules:
 - The file remains directly editable as text.
 - Delimiters are part of the notebook format and remain visible to the user.
 
+Magic cells may contain a frontend-local history region after their active body:
+
+```text
+##
+%%sql main
+select 1
+##<<
+###
+select 0
+##>>
+```
+
+History regions are plain text, remain editable, and are excluded from backend execution payloads.
+
 ## Cell Semantics
 
 Each cell has:
@@ -127,6 +141,16 @@ Required user-facing behavior:
 - execution failures must not silently corrupt notebook state
 - executing a cell creates or binds the real client for that execution directly to the cell
 - once a client is bound to a cell, it stays attached to that cell and must not be rebound to another cell
+- when a magic-cell execute request or handler follow-up request is accepted for dispatch, the frontend records the active magic-cell body without the `%%...` header in that cell's local history region
+- the newest history entry is placed at the top of the history region
+- if the same body already exists as a history entry, the older duplicate entry is removed before the newest copy is inserted
+- regular code cells and non-follow-up handler control messages do not append magic-cell history entries
+- `H` in cell mode toggles the current cell history fold
+- accepted cell execution folds open history regions across the notebook
+- history folds are idempotent and use the minimal fold text `history: <n> lines`
+- `<CR>` in cell mode applies the history entry under the cursor to the active magic-cell body instead of executing it
+- `<C-p>` / `<C-n>` in cell mode traverse the current magic cell's history entries and apply them to the body
+- `j` and `n` in cell mode walk open history entries before moving to the next cell
 
 The plugin must behave predictably when the backend is absent, misconfigured, or unhealthy.
 

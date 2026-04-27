@@ -1324,7 +1324,7 @@ function! s:enter_insert_at_cell(cell) abort
 endfunction
 
 function! s:delete_range(start_lnum, end_lnum) abort
-  execute a:start_lnum . ',' . a:end_lnum . 'delete _'
+  silent execute a:start_lnum . ',' . a:end_lnum . 'delete _'
 endfunction
 
 function! s:cell_lines(cell) abort
@@ -1340,11 +1340,278 @@ function! s:cell_main_lines(cell) abort
   return getline(l:start, l:end)
 endfunction
 
+function! s:magic_header_lnum(cell) abort
+  let l:lnum = get(a:cell, 'start', 0) + 1
+  let l:end = get(a:cell, 'body_end', get(a:cell, 'end', 0))
+  while l:lnum <= l:end
+    if getline(l:lnum) =~# '^%%\(\k\+\)'
+      return l:lnum
+    endif
+    let l:lnum += 1
+  endwhile
+  return 0
+endfunction
+
+function! s:cell_magic_payload_lines(cell) abort
+  let l:header = s:magic_header_lnum(a:cell)
+  if l:header <= 0
+    return []
+  endif
+  let l:start = l:header + 1
+  let l:end = get(a:cell, 'body_end', get(a:cell, 'end', 0))
+  if l:start > l:end
+    return []
+  endif
+  return getline(l:start, l:end)
+endfunction
+
 function! s:cell_history_lines(cell) abort
   if get(a:cell, 'history_start', 0) == 0
     return []
   endif
   return getline(a:cell.history_start, a:cell.end)
+endfunction
+
+function! s:history_entry_lines(cell) abort
+  let l:lines = get(a:cell, 'kind', '') ==# 'magic' ? s:cell_magic_payload_lines(a:cell) : s:cell_main_lines(a:cell)
+  if empty(l:lines)
+    return []
+  endif
+  return ['###'] + l:lines
+endfunction
+
+function! s:history_entries(cell) abort
+  let l:entries = []
+  let l:history_start = get(a:cell, 'history_start', 0)
+  let l:history_end = get(a:cell, 'history_end', 0)
+  if l:history_start <= 0 || l:history_end <= l:history_start
+    return l:entries
+  endif
+
+  let l:entry_start = 0
+  let l:lnum = l:history_start + 1
+  while l:lnum < l:history_end
+    if getline(l:lnum) =~# s:history_entry_pattern
+      if l:entry_start > 0
+        call add(l:entries, {
+              \ 'start': l:entry_start,
+              \ 'end': l:lnum - 1,
+              \ 'lines': getline(l:entry_start + 1, l:lnum - 1),
+              \ })
+      endif
+      let l:entry_start = l:lnum
+    endif
+    let l:lnum += 1
+  endwhile
+
+  if l:entry_start > 0
+    call add(l:entries, {
+          \ 'start': l:entry_start,
+          \ 'end': l:history_end - 1,
+          \ 'lines': getline(l:entry_start + 1, l:history_end - 1),
+          \ })
+  endif
+  return l:entries
+endfunction
+
+function! s:history_entry_at_line(cell, lnum) abort
+  for l:entry in s:history_entries(a:cell)
+    if a:lnum >= get(l:entry, 'start', 0) && a:lnum <= get(l:entry, 'end', 0)
+      return l:entry
+    endif
+  endfor
+  return {}
+endfunction
+
+function! s:history_entry_body_lnum(entry) abort
+  if len(get(a:entry, 'lines', [])) > 0
+    return get(a:entry, 'start', 0) + 1
+  endif
+  return get(a:entry, 'start', 0)
+endfunction
+
+function! s:update_after_cell_line_delta(bufnr, state, idx, cell, delta) abort
+  let a:state.cells[a:idx] = a:cell
+  let l:next_idx = a:idx + 1
+  while l:next_idx < len(a:state.cells)
+    call s:shift_cell_lines(a:state.cells[l:next_idx], a:delta)
+    let l:next_idx += 1
+  endwhile
+  let a:state.changedtick = getbufvar(a:bufnr, 'changedtick')
+  let a:state.dirty_insert = 0
+  call setbufvar(a:bufnr, 'jusi_nb', a:state)
+  call s:update_buffer_cache_lines(a:bufnr, getbufline(a:bufnr, 1, '$'))
+  call s:sync_from_index(a:bufnr, a:state, a:idx)
+  call s:mark_syntax_dirty(a:bufnr, a:state, a:idx)
+  return a:cell
+endfunction
+
+function! s:apply_history_entry(cell, entry) abort
+  if empty(a:cell) || empty(a:entry) || get(a:cell, 'kind', '') !=# 'magic'
+    return {}
+  endif
+
+  let l:header = s:magic_header_lnum(a:cell)
+  if l:header <= 0
+    return {}
+  endif
+
+  let l:bufnr = bufnr('%')
+  let l:state = s:ensure_state(l:bufnr)
+  let l:idx = s:cell_index_at_line(l:state, get(a:cell, 'start', line('.')))
+  if l:idx < 0 || get(l:state.cells[l:idx], 'id', 0) !=# get(a:cell, 'id', 0)
+    return {}
+  endif
+
+  let l:old_start = l:header + 1
+  let l:old_end = get(a:cell, 'body_end', get(a:cell, 'end', 0))
+  let l:old_count = l:old_start <= l:old_end ? l:old_end - l:old_start + 1 : 0
+  let l:new_lines = copy(get(a:entry, 'lines', []))
+
+  call s:clear_history_folds(a:cell)
+  if l:old_count > 0
+    call s:delete_range(l:old_start, l:old_end)
+  endif
+  if !empty(l:new_lines)
+    call append(l:header, l:new_lines)
+  endif
+
+  let l:delta = len(l:new_lines) - l:old_count
+  let l:updated = copy(l:state.cells[l:idx])
+  let l:updated.body_end += l:delta
+  let l:updated.end += l:delta
+  if get(l:updated, 'history_start', 0) > 0
+    let l:updated.history_start += l:delta
+  endif
+  if get(l:updated, 'history_end', 0) > 0
+    let l:updated.history_end += l:delta
+  endif
+
+  call s:update_after_cell_line_delta(l:bufnr, l:state, l:idx, l:updated, l:delta)
+  call s:close_history_fold(l:updated)
+  call cursor(l:header + (empty(l:new_lines) ? 0 : 1), 1)
+  return l:updated
+endfunction
+
+function! s:append_history_entry(cell) abort
+  if empty(a:cell) || get(a:cell, 'kind', '') !=# 'magic'
+    return {}
+  endif
+
+  let l:entry = s:history_entry_lines(a:cell)
+  if empty(l:entry)
+    return {}
+  endif
+  let l:payload = l:entry[1:]
+
+  let l:bufnr = bufnr('%')
+  let l:state = s:ensure_state(l:bufnr)
+  let l:idx = s:cell_index_at_line(l:state, get(a:cell, 'start', line('.')))
+  if l:idx < 0 || get(l:state.cells[l:idx], 'id', 0) !=# get(a:cell, 'id', 0)
+    return {}
+  endif
+
+  let l:history_start = get(a:cell, 'history_start', 0)
+  let l:history_end = get(a:cell, 'history_end', 0)
+  let l:delta = 0
+  if l:history_start > 0 && l:history_end > l:history_start
+    call s:clear_history_folds(a:cell)
+    let l:entries = s:history_entries(a:cell)
+    let l:entry_idx = len(l:entries) - 1
+    while l:entry_idx >= 0
+      let l:existing = l:entries[l:entry_idx]
+      if get(l:existing, 'lines', []) ==# l:payload
+        call s:delete_range(l:existing.start, l:existing.end)
+        let l:removed = l:existing.end - l:existing.start + 1
+        let l:history_end -= l:removed
+        let l:delta -= l:removed
+      endif
+      let l:entry_idx -= 1
+    endwhile
+    call append(l:history_start, l:entry)
+    let l:new_history_start = l:history_start
+    let l:new_history_end = l:history_end + len(l:entry)
+    let l:delta += len(l:entry)
+  else
+    call append(get(a:cell, 'body_end', a:cell.end), ['##<<'] + l:entry + ['##>>'])
+    let l:new_history_start = get(a:cell, 'body_end', a:cell.end) + 1
+    let l:new_history_end = get(a:cell, 'body_end', a:cell.end) + len(l:entry) + 2
+    let l:delta = len(l:entry) + 2
+  endif
+
+  let l:updated = copy(l:state.cells[l:idx])
+  let l:updated.end += l:delta
+  let l:updated.history_start = l:new_history_start
+  let l:updated.history_end = l:new_history_end
+  return s:update_after_cell_line_delta(l:bufnr, l:state, l:idx, l:updated, l:delta)
+endfunction
+
+function! s:history_fold_range(cell) abort
+  let l:start = get(a:cell, 'history_start', 0)
+  let l:end = get(a:cell, 'history_end', 0)
+  if l:start <= 0 || l:end <= l:start
+    return []
+  endif
+  return [l:start, l:end]
+endfunction
+
+function! s:clear_history_folds(cell) abort
+  let l:range = s:history_fold_range(a:cell)
+  if empty(l:range)
+    return
+  endif
+  let l:current = [line('.'), col('.')]
+  call cursor(l:range[0], 1)
+  silent! normal! zD
+  call cursor(l:current[0], l:current[1])
+endfunction
+
+function! s:close_history_fold(cell) abort
+  let l:range = s:history_fold_range(a:cell)
+  if empty(l:range)
+    return 0
+  endif
+  call s:clear_history_folds(a:cell)
+  setlocal foldmethod=manual foldenable
+  setlocal foldtext=jusi#notebook#fold_text()
+  setlocal fillchars=fold:\ 
+  execute l:range[0] . ',' . l:range[1] . 'fold'
+  call cursor(l:range[0], 1)
+  silent! normal! zc
+  return 1
+endfunction
+
+function! s:open_history_fold(cell) abort
+  let l:range = s:history_fold_range(a:cell)
+  if empty(l:range)
+    return 0
+  endif
+  setlocal foldmethod=manual foldenable
+  call cursor(l:range[0], 1)
+  silent! normal! zo
+  return 1
+endfunction
+
+function! s:history_is_folded(cell) abort
+  let l:range = s:history_fold_range(a:cell)
+  return !empty(l:range) && foldclosed(l:range[0]) >= 0
+endfunction
+
+function! s:history_is_open(cell) abort
+  let l:range = s:history_fold_range(a:cell)
+  return !empty(l:range) && foldclosed(l:range[0]) < 0
+endfunction
+
+function! s:fold_all_history(state) abort
+  for l:cell in get(a:state, 'cells', [])
+    call s:close_history_fold(l:cell)
+  endfor
+endfunction
+
+function! s:restore_cursor(pos) abort
+  let l:lnum = min([max([1, a:pos[0]]), line('$')])
+  let l:col = max([1, a:pos[1]])
+  call cursor(l:lnum, l:col)
 endfunction
 
 function! s:replacement_index_after_delete(state, deleted_idx) abort
@@ -1428,6 +1695,161 @@ function! jusi#notebook#cell_history_lines(...) abort
   return s:cell_history_lines(l:cell)
 endfunction
 
+function! jusi#notebook#append_history_entry(...) abort
+  let l:cell = a:0 >= 1 ? a:1 : jusi#notebook#cell_at_line(bufnr('%'), line('.'))
+  return s:append_history_entry(l:cell)
+endfunction
+
+function! jusi#notebook#fold_all_history(...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  let l:state = jusi#notebook#rebuild(l:bufnr)
+  if empty(l:state) || l:bufnr != bufnr('%')
+    return {}
+  endif
+  let l:current = [line('.'), col('.')]
+  call s:fold_all_history(l:state)
+  call s:restore_cursor(l:current)
+  return l:state
+endfunction
+
+function! jusi#notebook#fold_history_on_first_view(...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if l:bufnr != bufnr('%')
+    return {}
+  endif
+  if getbufvar(l:bufnr, 'jusi_history_fold_initialized', 0)
+    return getbufvar(l:bufnr, 'jusi_nb', {})
+  endif
+  call setbufvar(l:bufnr, 'jusi_history_fold_initialized', 1)
+  return jusi#notebook#fold_all_history(l:bufnr)
+endfunction
+
+function! jusi#notebook#capture_history_and_fold_all(cell, ...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if l:bufnr != bufnr('%')
+    return {}
+  endif
+  let l:current = [line('.'), col('.')]
+  let l:updated = jusi#notebook#append_history_entry(a:cell)
+  call jusi#notebook#fold_all_history(l:bufnr)
+  call s:restore_cursor(l:current)
+  return l:updated
+endfunction
+
+function! jusi#notebook#fold_text() abort
+  let l:count = v:foldend - v:foldstart + 1
+  return 'history: ' . l:count . ' lines'
+endfunction
+
+function! jusi#notebook#toggle_history_fold_current() abort
+  let l:cell = jusi#notebook#cell_at_line(bufnr('%'), line('.'))
+  if empty(l:cell)
+    return {}
+  endif
+  let l:current = [line('.'), col('.')]
+  if s:history_is_folded(l:cell)
+    call s:open_history_fold(l:cell)
+  else
+    call s:close_history_fold(l:cell)
+  endif
+  call cursor(l:current[0], l:current[1])
+  return l:cell
+endfunction
+
+function! jusi#notebook#apply_history_at_cursor() abort
+  let l:cell = jusi#notebook#cell_at_line(bufnr('%'), line('.'))
+  if empty(l:cell)
+    return {}
+  endif
+  let l:entry = s:history_entry_at_line(l:cell, line('.'))
+  if empty(l:entry)
+    return {}
+  endif
+  return s:apply_history_entry(l:cell, l:entry)
+endfunction
+
+function! jusi#notebook#execute_or_apply_history() abort
+  let l:applied = jusi#notebook#apply_history_at_cursor()
+  if !empty(l:applied)
+    return l:applied
+  endif
+  return jusi#session#execute_current()
+endfunction
+
+function! jusi#notebook#apply_history_relative(direction) abort
+  let l:cell = jusi#notebook#cell_at_line(bufnr('%'), line('.'))
+  if empty(l:cell) || get(l:cell, 'kind', '') !=# 'magic'
+    return {}
+  endif
+  let l:entries = s:history_entries(l:cell)
+  if empty(l:entries)
+    return {}
+  endif
+
+  let l:current = s:cell_magic_payload_lines(l:cell)
+  let l:match_idx = -1
+  let l:idx = 0
+  while l:idx < len(l:entries)
+    if get(l:entries[l:idx], 'lines', []) ==# l:current
+      let l:match_idx = l:idx
+      break
+    endif
+    let l:idx += 1
+  endwhile
+
+  if a:direction < 0
+    let l:target_idx = l:match_idx < 0 ? 0 : min([l:match_idx + 1, len(l:entries) - 1])
+  else
+    let l:target_idx = l:match_idx < 0 ? 0 : max([l:match_idx - 1, 0])
+  endif
+  return s:apply_history_entry(l:cell, l:entries[l:target_idx])
+endfunction
+
+function! jusi#notebook#goto_next_cellmode_target() abort
+  let l:state = jusi#notebook#rebuild()
+  let l:idx = s:cell_index_at_line(l:state, line('.'))
+  if l:idx < 0
+    return {}
+  endif
+
+  let l:cell = l:state.cells[l:idx]
+  if s:history_is_open(l:cell)
+    let l:entries = s:history_entries(l:cell)
+    for l:entry in l:entries
+      let l:entry_lnum = s:history_entry_body_lnum(l:entry)
+      if line('.') < l:entry_lnum
+        call s:goto_cell_line(l:entry_lnum)
+        return l:cell
+      endif
+    endfor
+  endif
+  return jusi#notebook#goto_next()
+endfunction
+
+function! jusi#notebook#goto_prev_cellmode_target() abort
+  let l:state = jusi#notebook#rebuild()
+  let l:idx = s:cell_index_at_line(l:state, line('.'))
+  if l:idx < 0
+    return {}
+  endif
+
+  let l:cell = l:state.cells[l:idx]
+  if s:history_is_open(l:cell)
+    let l:entries = s:history_entries(l:cell)
+    let l:i = len(l:entries) - 1
+    while l:i >= 0
+      let l:entry = l:entries[l:i]
+      let l:entry_lnum = s:history_entry_body_lnum(l:entry)
+      if line('.') > l:entry_lnum
+        call s:goto_cell_line(l:entry_lnum)
+        return l:cell
+      endif
+      let l:i -= 1
+    endwhile
+  endif
+  return jusi#notebook#goto_prev()
+endfunction
+
 function! jusi#notebook#paste_below() abort
   if empty(get(g:, 'jusi_cell_clipboard', []))
     return {}
@@ -1437,6 +1859,7 @@ function! jusi#notebook#paste_below() abort
   let l:target = empty(l:cell) ? line('$') : l:cell.end
   call append(l:target, copy(g:jusi_cell_clipboard))
   call jusi#notebook#rebuild()
+  call jusi#notebook#fold_all_history(bufnr('%'))
   let l:new_cell = jusi#notebook#cell_at_line(bufnr('%'), l:target + 1)
   call s:goto_cell(l:new_cell)
   return l:new_cell

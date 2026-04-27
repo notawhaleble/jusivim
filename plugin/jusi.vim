@@ -62,6 +62,7 @@ if !exists('g:jusi_sign_texts')
 endif
 
 call jusi#render#define_signs()
+highlight Folded ctermfg=DarkGray ctermbg=NONE guifg=#777777 guibg=NONE
 
 command! JusiRebuild call jusi#notebook#rebuild()
 command! JusiCellNext call jusi#notebook#goto_next()
@@ -72,6 +73,8 @@ command! JusiCellDelete call jusi#notebook#delete_current()
 command! JusiCellEdit call jusi#notebook#edit_current()
 command! JusiCellCopy call jusi#notebook#copy_current()
 command! JusiCellPasteBelow call jusi#notebook#paste_below()
+command! JusiHistoryToggle call jusi#notebook#toggle_history_fold_current()
+command! JusiHistoryApply call jusi#notebook#apply_history_at_cursor()
 command! -nargs=? JusiStartKernel call jusi#session#start(<q-args>)
 command! -nargs=1 JusiAttach call jusi#session#attach(<q-args>)
 command! JusiExecute call jusi#session#execute_current()
@@ -111,6 +114,7 @@ augroup jusi_notebook
   au FileType jusinb runtime! ftplugin/jusinb.vim | call jusi#cellmode#refresh(expand('<abuf>'))
   au VimLeavePre * call jusi#notebook#prepare_forced_exit()
   au BufReadPost,BufNewFile *.vipynb call jusi#notebook#rebuild(expand('<abuf>'))
+  au BufWinEnter *.vipynb call jusi#notebook#fold_history_on_first_view(expand('<abuf>'))
   au TextChanged *.vipynb call jusi#notebook#handle_text_changed(expand('<abuf>'))
   au TextChangedI *.vipynb call jusi#notebook#handle_text_changed_insert(expand('<abuf>'))
   au InsertLeave *.vipynb call jusi#notebook#handle_insert_exit(expand('<abuf>'))

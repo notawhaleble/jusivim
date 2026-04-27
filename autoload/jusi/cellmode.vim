@@ -48,9 +48,13 @@ function! s:maybe_unmap_buffer(lhs) abort
 endfunction
 
 function! s:map_cell_mode() abort
-  nnoremap <silent> <buffer> j :<C-U>execute "JusiCellNext"<CR>
-  nnoremap <silent> <buffer> k :<C-U>execute "JusiCellPrev"<CR>
-  nnoremap <silent> <buffer> <CR> :JusiExecute<CR>
+  nnoremap <silent> <buffer> j :<C-U>call jusi#notebook#goto_next_cellmode_target()<CR>
+  nnoremap <silent> <buffer> n :<C-U>call jusi#notebook#goto_next_cellmode_target()<CR>
+  nnoremap <silent> <buffer> k :<C-U>call jusi#notebook#goto_prev_cellmode_target()<CR>
+  nnoremap <silent> <buffer> <CR> :<C-U>call jusi#notebook#execute_or_apply_history()<CR>
+  nnoremap <silent> <buffer> <C-P> :<C-U>call jusi#notebook#apply_history_relative(-1)<CR>
+  nnoremap <silent> <buffer> <C-N> :<C-U>call jusi#notebook#apply_history_relative(1)<CR>
+  nnoremap <silent> <buffer> H :<C-U>call jusi#notebook#toggle_history_fold_current()<CR>
   nnoremap <silent> <buffer> B :JusiCellNewBelow<CR>
   nnoremap <silent> <buffer> A :JusiCellNewAbove<CR>
   nnoremap <silent> <buffer> X :JusiCellDelete<CR>
@@ -64,8 +68,12 @@ endfunction
 
 function! s:clear_mode_mappings() abort
   call s:maybe_unmap_buffer('j')
+  call s:maybe_unmap_buffer('n')
   call s:maybe_unmap_buffer('k')
   call s:maybe_unmap_buffer('<CR>')
+  call s:maybe_unmap_buffer('<C-P>')
+  call s:maybe_unmap_buffer('<C-N>')
+  call s:maybe_unmap_buffer('H')
   call s:maybe_unmap_buffer('B')
   call s:maybe_unmap_buffer('A')
   call s:maybe_unmap_buffer('X')

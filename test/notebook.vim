@@ -202,6 +202,319 @@ function! Test_edit_current_preserves_magic_history_region() abort
   call assert_equal(['##<<', '###', 'select 0', '##>>'], jusi#notebook#cell_history_lines())
 endfunction
 
+function! Test_append_history_entry_creates_magic_history_region() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ ])
+  call cursor(3, 1)
+  call jusi#notebook#append_history_entry()
+
+  call assert_equal([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 1',
+        \ '##>>',
+        \ ], getline(1, '$'))
+  call assert_equal(3, b:jusi_nb.cells[0].body_end)
+  call assert_equal(4, b:jusi_nb.cells[0].history_start)
+  call assert_equal(7, b:jusi_nb.cells[0].history_end)
+endfunction
+
+function! Test_append_history_entry_prepends_to_existing_magic_history_region() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 0',
+        \ '##>>',
+        \ ])
+  call cursor(3, 1)
+  call jusi#notebook#append_history_entry()
+
+  call assert_equal([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 1',
+        \ '###',
+        \ 'select 0',
+        \ '##>>',
+        \ ], getline(1, '$'))
+  call assert_equal(3, b:jusi_nb.cells[0].body_end)
+  call assert_equal(4, b:jusi_nb.cells[0].history_start)
+  call assert_equal(9, b:jusi_nb.cells[0].history_end)
+endfunction
+
+function! Test_append_history_entry_moves_duplicate_to_top() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 0',
+        \ '###',
+        \ 'select 1',
+        \ '##>>',
+        \ ])
+  call cursor(3, 1)
+  call jusi#notebook#append_history_entry()
+
+  call assert_equal([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 1',
+        \ '###',
+        \ 'select 0',
+        \ '##>>',
+        \ ], getline(1, '$'))
+  call assert_equal(9, b:jusi_nb.cells[0].history_end)
+endfunction
+
+function! Test_append_history_entry_dedupes_inside_closed_history_fold() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 1',
+        \ '###',
+        \ 'select 0',
+        \ '##>>',
+        \ '##',
+        \ 'tail',
+        \ ])
+  call cursor(3, 1)
+  call jusi#notebook#fold_all_history(bufnr('%'))
+  call assert_equal(4, foldclosed(4))
+
+  call jusi#notebook#append_history_entry()
+
+  call assert_equal([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 1',
+        \ '###',
+        \ 'select 0',
+        \ '##>>',
+        \ '##',
+        \ 'tail',
+        \ ], getline(1, '$'))
+  call assert_equal(9, b:jusi_nb.cells[0].history_end)
+  call assert_equal(10, b:jusi_nb.cells[1].start)
+endfunction
+
+function! Test_paste_below_refolds_history_regions() abort
+  let g:jusi_cell_clipboard = [
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 0',
+        \ '##>>',
+        \ ]
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("host")',
+        \ ])
+  call cursor(2, 1)
+
+  call jusi#notebook#paste_below()
+
+  call assert_equal(2, len(b:jusi_nb.cells))
+  call assert_equal(6, foldclosed(6))
+endfunction
+
+function! Test_capture_history_and_fold_all_preserves_cursor() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 1',
+        \ '###',
+        \ 'select 0',
+        \ '##>>',
+        \ '##',
+        \ 'tail',
+        \ ])
+  call cursor(3, 4)
+  call jusi#notebook#fold_all_history(bufnr('%'))
+
+  call jusi#notebook#capture_history_and_fold_all(b:jusi_nb.cells[0], bufnr('%'))
+
+  call assert_equal([3, 4], [line('.'), col('.')])
+  call assert_equal(4, foldclosed(4))
+  call assert_equal([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 1',
+        \ '###',
+        \ 'select 0',
+        \ '##>>',
+        \ '##',
+        \ 'tail',
+        \ ], getline(1, '$'))
+endfunction
+
+function! Test_append_history_entry_ignores_regular_code_cells() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  call cursor(2, 1)
+  call jusi#notebook#append_history_entry()
+
+  call assert_equal(['##', 'print("hello")'], getline(1, '$'))
+  call assert_equal([], jusi#notebook#cell_history_lines())
+endfunction
+
+function! Test_history_toggle_folds_and_unfolds_current_cell_history() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 0',
+        \ '##>>',
+        \ ])
+  call cursor(3, 1)
+
+  call jusi#notebook#toggle_history_fold_current()
+  call assert_equal(4, foldclosed(4))
+
+  call jusi#notebook#toggle_history_fold_current()
+  call assert_equal(-1, foldclosed(4))
+endfunction
+
+function! Test_history_fold_all_is_idempotent_and_uses_minimal_foldtext() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 0',
+        \ '##>>',
+        \ ])
+  call cursor(3, 1)
+
+  call jusi#notebook#fold_all_history(bufnr('%'))
+  call jusi#notebook#fold_all_history(bufnr('%'))
+  call assert_equal(4, foldclosed(4))
+  call assert_equal('jusi#notebook#fold_text()', &l:foldtext)
+  call assert_equal('history: 4 lines', foldtextresult(4))
+
+  call jusi#notebook#toggle_history_fold_current()
+  call assert_equal(-1, foldclosed(4))
+endfunction
+
+function! Test_apply_history_at_cursor_replaces_magic_body_without_executing() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select current',
+        \ '##<<',
+        \ '###',
+        \ 'select old',
+        \ 'where x = 1',
+        \ '##>>',
+        \ ])
+  call cursor(6, 1)
+  call jusi#notebook#apply_history_at_cursor()
+
+  call assert_equal([
+        \ '##',
+        \ '%%sql main',
+        \ 'select old',
+        \ 'where x = 1',
+        \ '##<<',
+        \ '###',
+        \ 'select old',
+        \ 'where x = 1',
+        \ '##>>',
+        \ ], getline(1, '$'))
+  call assert_equal(3, line('.'))
+  call assert_equal(4, b:jusi_nb.cells[0].body_end)
+  call assert_equal(5, foldclosed(5))
+  call assert_equal('initial', b:jusi_nb.cells[0].status)
+endfunction
+
+function! Test_apply_history_relative_traverses_newest_to_oldest() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select current',
+        \ '##<<',
+        \ '###',
+        \ 'select newest',
+        \ '###',
+        \ 'select older',
+        \ '##>>',
+        \ ])
+  call cursor(3, 1)
+
+  call jusi#notebook#apply_history_relative(-1)
+  call assert_equal('select newest', getline(3))
+  call assert_equal(4, foldclosed(4))
+  call jusi#notebook#apply_history_relative(-1)
+  call assert_equal('select older', getline(3))
+  call assert_equal(4, foldclosed(4))
+  call jusi#notebook#apply_history_relative(1)
+  call assert_equal('select newest', getline(3))
+  call assert_equal(4, foldclosed(4))
+endfunction
+
+function! Test_cellmode_history_navigation_walks_open_history_before_next_cell() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select current',
+        \ '##<<',
+        \ '###',
+        \ 'select newest',
+        \ '###',
+        \ 'select older',
+        \ '##>>',
+        \ '##',
+        \ 'print("tail")',
+        \ ])
+  call cursor(3, 1)
+
+  call jusi#notebook#goto_next_cellmode_target()
+  call assert_equal(6, line('.'))
+  call jusi#notebook#goto_next_cellmode_target()
+  call assert_equal(8, line('.'))
+  call jusi#notebook#goto_next_cellmode_target()
+  call assert_equal(11, line('.'))
+
+  call cursor(8, 1)
+  call jusi#notebook#goto_prev_cellmode_target()
+  call assert_equal(6, line('.'))
+endfunction
+
 function! Test_copy_current_stores_cell_lines() abort
   call Test_open_scratch([
         \ '##',
@@ -1568,6 +1881,84 @@ function! Test_execute_failure_preserves_prepared_and_cell_runtime_state() abort
   endtry
 endfunction
 
+function! Test_execute_magic_cell_appends_history_after_accepted_request() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'execute': function('s:test_session_adapter_execute'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ '%%sql main',
+          \ 'select 1',
+          \ ])
+    call jusi#session#apply({'id': 'sess-1', 'state': 'connected'})
+    call cursor(3, 1)
+
+    call jusi#session#execute_current()
+
+    call assert_equal([
+          \ '##',
+          \ '%%sql main',
+          \ 'select 1',
+          \ '##<<',
+          \ '###',
+          \ 'select 1',
+          \ '##>>',
+          \ ], getline(1, '$'))
+    call assert_equal('busy', b:jusi_nb.cells[0].status)
+    call assert_equal(['%%sql main', 'select 1'], jusi#notebook#cell_main_lines(b:jusi_nb.cells[0]))
+    call assert_equal([3, 1], [line('.'), col('.')])
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_execute_code_cell_does_not_append_history() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'execute': function('s:test_session_adapter_execute'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#apply({'id': 'sess-1', 'state': 'connected'})
+    call cursor(2, 1)
+
+    call jusi#session#execute_current()
+
+    call assert_equal(['##', 'print("hello")'], getline(1, '$'))
+    call assert_equal([], jusi#notebook#cell_history_lines(b:jusi_nb.cells[0]))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_execute_rejected_magic_cell_does_not_append_history() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'execute': function('s:test_session_adapter_execute_failure'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ '%%sql main',
+          \ 'select 1',
+          \ ])
+    call jusi#session#apply({'id': 'sess-1', 'state': 'connected'})
+    call cursor(3, 1)
+
+    call jusi#session#execute_current()
+
+    call assert_equal(['##', '%%sql main', 'select 1'], getline(1, '$'))
+    call assert_equal([], jusi#notebook#cell_history_lines(b:jusi_nb.cells[0]))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
 function! Test_interrupt_allows_followup_cells() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   try
@@ -2778,7 +3169,49 @@ function! Test_send_handler_followup_current_builds_generic_followup_message() a
     call assert_equal(2, get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'cursor_row', -1))
     call assert_equal(4, get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'cursor_col', -1))
     call assert_equal('select 1', get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'line_text', ''))
-    call assert_equal('select', get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'current_word', ''))
+    call assert_equal('sel', get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'current_word', ''))
+    call assert_equal([
+          \ '##',
+          \ '%%sql main',
+          \ 'select 1',
+          \ '##<<',
+          \ '###',
+          \ 'select 1',
+          \ '##>>',
+          \ ], getline(1, '$'))
+    call assert_equal([3, 4], [line('.'), col('.')])
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_handler_completion_does_not_append_history() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'request': function('s:test_request_adapter'),
+          \ }
+    let s:last_request_envelope = {}
+    call Test_open_scratch([
+          \ '##',
+          \ '%%sql main',
+          \ 'select 1',
+          \ ])
+    let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
+    call jusi#session#apply({'state': 'connected', 'id': 'sess-1'})
+    let b:jusi_nb.cells[0].status = 'follow-up'
+    let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = l:client
+    let b:jusi_nb.cells[0].handler = {'id': 'sqlite', 'last_message_type': 'handler_snapshot', 'payload': {}}
+    call cursor(3, 4)
+
+    call jusi#session#request_handler_completion_current()
+
+    call assert_equal('handler_message', get(s:last_request_envelope, 'type', ''))
+    call assert_equal('complete', get(get(s:last_request_envelope, 'payload', {}), 'message_type', ''))
+    call assert_equal(['##', '%%sql main', 'select 1'], getline(1, '$'))
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
@@ -4367,6 +4800,33 @@ function! Test_cell_presentation_overrides_session_plugin_specs() abort
   call assert_equal('sh', get(b:, 'jusi_indent_dialect', ''))
 endfunction
 
+function! Test_unavailable_cell_presentation_syntax_is_ignored_and_existing_syntax_survives() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql',
+        \ 'select 1',
+        \ ])
+  call jusi#session#apply({'state': 'connected', 'id': 'sess-1'})
+  call jusi#session#apply({'plugin_specs': {'sql': {'syntax': 'sql', 'indent': 'sql'}}})
+  let l:cell_id = b:jusi_nb.cells[0].id
+  call assert_equal('sql', b:jusi_nb.cells[0].syntax)
+
+  call jusi#session#callback_cell(l:cell_id, {
+        \ 'id': l:cell_id,
+        \ 'status': 'follow-up',
+        \ 'presentation': {'syntax': 'sqlite', 'indent': 'sqlite'},
+        \ })
+
+  call assert_equal('sql', b:jusi_nb.cells[0].syntax)
+  call assert_equal({}, get(b:jusi_nb.cells[0], 'presentation', {}))
+  call cursor(3, 1)
+  call jusi#indent#refresh(bufnr('%'))
+  call assert_equal('jusi#indent#expr(v:lnum)', &l:indentexpr)
+  call assert_notequal('', Test_syn_name(3, 1))
+  call assert_true(has_key(get(b:jusi_nb, 'plugin_warnings', {}), 'syntax:sqlite'))
+  call assert_true(has_key(get(b:jusi_nb, 'plugin_warnings', {}), 'indent:sqlite'))
+endfunction
+
 function! Test_unknown_magic_defaults_to_python_syntax_and_indent() abort
   call Test_open_scratch([
         \ '##',
@@ -4654,9 +5114,13 @@ function! Test_cell_mode_toggle_maps_navigation_keys() abort
   call assert_equal('', maparg('j', 'n'))
   call jusi#cellmode#enable()
   call assert_equal(1, get(b:, 'jusi_cell_mode', 0))
-  call assert_equal(':<C-U>execute "JusiCellNext"<CR>', maparg('j', 'n', 0, 1).rhs)
-  call assert_equal(':<C-U>execute "JusiCellPrev"<CR>', maparg('k', 'n', 0, 1).rhs)
-  call assert_equal(':JusiExecute<CR>', maparg('<CR>', 'n', 0, 1).rhs)
+  call assert_equal(':<C-U>call jusi#notebook#goto_next_cellmode_target()<CR>', maparg('j', 'n', 0, 1).rhs)
+  call assert_equal(':<C-U>call jusi#notebook#goto_next_cellmode_target()<CR>', maparg('n', 'n', 0, 1).rhs)
+  call assert_equal(':<C-U>call jusi#notebook#goto_prev_cellmode_target()<CR>', maparg('k', 'n', 0, 1).rhs)
+  call assert_equal(':<C-U>call jusi#notebook#execute_or_apply_history()<CR>', maparg('<CR>', 'n', 0, 1).rhs)
+  call assert_equal(':<C-U>call jusi#notebook#apply_history_relative(-1)<CR>', maparg('<C-P>', 'n', 0, 1).rhs)
+  call assert_equal(':<C-U>call jusi#notebook#apply_history_relative(1)<CR>', maparg('<C-N>', 'n', 0, 1).rhs)
+  call assert_equal(':<C-U>call jusi#notebook#toggle_history_fold_current()<CR>', maparg('H', 'n', 0, 1).rhs)
   call assert_equal('', maparg('J', 'n'))
   call assert_equal('', maparg('<leader><Space>', 'n'))
   call assert_equal(':JusiCellNewBelow<CR>', maparg('B', 'n', 0, 1).rhs)
@@ -4671,6 +5135,7 @@ function! Test_cell_mode_toggle_maps_navigation_keys() abort
   call jusi#cellmode#disable()
   call assert_equal(0, get(b:, 'jusi_cell_mode', 1))
   call assert_equal('', maparg('j', 'n'))
+  call assert_equal('', maparg('n', 'n'))
   call assert_equal('', maparg('<CR>', 'n'))
 endfunction
 

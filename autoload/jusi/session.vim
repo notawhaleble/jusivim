@@ -1004,6 +1004,7 @@ function! jusi#session#callback_cell(cell_id, update, ...) abort
   let l:idx = empty(l:state) ? -1 : s:find_cell_index(l:state, a:cell_id)
   if l:idx >= 0
     let l:current_cell = l:state.cells[l:idx]
+    let l:update = jusi#plugins#sanitize_cell_update(l:bufnr, l:current_cell, l:update)
     if get(get(l:current_cell, 'owner', {}), 'kind', '') ==# 'handler'
           \ && get(l:update, 'client_state', get(l:current_cell, 'client_state', '')) ==# 'shutdown'
           \ && get(l:update, 'client_bufnr', get(l:current_cell, 'client_bufnr', -1)) < 0
@@ -1553,12 +1554,16 @@ function! jusi#session#send_handler_followup_current() abort
   endif
 
   let l:cell = l:ctx.cell
-  return jusi#session#send_handler_message(
+  let l:response = jusi#session#send_handler_message(
         \ get(l:cell, 'client_id', ''),
         \ get(l:ctx, 'handler_id', ''),
         \ 'followup',
         \ s:handler_followup_payload(l:bufnr, l:cell),
         \ l:bufnr)
+  if get(l:response, 'ok', 0) && get(l:cell, 'kind', '') ==# 'magic'
+    call jusi#notebook#capture_history_and_fold_all(l:cell, l:bufnr)
+  endif
+  return l:response
 endfunction
 
 function! jusi#session#request_handler_completion_current() abort
@@ -1885,6 +1890,11 @@ function! jusi#session#execute_current() abort
         \   },
         \ })
   if get(l:response, 'ok', 0)
+    if get(l:cell, 'kind', '') ==# 'magic'
+      call jusi#notebook#capture_history_and_fold_all(l:cell, l:bufnr)
+    else
+      call jusi#notebook#fold_all_history(l:bufnr)
+    endif
     if get(l:response, '_transport', 0)
       return jusi#notebook#state(l:bufnr)
     endif
