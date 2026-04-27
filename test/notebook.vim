@@ -197,8 +197,8 @@ function! Test_edit_current_preserves_magic_history_region() abort
         \ ])
   call cursor(3, 1)
   call jusi#notebook#edit_current()
-  call assert_equal(['##', '', '##<<', '###', 'select 0', '##>>'], getline(1, '$'))
-  call assert_equal([''], jusi#notebook#cell_main_lines())
+  call assert_equal(['##', '%%sql main', '', '##<<', '###', 'select 0', '##>>'], getline(1, '$'))
+  call assert_equal(['%%sql main', ''], jusi#notebook#cell_main_lines())
   call assert_equal(['##<<', '###', 'select 0', '##>>'], jusi#notebook#cell_history_lines())
 endfunction
 
@@ -961,6 +961,7 @@ function! Test_default_session_state_is_initialized_for_notebook() abort
   call assert_equal('', get(l:session, 'last_error_code', ''))
   call assert_equal('', get(l:session.target, 'source', ''))
   call assert_equal('', get(l:session.target, 'alias', ''))
+  call assert_equal({}, get(l:session, 'palette', {}))
   call assert_equal({}, get(l:session, 'plugin_specs', {}))
   call assert_false(has_key(l:session, 'prepared'))
 endfunction
@@ -5078,6 +5079,246 @@ function! Test_python_indent_after_sql_cell_ignores_sql_brackets() abort
   call assert_match('python#GetIndent', get(b:, 'jusi_indent_delegate_expr', ''))
 endfunction
 
+function! s:test_open_named_notebook(path, lines, palette) abort
+  enew!
+  setlocal buftype=
+  setlocal bufhidden=hide
+  setlocal swapfile&
+  execute 'file ' . a:path
+  setlocal filetype=jusinb
+  setlocal syntax=jusinb
+  runtime! ftplugin/jusinb.vim
+  runtime! syntax/jusinb.vim
+  call setline(1, a:lines)
+  call jusi#notebook#rebuild()
+  call jusi#session#apply({
+        \ 'state': 'connected',
+        \ 'palette': copy(a:palette),
+        \ })
+  return bufnr('%')
+endfunction
+
+function! s:test_cleanup_palette_buffers() abort
+  for l:info in getbufinfo()
+    if getbufvar(l:info.bufnr, '&filetype') ==# 'jusinb'
+          \ || getbufvar(l:info.bufnr, 'jusi_client_managed', 0)
+          \ || getbufvar(l:info.bufnr, 'jusi_client_notebook_bufnr', 0) > 0
+      call setbufvar(l:info.bufnr, 'jusi_skip_cleanup_once', 1)
+    endif
+  endfor
+  silent! noautocmd tabonly!
+  silent! noautocmd only!
+  for l:info in getbufinfo()
+    if getbufvar(l:info.bufnr, '&filetype') ==# 'jusinb'
+          \ || getbufvar(l:info.bufnr, 'jusi_client_managed', 0)
+          \ || getbufvar(l:info.bufnr, 'jusi_client_notebook_bufnr', 0) > 0
+      call jusi#transport#stop(l:info.bufnr)
+      call setbufvar(l:info.bufnr, 'jusi_skip_cleanup_once', 1)
+      execute 'silent! noautocmd bwipeout! ' . l:info.bufnr
+    endif
+  endfor
+endfunction
+
+function! s:test_open_plain_buffer(name, lines) abort
+  enew!
+  setlocal buftype=
+  setlocal bufhidden=hide
+  setlocal swapfile&
+  execute 'file ' . a:name
+  call setline(1, a:lines)
+  return bufnr('%')
+endfunction
+
+function! Test_palette_completion_lists_current_notebook_first() abort
+  call s:test_cleanup_palette_buffers()
+  let l:first = s:test_open_named_notebook('alpha.vipynb', ['##', '%%sql db'], {
+        \ 'sql': {'entries': ['db1', 'db2']},
+        \ 'shell': {'entries': []},
+        \ })
+  let l:second = s:test_open_named_notebook('beta.vipynb', ['##', '%%mail main'], {
+        \ 'mail': {'entries': ['main']},
+        \ })
+
+  call assert_equal(l:second, bufnr('%'))
+  call assert_equal(['beta', 'alpha'], jusi#palette#complete('', 'J ', 3))
+  call assert_equal(['mail'], jusi#palette#complete('', 'J beta ', 8))
+  call assert_equal(['main'], jusi#palette#complete('', 'J beta mail ', 13))
+
+  execute 'buffer ' . l:first
+  call assert_equal(['alpha', 'beta'], jusi#palette#complete('', 'J ', 3))
+  call assert_equal(['shell', 'sql'], jusi#palette#complete('', 'J alpha ', 9))
+  call assert_equal([], jusi#palette#complete('', 'J alpha shell ', 15))
+endfunction
+
+function! Test_palette_command_creates_new_magic_cell() abort
+  call s:test_cleanup_palette_buffers()
+  call s:test_open_named_notebook('alpha.vipynb', ['##', 'print("hello")'], {
+        \ 'sql': {'entries': ['db1']},
+        \ })
+
+  call jusi#palette#command(0, 0, 0, 'alpha sql db1')
+  silent! stopinsert
+
+  call assert_equal('alpha.vipynb', bufname('%'))
+  call assert_equal([
+        \ '##',
+        \ 'print("hello")',
+        \ '##',
+        \ '%%sql db1',
+        \ '',
+        \ ], getline(1, '$'))
+  call assert_equal('%%sql db1', getline(4))
+  call assert_equal(5, line('.'))
+endfunction
+
+function! Test_palette_command_notebook_only_creates_plain_code_cell() abort
+  call s:test_cleanup_palette_buffers()
+  call s:test_open_named_notebook('alpha.vipynb', ['##', 'print("hello")'], {
+        \ 'sql': {'entries': ['db1']},
+        \ })
+
+  call jusi#palette#command(0, 0, 0, 'alpha')
+  silent! stopinsert
+
+  call assert_equal([
+        \ '##',
+        \ 'print("hello")',
+        \ '##',
+        \ '',
+        \ ], getline(1, '$'))
+  call assert_equal(4, line('.'))
+endfunction
+
+function! Test_palette_command_accepts_bare_magic_section_without_entry() abort
+  call s:test_cleanup_palette_buffers()
+  call s:test_open_named_notebook('alpha.vipynb', ['##', 'print("hello")'], {
+        \ 'shell': {'entries': []},
+        \ })
+
+  call jusi#palette#command(0, 0, 0, 'alpha shell')
+  silent! stopinsert
+
+  call assert_equal([
+        \ '##',
+        \ 'print("hello")',
+        \ '##',
+        \ '%%shell',
+        \ '',
+        \ ], getline(1, '$'))
+  call assert_equal(5, line('.'))
+endfunction
+
+function! Test_palette_command_reuses_existing_magic_cell_with_extra_args() abort
+  call s:test_cleanup_palette_buffers()
+  call s:test_open_named_notebook('alpha.vipynb', [
+        \ '##',
+        \ '%%mail mymail -f outbox',
+        \ 'old body',
+        \ ], {
+        \ 'mail': {'entries': ['mymail']},
+        \ })
+
+  call jusi#palette#command(0, 0, 0, 'alpha mail mymail -f outbox')
+  silent! stopinsert
+
+  call assert_equal(1, len(filter(copy(jusi#notebook#cells()), 'get(v:val, "kind", "") ==# "magic"')))
+  call assert_equal('%%mail mymail -f outbox', getline(2))
+  call assert_equal('old body', getline(3))
+  call assert_equal(2, line('.'))
+endfunction
+
+function! Test_palette_command_bang_opens_target_notebook_split() abort
+  call s:test_cleanup_palette_buffers()
+  let l:target = s:test_open_named_notebook('alpha.vipynb', ['##', '%%sql db1', 'select 1'], {
+        \ 'sql': {'entries': ['db1']},
+        \ })
+  call s:test_open_plain_buffer(tempname() . '.txt', ['outside'])
+
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {'execute': function('s:test_session_adapter_execute')}
+    call jusi#palette#command(1, 0, 0, 'alpha sql db1')
+    call assert_equal('alpha.vipynb', bufname('%'))
+    call assert_true(len(getwininfo()) > 1)
+    call assert_equal('busy', get(jusi#notebook#cell_at_line(), 'status', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_palette_command_bang_splits_when_target_visible_only_in_other_tab() abort
+  call s:test_cleanup_palette_buffers()
+  let l:target = s:test_open_named_notebook('alpha.vipynb', ['##', '%%sql db1', 'select 1'], {
+        \ 'sql': {'entries': ['db1']},
+        \ })
+  tabnew
+  call s:test_open_plain_buffer(tempname() . '.txt', ['outside'])
+  let l:outside_tab = tabpagenr()
+
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {'execute': function('s:test_session_adapter_execute')}
+    call jusi#palette#command(1, 0, 0, 'alpha sql db1')
+    call assert_equal(l:outside_tab, tabpagenr())
+    call assert_equal('alpha.vipynb', bufname('%'))
+    call assert_true(len(filter(getwininfo(), 'v:val.tabnr == tabpagenr()')) > 1)
+    call assert_equal('busy', get(jusi#notebook#cell_at_line(), 'status', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_palette_command_range_replaces_target_cell_body() abort
+  call s:test_cleanup_palette_buffers()
+  call s:test_open_plain_buffer(tempname() . '.txt', ['one line', 'two line'])
+  let l:source = bufnr('%')
+  call setpos("'<", [bufnr('%'), 1, 1, 0])
+  call setpos("'>", [bufnr('%'), 2, 8, 0])
+  call s:test_open_named_notebook('alpha.vipynb', ['##', '%%shell main', 'old'], {
+        \ 'shell': {'entries': ['main']},
+        \ })
+  execute 'buffer ' . l:source
+
+  call jusi#palette#command(0, 1, 2, 'alpha shell main')
+  silent! stopinsert
+
+  execute 'buffer alpha.vipynb'
+  call assert_equal([
+        \ '##',
+        \ '%%shell main',
+        \ 'one line',
+        \ 'two line',
+        \ ], getline(1, '$'))
+endfunction
+
+function! Test_palette_command_bang_range_notebook_only_creates_plain_code_cell_and_executes() abort
+  call s:test_cleanup_palette_buffers()
+  call s:test_open_plain_buffer(tempname() . '.txt', ['one line', 'two line'])
+  call setpos("'<", [bufnr('%'), 1, 1, 0])
+  call setpos("'>", [bufnr('%'), 2, 8, 0])
+  call s:test_open_named_notebook('alpha.vipynb', ['##', 'print("hello")'], {
+        \ 'sql': {'entries': ['db1']},
+        \ })
+  buffer #
+
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {'execute': function('s:test_session_adapter_execute')}
+    call jusi#palette#command(1, 1, 2, 'alpha')
+    call assert_equal('alpha.vipynb', bufname('%'))
+    call assert_equal([
+          \ '##',
+          \ 'print("hello")',
+          \ '##',
+          \ 'one line',
+          \ 'two line',
+          \ ], getline(1, '$'))
+    call assert_equal('busy', get(jusi#notebook#cell_at_line(), 'status', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
 function! Test_default_buffer_mappings_exist() abort
   call Test_open_scratch([
         \ '##',
@@ -5152,7 +5393,34 @@ function! Test_client_buffer_gets_toggle_focus_mappings() abort
   call jusi#focus#place_client_buffer(l:client, 'bsplit', 0)
   call assert_equal(':JusiToggleFocus<CR>', maparg("\<C-\\>\<C-\\>", 'n', 0, 1).rhs)
   call assert_equal('<C-R>=jusi#focus#toggle()<CR>', maparg("\<C-\\>\<C-\\>", 'i', 0, 1).rhs)
+  call assert_equal('<C-\><C-n>:JusiToggleFocus<CR>', maparg("\<C-\\>\<C-\\>", 't', 0, 1).rhs)
   call win_gotoid(bufwinid(l:notebook))
+endfunction
+
+function! Test_start_kernel_completion_uses_kernel_target_aliases() abort
+  let l:save_targets = get(g:, 'jusi_kernel_targets', {})
+  try
+    let g:jusi_kernel_targets = {
+          \ 'py': 'venv://venv1',
+          \ 'remote': 'ssh://user@host',
+          \ }
+    call assert_equal(['py', 'remote'], jusi#session#complete_start('', 'JusiStartKernel ', 17))
+    call assert_equal(['remote'], jusi#session#complete_start('re', 'JusiStartKernel re', 19))
+  finally
+    let g:jusi_kernel_targets = l:save_targets
+  endtry
+endfunction
+
+function! Test_attach_completion_uses_attach_registry_aliases() abort
+  let l:save_registry = get(g:, 'jusi_attach_registry_file', '')
+  try
+    let g:jusi_attach_registry_file = tempname()
+    call writefile(['{"py-remote":{"session_id":"sess-1"},"sql-prod":{"session_id":"sess-2"}}'], g:jusi_attach_registry_file)
+    call assert_equal(['py-remote', 'sql-prod'], jusi#session#complete_attach('', 'JusiAttach ', 12))
+    call assert_equal(['sql-prod'], jusi#session#complete_attach('sq', 'JusiAttach sq', 14))
+  finally
+    let g:jusi_attach_registry_file = l:save_registry
+  endtry
 endfunction
 
 function! Test_cell_mode_switches_sign_highlights() abort

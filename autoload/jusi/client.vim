@@ -34,6 +34,19 @@ function! s:exit_terminal_job_mode() abort
   silent! stopinsert
 endfunction
 
+function! jusi#client#ensure_terminal_normal_mode(...) abort
+  let l:bufnr = a:0 >= 1 ? a:1 : bufnr('%')
+  if l:bufnr != bufnr('%')
+    return 0
+  endif
+  if !jusi#client#is_native_terminal_buffer(l:bufnr)
+        \ && getbufvar(l:bufnr, 'jusi_client_transport_kind', '') !=# 'native_terminal'
+    return 0
+  endif
+  call s:exit_terminal_job_mode()
+  return 1
+endfunction
+
 function! s:native_terminal_transport(view) abort
   let l:transport = get(a:view, 'transport', {})
   return type(l:transport) == type({}) ? l:transport : {}

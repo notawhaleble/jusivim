@@ -7,6 +7,10 @@ function! s:apply_client_window_options() abort
   setlocal nonumber norelativenumber
   nnoremap <silent> <buffer> <C-\><C-\> :JusiToggleFocus<CR>
   inoremap <silent> <buffer> <C-\><C-\> <C-R>=jusi#focus#toggle()<CR>
+  if exists(':tnoremap')
+    tnoremap <silent> <buffer> <C-\><C-\> <C-\><C-n>:JusiToggleFocus<CR>
+  endif
+  call jusi#client#ensure_terminal_normal_mode(bufnr('%'))
   return 1
 endfunction
 

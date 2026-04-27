@@ -914,6 +914,7 @@ function! jusi#session#default_state() abort
         \ 'last_error_code': '',
         \ 'last_action': '',
         \ 'request': {},
+        \ 'palette': {},
         \ 'plugin_specs': {},
         \ }
 endfunction
@@ -933,6 +934,18 @@ function! jusi#session#target(...) abort
     return {}
   endif
   return get(l:session, 'target', jusi#session#default_target())
+endfunction
+
+function! jusi#session#complete_start(arglead, cmdline, cursorpos) abort
+  let l:names = keys(s:kernel_targets_config())
+  call sort(l:names)
+  return filter(l:names, 'v:val =~# ''^'' . escape(a:arglead, ''\.^$~[]*'')')
+endfunction
+
+function! jusi#session#complete_attach(arglead, cmdline, cursorpos) abort
+  let l:aliases = keys(s:read_attach_registry())
+  call sort(l:aliases)
+  return filter(l:aliases, 'v:val =~# ''^'' . escape(a:arglead, ''\.^$~[]*'')')
 endfunction
 
 function! jusi#session#attach_registry() abort

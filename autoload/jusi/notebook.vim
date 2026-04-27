@@ -1562,7 +1562,10 @@ function! s:clear_history_folds(cell) abort
   endif
   let l:current = [line('.'), col('.')]
   call cursor(l:range[0], 1)
-  silent! normal! zD
+  try
+    normal! zD
+  catch /^Vim\%((\a\+)\)\=:E490/
+  endtry
   call cursor(l:current[0], l:current[1])
 endfunction
 
@@ -1658,11 +1661,15 @@ function! jusi#notebook#edit_current() abort
     return {}
   endif
 
-  let l:body_end = get(l:cell, 'body_end', l:cell.end)
-  if l:cell.start < l:body_end
-    call s:delete_range(l:cell.start + 1, l:body_end)
+  let l:body_start = l:cell.start + 1
+  if get(l:cell, 'kind', '') ==# 'magic'
+    let l:body_start += 1
   endif
-  call append(l:cell.start, '')
+  let l:body_end = get(l:cell, 'body_end', l:cell.end)
+  if l:body_start <= l:body_end
+    call s:delete_range(l:body_start, l:body_end)
+  endif
+  call append(l:body_start - 1, '')
   call jusi#notebook#rebuild()
   let l:new_cell = jusi#notebook#cell_at_line(bufnr('%'), l:cell.start)
   call s:enter_insert_at_cell(l:new_cell)
