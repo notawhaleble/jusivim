@@ -62,7 +62,8 @@ function! s:map_cell_mode() abort
   nnoremap <silent> <buffer> Y :JusiCellCopy<CR>
   nnoremap <silent> <buffer> P :JusiCellPasteBelow<CR>
   nnoremap <silent> <buffer> S :JusiTogglePark<CR>
-  nnoremap <silent> <buffer> Q :JusiCloseClient<CR>
+  nnoremap <silent> <buffer> Q :<C-U>call jusi#cellmode#close_client(v:count)<CR>
+  nnoremap <silent> <buffer> G :<C-U>call jusi#cellmode#goto_client(v:count)<CR>
   nnoremap <silent> <buffer> R :JusiRebuild<CR>
 endfunction
 
@@ -82,6 +83,7 @@ function! s:clear_mode_mappings() abort
   call s:maybe_unmap_buffer('P')
   call s:maybe_unmap_buffer('S')
   call s:maybe_unmap_buffer('Q')
+  call s:maybe_unmap_buffer('G')
   call s:maybe_unmap_buffer('R')
   nnoremap <silent> <buffer> <Space> :JusiCellModeToggle<CR>
 endfunction
@@ -177,4 +179,37 @@ function! jusi#cellmode#toggle() abort
     return
   endif
   call jusi#cellmode#disable()
+endfunction
+
+function! jusi#cellmode#goto_client(count) abort
+  if a:count <= 0
+    echohl ErrorMsg
+    echom 'Client id count is required for G in cell mode'
+    echohl None
+    return {}
+  endif
+  let l:bufnr = bufnr('%')
+  let l:cell = jusi#notebook#cell_by_client_number(a:count, l:bufnr)
+  if empty(l:cell)
+    echohl ErrorMsg
+    echom 'No cell found for client-' . a:count
+    echohl None
+    return {}
+  endif
+  return jusi#notebook#goto_cell_id(l:cell.id, l:bufnr)
+endfunction
+
+function! jusi#cellmode#close_client(count) abort
+  let l:bufnr = bufnr('%')
+  if a:count <= 0
+    return jusi#session#close_current_client()
+  endif
+  let l:cell = jusi#notebook#cell_by_client_number(a:count, l:bufnr)
+  if empty(l:cell)
+    echohl ErrorMsg
+    echom 'No cell found for client-' . a:count
+    echohl None
+    return {}
+  endif
+  return jusi#session#close_client_for_cell(l:cell.id, l:bufnr)
 endfunction

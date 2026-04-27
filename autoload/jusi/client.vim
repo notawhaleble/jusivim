@@ -26,6 +26,10 @@ function! s:client_debug(message, payload) abort
   call s:native_terminal_debug(a:message, a:payload)
 endfunction
 
+function! jusi#client#debug_terminal_focus(message, payload) abort
+  call s:client_debug(a:message, a:payload)
+endfunction
+
 function! s:exit_terminal_job_mode() abort
   if has('nvim')
     call feedkeys("\<C-\\>\<C-N>", 'xt')
@@ -34,7 +38,14 @@ function! s:exit_terminal_job_mode() abort
   silent! stopinsert
 endfunction
 
-function! jusi#client#ensure_terminal_normal_mode(...) abort
+function! s:enter_terminal_job_mode() abort
+  if has('nvim')
+    return
+  endif
+  startinsert
+endfunction
+
+function! jusi#client#ensure_terminal_focus_mode(...) abort
   let l:bufnr = a:0 >= 1 ? a:1 : bufnr('%')
   if l:bufnr != bufnr('%')
     return 0
@@ -43,8 +54,101 @@ function! jusi#client#ensure_terminal_normal_mode(...) abort
         \ && getbufvar(l:bufnr, 'jusi_client_transport_kind', '') !=# 'native_terminal'
     return 0
   endif
-  call s:exit_terminal_job_mode()
+  if has('nvim')
+    call s:exit_terminal_job_mode()
+    return 1
+  endif
+  call s:enter_terminal_job_mode()
   return 1
+endfunction
+
+function! s:restore_terminal_job_mode_now(winid, bufnr) abort
+  if has('nvim') || a:winid <= 0 || !exists('*win_execute') || !exists('*win_id2win')
+    call s:client_debug('restore-terminal-job-mode-skip', {
+          \ 'reason': has('nvim') ? 'nvim' : (a:winid <= 0 ? 'invalid-winid' : 'missing-win-execute'),
+          \ 'winid': a:winid,
+          \ 'bufnr': a:bufnr,
+          \ })
+    return 0
+  endif
+  if win_id2win(a:winid) <= 0
+    call s:client_debug('restore-terminal-job-mode-skip', {
+          \ 'reason': 'window-missing',
+          \ 'winid': a:winid,
+          \ 'bufnr': a:bufnr,
+          \ })
+    return 0
+  endif
+  if winbufnr(a:winid) != a:bufnr
+    call s:client_debug('restore-terminal-job-mode-skip', {
+          \ 'reason': 'buffer-mismatch',
+          \ 'winid': a:winid,
+          \ 'bufnr': a:bufnr,
+          \ 'actual_bufnr': winbufnr(a:winid),
+          \ })
+    return 0
+  endif
+  if !jusi#client#is_native_terminal_buffer(a:bufnr)
+        \ && getbufvar(a:bufnr, 'jusi_client_transport_kind', '') !=# 'native_terminal'
+    call s:client_debug('restore-terminal-job-mode-skip', {
+          \ 'reason': 'not-native-terminal',
+          \ 'winid': a:winid,
+          \ 'bufnr': a:bufnr,
+          \ 'transport_kind': getbufvar(a:bufnr, 'jusi_client_transport_kind', ''),
+          \ })
+    return 0
+  endif
+  call s:client_debug('restore-terminal-job-mode-begin', {
+        \ 'winid': a:winid,
+        \ 'bufnr': a:bufnr,
+        \ 'mode': mode(),
+        \ })
+  try
+    let l:before = win_execute(a:winid, 'echo mode()')
+    let l:enter = win_execute(a:winid, 'normal i')
+    let l:after = win_execute(a:winid, 'echo mode()')
+    call s:client_debug('restore-terminal-job-mode-ok', {
+          \ 'winid': a:winid,
+          \ 'bufnr': a:bufnr,
+          \ 'before_mode': l:before,
+          \ 'after_mode': l:after,
+          \ 'enter_result': l:enter,
+          \ })
+    return 1
+  catch
+    call s:client_debug('restore-terminal-job-mode-failed', {
+          \ 'winid': a:winid,
+          \ 'bufnr': a:bufnr,
+          \ 'error': v:exception,
+          \ })
+  endtry
+  return 0
+endfunction
+
+function! s:restore_terminal_job_mode_timer(winid, bufnr, timer) abort
+  call s:client_debug('restore-terminal-job-mode-timer-fired', {
+        \ 'timer': a:timer,
+        \ 'winid': a:winid,
+        \ 'bufnr': a:bufnr,
+        \ 'current_bufnr': bufnr('%'),
+        \ 'current_mode': mode(),
+        \ })
+  call s:restore_terminal_job_mode_now(a:winid, a:bufnr)
+endfunction
+
+function! jusi#client#restore_terminal_job_mode(winid, bufnr) abort
+  if has('nvim') || a:winid <= 0
+    return 0
+  endif
+  if exists('*timer_start')
+    call s:client_debug('restore-terminal-job-mode-scheduled', {
+          \ 'winid': a:winid,
+          \ 'bufnr': a:bufnr,
+          \ })
+    call timer_start(0, function('s:restore_terminal_job_mode_timer', [a:winid, a:bufnr]))
+    return 1
+  endif
+  return s:restore_terminal_job_mode_now(a:winid, a:bufnr)
 endfunction
 
 function! s:native_terminal_transport(view) abort

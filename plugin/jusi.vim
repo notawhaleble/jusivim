@@ -63,6 +63,17 @@ endif
 
 call jusi#render#define_signs()
 highlight Folded ctermfg=DarkGray ctermbg=NONE guifg=#777777 guibg=NONE
+highlight default link JusiStatusNotebookMode ModeMsg
+highlight default link JusiStatusSessionConnected Directory
+highlight default link JusiStatusSessionDisconnected WarningMsg
+highlight default link JusiStatusSessionFailed ErrorMsg
+highlight default link JusiStatusSessionTransition Question
+highlight default link JusiStatusSessionIdle Comment
+if hlexists('StatusLineTerm')
+  highlight default link JusiStatusClientInteractive StatusLineTerm
+else
+  highlight default JusiStatusClientInteractive cterm=bold ctermfg=Black ctermbg=Green gui=bold guifg=#111111 guibg=#7fbf7f
+endif
 
 command! JusiRebuild call jusi#notebook#rebuild()
 command! JusiCellNext call jusi#notebook#goto_next()

@@ -1,5 +1,6 @@
 setlocal commentstring=#\ %s
 setlocal completeopt-=preview
+call jusi#statusline#setup_notebook()
 
 if !exists('b:jusi_mappings_initialized')
   let b:jusi_mappings_initialized = 1

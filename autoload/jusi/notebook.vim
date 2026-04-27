@@ -1306,6 +1306,25 @@ function! jusi#notebook#goto_cell_id(cell_id, ...) abort
   return l:cell
 endfunction
 
+function! s:client_numeric_id(client_id) abort
+  let l:match = matchlist(a:client_id, '\v(\d+)$')
+  return len(l:match) > 1 ? str2nr(l:match[1]) : -1
+endfunction
+
+function! jusi#notebook#cell_by_client_number(number, ...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  let l:state = jusi#notebook#state(l:bufnr)
+  if empty(l:state)
+    return {}
+  endif
+  for l:cell in get(l:state, 'cells', [])
+    if s:client_numeric_id(get(l:cell, 'client_id', '')) == a:number
+      return l:cell
+    endif
+  endfor
+  return {}
+endfunction
+
 function! s:insert_cell_at(lnum) abort
   let l:bufnr = bufnr('%')
   call s:prepare_state_for_explicit_insert(l:bufnr, a:lnum)
@@ -1318,8 +1337,11 @@ function! s:insert_cell_at(lnum) abort
   call jusi#notebook#rebuild()
 endfunction
 
-function! s:enter_insert_at_cell(cell) abort
+function! s:enter_insert_at_cell(cell, ...) abort
   call s:goto_cell(a:cell)
+  if a:0 >= 1
+    call cursor(a:1, 1)
+  endif
   startinsert
 endfunction
 
@@ -1672,7 +1694,11 @@ function! jusi#notebook#edit_current() abort
   call append(l:body_start - 1, '')
   call jusi#notebook#rebuild()
   let l:new_cell = jusi#notebook#cell_at_line(bufnr('%'), l:cell.start)
-  call s:enter_insert_at_cell(l:new_cell)
+  let l:insert_lnum = get(l:new_cell, 'start', l:cell.start) + 1
+  if get(l:new_cell, 'kind', '') ==# 'magic'
+    let l:insert_lnum += 1
+  endif
+  call s:enter_insert_at_cell(l:new_cell, l:insert_lnum)
   return l:new_cell
 endfunction
 

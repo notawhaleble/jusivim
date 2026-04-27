@@ -2051,22 +2051,27 @@ function! jusi#session#close_current_client() abort
   endif
 
   let l:cell = jusi#notebook#cell_at_line(l:bufnr, line('.'))
+  return s:close_cell_client(l:bufnr, l:cell)
+endfunction
+
+function! s:close_cell_client(bufnr, cell) abort
+  let l:cell = a:cell
   if empty(l:cell)
-    return s:reject_action(l:bufnr, {'last_action': 'close_client'}, 'Cannot close client without an attached client buffer')
+    return s:reject_action(a:bufnr, {'last_action': 'close_client'}, 'Cannot close client without an attached client buffer')
   endif
   let l:client_bufnr = get(l:cell, 'client_bufnr', -1)
   let l:binding = jusi#client#validate_attached_binding(
-        \ l:bufnr,
+        \ a:bufnr,
         \ l:cell.id,
         \ get(l:cell, 'client_id', ''),
         \ l:client_bufnr)
   if !get(l:binding, 'ok', 0)
     let l:recovered = jusi#client#recover_attached_buffer(
-          \ l:bufnr,
+          \ a:bufnr,
           \ l:cell.id,
           \ get(l:cell, 'client_id', ''))
     if l:recovered > 0
-      let l:cell = s:update_cell(l:bufnr, l:cell.id, {
+      let l:cell = s:update_cell(a:bufnr, l:cell.id, {
             \ 'client_bufnr': l:recovered,
             \ 'client_state': 'active',
             \ })
@@ -2074,30 +2079,30 @@ function! jusi#session#close_current_client() abort
     endif
   endif
   if get(l:cell, 'client_bufnr', -1) < 0
-    return s:reject_action(l:bufnr, {'last_action': 'close_client'}, 'Cannot close client without an attached client buffer')
+    return s:reject_action(a:bufnr, {'last_action': 'close_client'}, 'Cannot close client without an attached client buffer')
   endif
 
-  let l:session = jusi#session#state(l:bufnr)
+  let l:session = jusi#session#state(a:bufnr)
   if get(l:session, 'state', 'idle') !=# 'connected'
         \ || !jusi#adapter#has('shutdown_client')
     if index(['busy', 'follow-up'], get(l:cell, 'status', '')) >= 0
-      return s:reject_action(l:bufnr, {'last_action': 'close_client'}, 'Cannot close an active client without shutdown support')
+      return s:reject_action(a:bufnr, {'last_action': 'close_client'}, 'Cannot close an active client without shutdown support')
     endif
     call jusi#client#destroy_buffer(l:client_bufnr)
-    call s:update_session(l:bufnr, {
+    call s:update_session(a:bufnr, {
           \ 'last_action': 'close_client',
           \ 'last_error': '',
           \ 'request': {'cell_id': l:cell.id},
           \ })
-    return s:update_cell(l:bufnr, l:cell.id, s:cell_close_final_update(l:cell))
+    return s:update_cell(a:bufnr, l:cell.id, s:cell_close_final_update(l:cell))
   endif
 
-  call s:update_session(l:bufnr, {
+  call s:update_session(a:bufnr, {
         \ 'last_action': 'close_client',
         \ 'last_error': '',
         \ 'request': {'cell_id': l:cell.id},
         \ })
-  call s:update_cell(l:bufnr, l:cell.id, {
+  call s:update_cell(a:bufnr, l:cell.id, {
         \ 'close_requested': 1,
         \ 'client_state': 'shutting_down',
         \ })
@@ -2106,17 +2111,17 @@ function! jusi#session#close_current_client() abort
         \ 'client_id': get(l:cell, 'client_id', ''),
         \ 'reason': 'user_close',
         \ }
-  let l:response = s:use_async_transport_shutdown(l:bufnr)
-        \ ? jusi#adapter#call_async('shutdown_client', l:bufnr, l:request)
-        \ : jusi#adapter#call('shutdown_client', l:bufnr, l:request)
+  let l:response = s:use_async_transport_shutdown(a:bufnr)
+        \ ? jusi#adapter#call_async('shutdown_client', a:bufnr, l:request)
+        \ : jusi#adapter#call('shutdown_client', a:bufnr, l:request)
   if get(l:response, 'ok', 0)
-    if s:use_async_transport_shutdown(l:bufnr) || get(l:response, '_transport', 0)
+    if s:use_async_transport_shutdown(a:bufnr) || get(l:response, '_transport', 0)
       if l:client_bufnr > 0
         call jusi#client#detach_buffer(l:client_bufnr)
       endif
       let l:update = s:cell_close_final_update(l:cell)
       let l:update._preserve_local_buffer = l:client_bufnr > 0 ? 1 : 0
-      return s:update_cell(l:bufnr, l:cell.id, l:update)
+      return s:update_cell(a:bufnr, l:cell.id, l:update)
     endif
     if has_key(l:response, 'cell')
       call jusi#session#callback_response({
@@ -2124,21 +2129,29 @@ function! jusi#session#close_current_client() abort
             \ 'cell': has_key(l:response, 'cell')
             \   ? get(l:response, 'cell', {})
             \   : {'id': l:cell.id},
-            \ }, l:bufnr)
+            \ }, a:bufnr)
     endif
-    let l:current = jusi#notebook#cell_at_line(l:bufnr, line('.'))
-    return s:maybe_finalize_closed_cell(l:bufnr, l:current)
+    let l:current = jusi#notebook#cell_by_id(l:cell.id, a:bufnr)
+    return s:maybe_finalize_closed_cell(a:bufnr, l:current)
   endif
 
-  call s:update_cell(l:bufnr, l:cell.id, {'close_requested': 0, 'client_state': 'active'})
+  call s:update_cell(a:bufnr, l:cell.id, {'close_requested': 0, 'client_state': 'active'})
   if s:is_transport_failure(l:response)
-    return s:reject_transport_failure(l:bufnr, {
+    return s:reject_transport_failure(a:bufnr, {
           \ 'last_action': 'close_client',
           \ }, l:response, 'Failed to close client')
   endif
-  return s:fail_session(l:bufnr, {
+  return s:fail_session(a:bufnr, {
         \ 'last_action': 'close_client',
         \ }, get(l:response, 'error', 'Failed to close client'))
+endfunction
+
+function! jusi#session#close_client_for_cell(cell_id, ...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  if !s:require_notebook_buffer(l:bufnr, 'close client')
+    return {}
+  endif
+  return s:close_cell_client(l:bufnr, jusi#notebook#cell_by_id(a:cell_id, l:bufnr))
 endfunction
 
 function! jusi#session#toggle_park_current_client() abort

@@ -5,13 +5,33 @@ function! s:apply_client_window_options() abort
   endif
   call jusi#client#allow_editor_close(bufnr('%'))
   setlocal nonumber norelativenumber
+  call jusi#statusline#setup_client()
   nnoremap <silent> <buffer> <C-\><C-\> :JusiToggleFocus<CR>
   inoremap <silent> <buffer> <C-\><C-\> <C-R>=jusi#focus#toggle()<CR>
   if exists(':tnoremap')
-    tnoremap <silent> <buffer> <C-\><C-\> <C-\><C-n>:JusiToggleFocus<CR>
+    tnoremap <silent> <buffer> <C-\><C-\> <C-\><C-n>:call jusi#focus#toggle_from_terminal()<CR>
   endif
-  call jusi#client#ensure_terminal_normal_mode(bufnr('%'))
+  call jusi#client#ensure_terminal_focus_mode(bufnr('%'))
   return 1
+endfunction
+
+function! s:prime_visible_client_window(winid) abort
+  if a:winid <= 0 || !exists('*win_execute')
+    return 0
+  endif
+  call win_execute(a:winid, 'setlocal nonumber norelativenumber', 'silent!')
+  call jusi#statusline#setup_client(a:winid)
+  return 1
+endfunction
+
+function! s:restore_terminal_job_mode_if_visible(winid, bufnr) abort
+  if has('nvim') || a:winid <= 0 || !exists('*win_execute') || !exists('*win_id2win')
+    return 0
+  endif
+  if win_id2win(a:winid) <= 0 || winbufnr(a:winid) != a:bufnr
+    return 0
+  endif
+  return jusi#client#restore_terminal_job_mode(a:winid, a:bufnr)
 endfunction
 
 function! s:find_window_for_buffer(bufnr) abort
@@ -55,6 +75,7 @@ function! jusi#focus#place_client_buffer(bufnr, ...) abort
   let l:source_winid = win_getid()
   let l:wininfo = filter(copy(getwininfo()), {_, v -> v.bufnr == a:bufnr})
   if l:return_focus && !empty(l:wininfo) && l:source_bufnr != a:bufnr
+    call s:prime_visible_client_window(l:wininfo[0].winid)
     return a:bufnr
   endif
   if empty(l:wininfo)
@@ -158,4 +179,27 @@ function! jusi#focus#toggle() abort
     return s:focus_client_cell()
   endif
   return s:focus_first_notebook()
+endfunction
+
+function! jusi#focus#toggle_from_terminal() abort
+  let l:client_bufnr = bufnr('%')
+  let l:client_winid = exists('*win_getid') ? win_getid() : 0
+  call jusi#client#debug_terminal_focus('toggle-from-terminal-begin', {
+        \ 'client_bufnr': l:client_bufnr,
+        \ 'client_winid': l:client_winid,
+        \ 'mode': mode(),
+        \ 'notebook_bufnr': getbufvar(l:client_bufnr, 'jusi_client_notebook_bufnr', 0),
+        \ 'cell_id': getbufvar(l:client_bufnr, 'jusi_client_cell_id', 0),
+        \ })
+  let l:result = jusi#focus#toggle()
+  call jusi#client#debug_terminal_focus('toggle-from-terminal-after-toggle', {
+        \ 'client_bufnr': l:client_bufnr,
+        \ 'client_winid': l:client_winid,
+        \ 'result': l:result,
+        \ 'current_bufnr': bufnr('%'),
+        \ 'current_winid': exists('*win_getid') ? win_getid() : 0,
+        \ 'mode': mode(),
+        \ })
+  call s:restore_terminal_job_mode_if_visible(l:client_winid, l:client_bufnr)
+  return l:result
 endfunction

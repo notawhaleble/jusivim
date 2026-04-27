@@ -200,6 +200,7 @@ function! Test_edit_current_preserves_magic_history_region() abort
   call assert_equal(['##', '%%sql main', '', '##<<', '###', 'select 0', '##>>'], getline(1, '$'))
   call assert_equal(['%%sql main', ''], jusi#notebook#cell_main_lines())
   call assert_equal(['##<<', '###', 'select 0', '##>>'], jusi#notebook#cell_history_lines())
+  call assert_equal(3, line('.'))
 endfunction
 
 function! Test_append_history_entry_creates_magic_history_region() abort
@@ -5371,7 +5372,8 @@ function! Test_cell_mode_toggle_maps_navigation_keys() abort
   call assert_equal(':JusiCellCopy<CR>', maparg('Y', 'n', 0, 1).rhs)
   call assert_equal(':JusiCellPasteBelow<CR>', maparg('P', 'n', 0, 1).rhs)
   call assert_equal(':JusiTogglePark<CR>', maparg('S', 'n', 0, 1).rhs)
-  call assert_equal(':JusiCloseClient<CR>', maparg('Q', 'n', 0, 1).rhs)
+  call assert_equal(':<C-U>call jusi#cellmode#close_client(v:count)<CR>', maparg('Q', 'n', 0, 1).rhs)
+  call assert_equal(':<C-U>call jusi#cellmode#goto_client(v:count)<CR>', maparg('G', 'n', 0, 1).rhs)
   call assert_equal(':JusiRebuild<CR>', maparg('R', 'n', 0, 1).rhs)
   call jusi#cellmode#disable()
   call assert_equal(0, get(b:, 'jusi_cell_mode', 1))
@@ -5393,8 +5395,111 @@ function! Test_client_buffer_gets_toggle_focus_mappings() abort
   call jusi#focus#place_client_buffer(l:client, 'bsplit', 0)
   call assert_equal(':JusiToggleFocus<CR>', maparg("\<C-\\>\<C-\\>", 'n', 0, 1).rhs)
   call assert_equal('<C-R>=jusi#focus#toggle()<CR>', maparg("\<C-\\>\<C-\\>", 'i', 0, 1).rhs)
-  call assert_equal('<C-\><C-n>:JusiToggleFocus<CR>', maparg("\<C-\\>\<C-\\>", 't', 0, 1).rhs)
+  call assert_equal('<C-\><C-n>:call jusi#focus#toggle_from_terminal()<CR>', maparg("\<C-\\>\<C-\\>", 't', 0, 1).rhs)
+  call assert_match('^%!jusi#statusline#render_client()', &l:statusline)
   call win_gotoid(bufwinid(l:notebook))
+endfunction
+
+function! Test_notebook_statusline_shows_session_and_current_cell() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ ])
+  call jusi#session#apply({'state': 'connected', 'target': {'alias': 'ololo', 'kind': 'venv'}})
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].client_id = 'client-11'
+  call cursor(3, 1)
+
+  call assert_match('Jusi test\.vipynb', jusi#statusline#render_notebook())
+  call assert_match('connected', jusi#statusline#render_notebook())
+  call assert_match('target:ololo', jusi#statusline#render_notebook())
+  call assert_notmatch('cell:', jusi#statusline#render_notebook())
+  call assert_match('^%!jusi#statusline#render_notebook()', &l:statusline)
+endfunction
+
+function! Test_client_statusline_shows_client_identity() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd pods',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-11')
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].client_id = 'client-11'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-11', l:client)
+
+  call jusi#focus#place_client_buffer(l:client, 'bsplit', 0)
+  call assert_match('client:client-11', jusi#statusline#render_client())
+  call assert_match('cell:1', jusi#statusline#render_client())
+  call assert_match('status:follow-up', jusi#statusline#render_client())
+  call win_gotoid(bufwinid(l:notebook))
+endfunction
+
+function! Test_statusline_render_uses_target_window_context() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd pods',
+        \ ])
+  let l:notebook = bufnr('%')
+  call jusi#session#apply({'state': 'connected', 'target': {'alias': 'ololo', 'kind': 'venv'}})
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-11')
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].client_id = 'client-11'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-11', l:client)
+
+  call jusi#focus#place_client_buffer(l:client, 'bsplit', 0)
+  let l:notebook_winid = bufwinid(l:notebook)
+  let l:client_winid = bufwinid(l:client)
+  call win_gotoid(l:client_winid)
+  let g:statusline_winid = l:notebook_winid
+  call assert_match('Jusi test\.vipynb', jusi#statusline#render_notebook())
+  call assert_match('connected', jusi#statusline#render_notebook())
+  let g:statusline_winid = l:client_winid
+  call assert_match('client:client-11', jusi#statusline#render_client())
+  call assert_match('cell:1', jusi#statusline#render_client())
+  call assert_match('status:follow-up', jusi#statusline#render_client())
+  unlet g:statusline_winid
+  call win_gotoid(l:notebook_winid)
+endfunction
+
+function! Test_cellmode_goto_client_uses_numeric_client_suffix() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'one',
+        \ '##',
+        \ 'two',
+        \ ])
+  let b:jusi_nb.cells[1].client_id = 'client-11'
+  call jusi#cellmode#enable()
+
+  call jusi#cellmode#goto_client(11)
+  call assert_equal(4, line('.'))
+endfunction
+
+function! Test_cellmode_close_client_with_count_targets_matching_cell() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'one',
+        \ '##',
+        \ 'two',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-11')
+  let b:jusi_nb.cells[1].client_id = 'client-11'
+  let b:jusi_nb.cells[1].client_bufnr = l:client
+  let b:jusi_nb.cells[1].status = 'done'
+  call jusi#client#mark_attached_buffer(l:notebook, b:jusi_nb.cells[1].id, 'client-11', l:client)
+  call cursor(2, 1)
+  call jusi#cellmode#enable()
+
+  call jusi#cellmode#close_client(11)
+  call assert_equal('', get(b:jusi_nb.cells[1], 'client_id', ''))
+  call assert_equal(-1, get(b:jusi_nb.cells[1], 'client_bufnr', -1))
 endfunction
 
 function! Test_start_kernel_completion_uses_kernel_target_aliases() abort
