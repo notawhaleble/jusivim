@@ -504,6 +504,20 @@ Initial capture rule:
 - history mutation must clear affected manual folds before editing history lines
 - history fold creation must be idempotent to avoid nested fold layers
 
+This phase is considered complete enough for the frontend core.
+
+What it now covers in practice:
+
+- magic history capture and UX
+- plugin navigation/config completion surface through `:J` / `:J!`
+- restart workflow through `:JusiRestartKernel`
+- the remaining cleanup/recovery work is now ordinary bug-fixing, not a missing architectural slice
+
+What it does not claim:
+
+- richer nonterminal output integration as a v1 requirement
+- that every future plugin/product workflow is already finished
+
 ## Immediate Implementation Target
 
 The first implementation milestone should prove the architecture with a narrow, complete slice:

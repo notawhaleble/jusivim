@@ -901,6 +901,45 @@ function! s:load_session_config_result() abort
   return jusi#config#load()
 endfunction
 
+function! s:start_kernel_session(bufnr, kernel_name, target, action) abort
+  let l:request = {
+        \ 'kernel_name': a:kernel_name,
+        \ 'target': copy(a:target),
+        \ }
+  call s:update_session(a:bufnr, {
+        \ 'state': 'starting',
+        \ 'kernel_name': a:kernel_name,
+        \ 'target': copy(a:target),
+        \ 'restart_request': {},
+        \ 'expires_at': '',
+        \ 'last_action': a:action,
+        \ 'last_error': '',
+        \ 'last_error_code': '',
+        \ 'request': l:request,
+        \ })
+  let l:response = jusi#adapter#call('start', a:bufnr, l:request)
+  call s:debug_log(a:bufnr, a:action . '-response', l:response)
+  if get(l:response, 'ok', 0)
+    if get(l:response, '_transport', 0) && !s:response_has_state_updates(l:response)
+      return jusi#notebook#state(a:bufnr)
+    endif
+    return s:apply_response(a:bufnr, l:response, {'state': 'connected', 'last_action': a:action})
+  endif
+  return s:fail_session(a:bufnr, {
+        \ 'last_action': a:action,
+        \ 'kernel_name': a:kernel_name,
+        \ 'target': copy(a:target),
+        \ 'expires_at': '',
+        \ 'last_error_code': get(l:response, 'error_code', ''),
+        \ 'request': l:request,
+        \ }, get(l:response, 'error', 'Failed to start kernel session'))
+endfunction
+
+function! s:is_restartable_session(session) abort
+  return get(get(a:session, 'target', {}), 'source', '') ==# 'start'
+        \ && !empty(get(a:session, 'kernel_name', ''))
+endfunction
+
 function! jusi#session#default_state() abort
   return {
         \ 'state': 'idle',
@@ -914,6 +953,7 @@ function! jusi#session#default_state() abort
         \ 'last_error_code': '',
         \ 'last_action': '',
         \ 'request': {},
+        \ 'restart_request': {},
         \ 'palette': {},
         \ 'plugin_specs': {},
         \ }
@@ -1000,6 +1040,17 @@ function! jusi#session#callback_session(update, ...) abort
   endif
   if has_key(a:update, 'plugin_specs')
     call jusi#notebook#refresh_plugin_presentation(l:bufnr)
+  endif
+  let l:restart_request = get(l:next_session, 'restart_request', {})
+  if get(l:next_session, 'state', '') ==# 'stopped'
+        \ && type(l:restart_request) == type({})
+        \ && !empty(l:restart_request)
+    call s:update_session(l:bufnr, {'restart_request': {}})
+    return s:start_kernel_session(
+          \ l:bufnr,
+          \ get(l:restart_request, 'kernel_name', ''),
+          \ copy(get(l:restart_request, 'target', jusi#session#default_target())),
+          \ 'restart')
   endif
   return l:state
 endfunction
@@ -1697,37 +1748,7 @@ function! jusi#session#start(...) abort
   endif
 
   call s:clear_all_cell_runtime(l:bufnr)
-
-  let l:request = {
-        \ 'kernel_name': l:kernel_name,
-        \ 'target': copy(l:target),
-        \ }
-  call s:update_session(l:bufnr, {
-        \ 'state': 'starting',
-        \ 'kernel_name': l:kernel_name,
-        \ 'target': l:target,
-        \ 'expires_at': '',
-        \ 'last_action': 'start',
-        \ 'last_error': '',
-        \ 'last_error_code': '',
-        \ 'request': l:request,
-        \ })
-  let l:response = jusi#adapter#call('start', l:bufnr, l:request)
-  call s:debug_log(l:bufnr, 'start-response', l:response)
-  if get(l:response, 'ok', 0)
-    if get(l:response, '_transport', 0) && !s:response_has_state_updates(l:response)
-      return jusi#notebook#state(l:bufnr)
-    endif
-    return s:apply_response(l:bufnr, l:response, {'state': 'connected'})
-  endif
-  return s:fail_session(l:bufnr, {
-        \ 'last_action': 'start',
-        \ 'kernel_name': l:kernel_name,
-        \ 'target': l:target,
-        \ 'expires_at': '',
-        \ 'last_error_code': get(l:response, 'error_code', ''),
-        \ 'request': l:request,
-        \ }, get(l:response, 'error', 'Failed to start kernel session'))
+  return s:start_kernel_session(l:bufnr, l:kernel_name, l:target, 'start')
 endfunction
 
 function! jusi#session#attach(target) abort
@@ -2333,6 +2354,53 @@ function! jusi#session#reconnect() abort
         \ 'last_action': 'reconnect',
         \ 'last_error_code': get(l:response, 'error_code', ''),
         \ }, get(l:response, 'error', 'Failed to reconnect session'))
+endfunction
+
+function! jusi#session#restart() abort
+  let l:bufnr = s:normalize_bufnr(bufnr('%'))
+  if !s:require_notebook_buffer(l:bufnr, 'restart')
+    return {}
+  endif
+
+  let l:session = jusi#session#state(l:bufnr)
+  let l:state = get(l:session, 'state', 'idle')
+  if index(['connected', 'stopped'], l:state) < 0
+    if l:state ==# 'disconnected'
+      return s:fail_session(l:bufnr, {'last_action': 'restart'}, 'Cannot restart while the session is disconnected; reconnect or start a new session instead')
+    endif
+    return s:fail_session(l:bufnr, {'last_action': 'restart'}, 'Cannot restart a session that is not restartable')
+  endif
+  if !s:is_restartable_session(l:session)
+    return s:fail_session(l:bufnr, {'last_action': 'restart'}, 'Can only restart sessions started by JusiStartKernel')
+  endif
+
+  let l:kernel_name = get(l:session, 'kernel_name', '')
+  let l:target = copy(get(l:session, 'target', jusi#session#default_target()))
+  if empty(l:kernel_name)
+    return s:fail_session(l:bufnr, {'last_action': 'restart'}, 'Cannot restart without a tracked kernel name')
+  endif
+
+  if l:state ==# 'connected'
+    call s:update_session(l:bufnr, {
+          \ 'restart_request': {
+          \   'kernel_name': l:kernel_name,
+          \   'target': copy(l:target),
+          \   },
+          \ })
+    let l:stop_result = jusi#session#stop()
+    let l:stopped_session = jusi#session#state(l:bufnr)
+    if get(l:stopped_session, 'state', 'idle') ==# 'stopping'
+      return l:stop_result
+    endif
+    if get(l:stopped_session, 'state', 'idle') !=# 'stopped'
+      call s:update_session(l:bufnr, {'restart_request': {}})
+      return l:stop_result
+    endif
+    call s:update_session(l:bufnr, {'restart_request': {}})
+  endif
+
+  call s:clear_all_cell_runtime(l:bufnr)
+  return s:start_kernel_session(l:bufnr, l:kernel_name, l:target, 'restart')
 endfunction
 
 function! jusi#session#stop() abort

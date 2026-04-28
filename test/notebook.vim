@@ -947,6 +947,39 @@ function! s:test_session_adapter_reconnect_not_found(bufnr, payload) abort
   return {'ok': 0, 'error': 'Session not found', 'error_code': 'session_not_found'}
 endfunction
 
+function! s:test_session_adapter_restart_start(bufnr, payload) abort
+  let s:restart_calls = get(s:, 'restart_calls', [])
+  call add(s:restart_calls, {'op': 'start', 'payload': copy(a:payload)})
+  return {
+        \ 'ok': 1,
+        \ 'session': {
+        \   'id': 'sess-restart-1',
+        \   'kernel_id': 'kernel-restart-1',
+        \   'state': 'connected',
+        \   'kernel_name': get(a:payload, 'kernel_name', ''),
+        \   'connection': 'mock://kernel/' . get(a:payload, 'kernel_name', ''),
+        \   'target': copy(get(a:payload, 'target', {})),
+        \   },
+        \ }
+endfunction
+
+function! s:test_session_adapter_restart_stop(bufnr, payload) abort
+  let s:restart_calls = get(s:, 'restart_calls', [])
+  call add(s:restart_calls, {'op': 'stop', 'payload': copy(a:payload)})
+  return {
+        \ 'ok': 1,
+        \ 'session': {
+        \   'request': {},
+        \   },
+        \ }
+endfunction
+
+function! s:test_session_adapter_restart_stop_transport(bufnr, payload) abort
+  let s:restart_calls = get(s:, 'restart_calls', [])
+  call add(s:restart_calls, {'op': 'stop', 'payload': copy(a:payload)})
+  return {'ok': 1, '_transport': 1}
+endfunction
+
 function! Test_default_session_state_is_initialized_for_notebook() abort
   call Test_open_scratch([
         \ '##',
@@ -3488,6 +3521,53 @@ function! Test_client_refresh_formats_structured_error_events_in_display_buffer(
   endtry
 endfunction
 
+function! Test_client_refresh_strips_ansi_from_traceback_lines() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {'inspect_client': function('s:test_session_adapter_inspect_client')}
+    let s:inspect_client_response = {
+          \ 'revision': 1,
+          \ 'title': 'cell 1: error',
+          \ 'lines': [
+          \   'error: ZeroDivisionError: division by zero',
+          \   "trace> \u001b[0;31m---------------------------------------------------------------------------\u001b[0m",
+          \   "trace> \u001b[0;31mZeroDivisionError\u001b[0m                         Traceback (most recent call last)",
+          \   'trace> Cell [0;32mIn[1], line 1[0m',
+          \   "[0;32m----> 1[0m [38;5;28mprint[39m([38;5;241;43m1[39;49m[38;5;241;43m/[39;49m[38;5;241;43m0[39;49m)",
+          \   "trace> \u001b[0;31mZeroDivisionError\u001b[0m: division by zero",
+          \ ],
+          \ 'execution_status': 'error',
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    let l:notebook = bufnr('%')
+    let l:cell_id = b:jusi_nb.cells[0].id
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.state = 'connected'
+    let b:jusi_nb.cells[0].status = 'error'
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = l:client
+    call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+
+    call jusi#client#refresh_attached_view(l:notebook, l:cell_id, 'client-1', l:client)
+
+    call assert_equal([
+          \ 'ZeroDivisionError: division by zero',
+          \ '---------------------------------------------------------------------------',
+          \ 'ZeroDivisionError                         Traceback (most recent call last)',
+          \ 'Cell In[1], line 1',
+          \ '----> 1 print(1/0)',
+          \ 'ZeroDivisionError: division by zero',
+          \ ], getbufline(l:client, 1, '$'))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
 function! Test_client_refresh_tracks_pending_input_from_inspect_snapshot() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   try
@@ -3591,6 +3671,122 @@ function! Test_stop_kernel_moves_local_session_to_stopped() abort
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
+endfunction
+
+function! Test_restart_kernel_restarts_connected_start_managed_session() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let s:restart_calls = []
+    let g:jusi_session_adapter = {
+          \ 'start': function('s:test_session_adapter_restart_start'),
+          \ 'stop': function('s:test_session_adapter_restart_stop'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#apply({
+          \ 'id': 'sess-old',
+          \ 'state': 'connected',
+          \ 'kernel_name': 'python3',
+          \ 'target': {'source': 'start', 'alias': 'py', 'kind': 'venv', 'value': 'venv://py', 'config': {'plugins': {'sql': {'main': {'provider': 'sqlite'}}}}},
+          \ })
+    call jusi#session#restart()
+    call assert_equal(['stop', 'start'], map(copy(s:restart_calls), 'v:val.op'))
+    call assert_equal('python3', get(get(s:restart_calls[1], 'payload', {}), 'kernel_name', ''))
+    call assert_equal('venv', get(get(get(s:restart_calls[1], 'payload', {}), 'target', {}), 'kind', ''))
+    call assert_equal('venv://py', get(get(get(s:restart_calls[1], 'payload', {}), 'target', {}), 'value', ''))
+    call assert_equal('connected', b:jusi_nb.session.state)
+    call assert_equal('restart', b:jusi_nb.session.last_action)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_restart_kernel_restarts_stopped_start_managed_session_without_stop_call() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let s:restart_calls = []
+    let g:jusi_session_adapter = {
+          \ 'start': function('s:test_session_adapter_restart_start'),
+          \ 'stop': function('s:test_session_adapter_restart_stop'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#apply({
+          \ 'state': 'stopped',
+          \ 'kernel_name': 'python3',
+          \ 'target': {'source': 'start', 'alias': 'python3', 'kind': 'kernel', 'value': '', 'config': {}},
+          \ })
+    call jusi#session#restart()
+    call assert_equal(['start'], map(copy(s:restart_calls), 'v:val.op'))
+    call assert_equal('connected', b:jusi_nb.session.state)
+    call assert_equal('restart', b:jusi_nb.session.last_action)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_restart_kernel_continues_after_transport_backed_stop_callback() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let s:restart_calls = []
+    let g:jusi_session_adapter = {
+          \ 'start': function('s:test_session_adapter_restart_start'),
+          \ 'stop': function('s:test_session_adapter_restart_stop_transport'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#apply({
+          \ 'id': 'sess-old',
+          \ 'state': 'connected',
+          \ 'kernel_name': 'python3',
+          \ 'target': {'source': 'start', 'alias': 'py', 'kind': 'venv', 'value': 'venv://py', 'config': {}},
+          \ })
+    call jusi#session#restart()
+    call assert_equal(['stop'], map(copy(s:restart_calls), 'v:val.op'))
+    call assert_equal('stopping', b:jusi_nb.session.state)
+    call jusi#session#callback_session({'state': 'stopped', 'request': {}})
+    call assert_equal(['stop', 'start'], map(copy(s:restart_calls), 'v:val.op'))
+    call assert_equal('connected', b:jusi_nb.session.state)
+    call assert_equal('restart', b:jusi_nb.session.last_action)
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_restart_kernel_rejects_disconnected_session() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  call jusi#session#apply({
+        \ 'state': 'disconnected',
+        \ 'kernel_name': 'python3',
+        \ 'target': {'source': 'start', 'alias': 'python3', 'kind': 'kernel', 'value': '', 'config': {}},
+        \ })
+  call jusi#session#restart()
+  call assert_equal('failed', b:jusi_nb.session.state)
+  call assert_match('Cannot restart while the session is disconnected', b:jusi_nb.session.last_error)
+endfunction
+
+function! Test_restart_kernel_rejects_attach_managed_session() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  call jusi#session#apply({
+        \ 'state': 'connected',
+        \ 'kernel_name': 'python3',
+        \ 'target': {'source': 'attach', 'alias': 'external', 'kind': 'connection_file', 'value': '/tmp/kernel.json', 'config': {}},
+        \ })
+  call jusi#session#restart()
+  call assert_equal('failed', b:jusi_nb.session.state)
+  call assert_match('Can only restart sessions started by JusiStartKernel', b:jusi_nb.session.last_error)
 endfunction
 
 function! Test_disconnect_uses_disconnected_state_for_recoverable_link_loss() abort
@@ -5479,6 +5675,22 @@ function! Test_cellmode_goto_client_uses_numeric_client_suffix() abort
 
   call jusi#cellmode#goto_client(11)
   call assert_equal(4, line('.'))
+endfunction
+
+function! Test_cellmode_goto_client_without_count_behaves_like_normal_G() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'one',
+        \ '##',
+        \ 'two',
+        \ '##',
+        \ 'three',
+        \ ])
+  call cursor(2, 1)
+  call jusi#cellmode#enable()
+
+  call jusi#cellmode#goto_client(0)
+  call assert_equal(line('$'), line('.'))
 endfunction
 
 function! Test_cellmode_close_client_with_count_targets_matching_cell() abort

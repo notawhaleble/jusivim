@@ -183,10 +183,8 @@ endfunction
 
 function! jusi#cellmode#goto_client(count) abort
   if a:count <= 0
-    echohl ErrorMsg
-    echom 'Client id count is required for G in cell mode'
-    echohl None
-    return {}
+    normal! G
+    return line('.')
   endif
   let l:bufnr = bufnr('%')
   let l:cell = jusi#notebook#cell_by_client_number(a:count, l:bufnr)

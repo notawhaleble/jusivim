@@ -789,6 +789,17 @@ function! s:pending_input_from_view(view) abort
   return {}
 endfunction
 
+function! s:strip_ansi(text) abort
+  if type(a:text) != type('')
+    return a:text
+  endif
+  let l:text = substitute(a:text, '\%x1b\[[0-9;:]*[ -/]*[@-~]', '', 'g')
+  let l:text = substitute(l:text, '\%x1b\][^\x07\x1b]*\(\x07\|\%x1b\\\)', '', 'g')
+  let l:text = substitute(l:text, '\[[0-9;:]*m', '', 'g')
+  let l:text = substitute(l:text, '\%x00', '', 'g')
+  return l:text
+endfunction
+
 function! s:display_lines_from_view(view) abort
   let l:raw_lines = get(a:view, 'lines', [])
   if type(l:raw_lines) != type([])
@@ -800,20 +811,21 @@ function! s:display_lines_from_view(view) abort
     if type(l:line) == type({})
       let l:type = get(l:line, 'type', '')
       if l:type ==# 'error'
-        let l:message = get(l:line, 'message', '')
+        let l:message = s:strip_ansi(get(l:line, 'message', ''))
         if empty(l:message)
-          let l:message = string(get(l:line, 'payload', {}))
+          let l:message = s:strip_ansi(string(get(l:line, 'payload', {})))
         endif
         call add(l:display, 'error: ' . l:message)
         continue
       endif
-      call add(l:display, string(l:line))
+      call add(l:display, s:strip_ansi(string(l:line)))
       continue
     endif
     if type(l:line) != type('')
-      call add(l:display, string(l:line))
+      call add(l:display, s:strip_ansi(string(l:line)))
       continue
     endif
+    let l:line = s:strip_ansi(l:line)
     if l:line =~# '^meta>\s*'
           \ || l:line =~# '^started cell '
           \ || l:line =~# '^execute\[[0-9]\+\]>\s*'
@@ -829,6 +841,14 @@ function! s:display_lines_from_view(view) abort
     endif
     if l:line =~# '^stderr>\s*'
       call add(l:display, substitute(l:line, '^stderr>\s*', '', ''))
+      continue
+    endif
+    if l:line =~# '^trace>\s*'
+      call add(l:display, substitute(l:line, '^trace>\s*', '', ''))
+      continue
+    endif
+    if l:line =~# '^error:\s*'
+      call add(l:display, substitute(l:line, '^error:\s*', '', ''))
       continue
     endif
     call add(l:display, l:line)

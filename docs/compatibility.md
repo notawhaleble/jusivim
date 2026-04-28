@@ -207,6 +207,7 @@ Required properties:
 - a buffer can accurately reflect whether it is connected
 - attach workflows report clear success or failure
 - stopping a kernel or leaving the editor must not leave orphaned helper processes behind
+- restarting a kernel session is explicit and only applies to start-managed sessions
 - ordinary quit and wipeout actions are blocked while active Jusi sessions still exist
 - forced quit and forced wipeout bypass graceful frontend cleanup instead of pretending teardown succeeded
 
@@ -287,6 +288,13 @@ Current frontend-owned config compatibility:
   - direct `:JusiAttach {path}` / `:JusiAttach {scheme}://...`
 - invalid local config fails the frontend action locally with a clear error instead of sending a broken session request
 - reconnect to an already-existing durable backend session does not currently renegotiate config through a separate reconnect payload
+- current restart compatibility is intentionally strict:
+  - `:JusiRestartKernel` reuses the tracked `kernel_name` plus explicit start target already stored in notebook session state
+  - restart is allowed for start-managed sessions in `connected` or `stopped` state
+  - `connected` restart performs graceful stop first, then starts a fresh session against the same explicit target
+  - `stopped` restart starts directly against the same explicit target
+  - `disconnected` sessions are not restartable because that would risk orphaning the unreachable prior session
+  - pure attach/external sessions such as `connection_file` attaches are not restartable through this command
 
 Current native-terminal compatibility:
 
