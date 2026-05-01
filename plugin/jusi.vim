@@ -109,18 +109,7 @@ command! -bang JusiInternalQuit call jusi#notebook#command_quit(<bang>0, 0)
 command! -bang JusiInternalQuitAll call jusi#notebook#command_quit(<bang>0, 1)
 command! -bang JusiInternalBwipeout call jusi#notebook#command_wipeout(<bang>0)
 
-cnoreabbrev <expr> q jusi#notebook#command_abbrev('q', 'JusiInternalQuit')
-cnoreabbrev <expr> q! jusi#notebook#command_abbrev('q!', 'JusiInternalQuit!')
-cnoreabbrev <expr> quit jusi#notebook#command_abbrev('quit', 'JusiInternalQuit')
-cnoreabbrev <expr> quit! jusi#notebook#command_abbrev('quit!', 'JusiInternalQuit!')
-cnoreabbrev <expr> qa jusi#notebook#command_abbrev('qa', 'JusiInternalQuitAll')
-cnoreabbrev <expr> qa! jusi#notebook#command_abbrev('qa!', 'JusiInternalQuitAll!')
-cnoreabbrev <expr> qall jusi#notebook#command_abbrev('qall', 'JusiInternalQuitAll')
-cnoreabbrev <expr> qall! jusi#notebook#command_abbrev('qall!', 'JusiInternalQuitAll!')
-cnoreabbrev <expr> bw jusi#notebook#command_abbrev('bw', 'JusiInternalBwipeout')
-cnoreabbrev <expr> bw! jusi#notebook#command_abbrev('bw!', 'JusiInternalBwipeout!')
-cnoreabbrev <expr> bwipeout jusi#notebook#command_abbrev('bwipeout', 'JusiInternalBwipeout')
-cnoreabbrev <expr> bwipeout! jusi#notebook#command_abbrev('bwipeout!', 'JusiInternalBwipeout!')
+cnoremap <expr> <CR> jusi#notebook#command_enter()
 
 augroup jusi_notebook
   au!

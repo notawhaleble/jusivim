@@ -1072,8 +1072,29 @@ function! s:run_wipeout_command(bufnr, cmd) abort
   return 1
 endfunction
 
-function! jusi#notebook#command_abbrev(lhs, replacement) abort
-  return getcmdtype() ==# ':' && getcmdline() ==# a:lhs ? a:replacement : a:lhs
+function! jusi#notebook#command_enter() abort
+  if getcmdtype() !=# ':'
+    return "\<CR>"
+  endif
+  let l:cmd = getcmdline()
+  let l:map = {
+        \ 'q': 'call jusi#notebook#command_quit(0, 0)',
+        \ 'q!': 'call jusi#notebook#command_quit(1, 0)',
+        \ 'quit': 'call jusi#notebook#command_quit(0, 0)',
+        \ 'quit!': 'call jusi#notebook#command_quit(1, 0)',
+        \ 'qa': 'call jusi#notebook#command_quit(0, 1)',
+        \ 'qa!': 'call jusi#notebook#command_quit(1, 1)',
+        \ 'qall': 'call jusi#notebook#command_quit(0, 1)',
+        \ 'qall!': 'call jusi#notebook#command_quit(1, 1)',
+        \ 'bw': 'call jusi#notebook#command_wipeout(0)',
+        \ 'bw!': 'call jusi#notebook#command_wipeout(1)',
+        \ 'bwipeout': 'call jusi#notebook#command_wipeout(0)',
+        \ 'bwipeout!': 'call jusi#notebook#command_wipeout(1)',
+        \ }
+  if !has_key(l:map, l:cmd)
+    return "\<CR>"
+  endif
+  return "\<C-C>\<Cmd>" . l:map[l:cmd] . "\<CR>"
 endfunction
 
 function! jusi#notebook#command_quit(force, all) abort
