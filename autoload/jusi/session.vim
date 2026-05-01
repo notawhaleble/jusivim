@@ -99,6 +99,22 @@ function! s:update_state(bufnr, state) abort
   return a:state
 endfunction
 
+function! s:refresh_statuslines() abort
+  silent! redrawstatus
+endfunction
+
+function! s:session_update_affects_statusline(update) abort
+  if type(a:update) != type({})
+    return 0
+  endif
+  for l:key in ['state', 'last_error', 'last_action', 'attach_name', 'target', 'kernel_name']
+    if has_key(a:update, l:key)
+      return 1
+    endif
+  endfor
+  return 0
+endfunction
+
 function! s:update_session(bufnr, update) abort
   let l:state = s:notebook_state(a:bufnr)
   if empty(l:state)
@@ -107,6 +123,9 @@ function! s:update_session(bufnr, update) abort
   call s:debug_log(a:bufnr, 'update-session-begin', a:update, get(l:state, 'session', {}))
   let l:state.session = s:copy_update(l:state.session, a:update)
   call s:update_state(a:bufnr, l:state)
+  if s:session_update_affects_statusline(a:update)
+    call s:refresh_statuslines()
+  endif
   call s:debug_log(a:bufnr, 'update-session-end', get(l:state, 'session', {}))
   return l:state
 endfunction

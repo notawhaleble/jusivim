@@ -55,8 +55,6 @@ function! s:map_cell_mode() abort
   nnoremap <silent> <buffer> <C-P> :<C-U>call jusi#notebook#apply_history_relative(-1)<CR>
   nnoremap <silent> <buffer> <C-N> :<C-U>call jusi#notebook#apply_history_relative(1)<CR>
   nnoremap <silent> <buffer> H :<C-U>call jusi#notebook#toggle_history_fold_current()<CR>
-  nnoremap <silent> <buffer> B :JusiCellNewBelow<CR>
-  nnoremap <silent> <buffer> A :JusiCellNewAbove<CR>
   nnoremap <silent> <buffer> X :JusiCellDelete<CR>
   nnoremap <silent> <buffer> C :JusiCellEdit<CR>
   nnoremap <silent> <buffer> Y :JusiCellCopy<CR>
@@ -75,8 +73,6 @@ function! s:clear_mode_mappings() abort
   call s:maybe_unmap_buffer('<C-P>')
   call s:maybe_unmap_buffer('<C-N>')
   call s:maybe_unmap_buffer('H')
-  call s:maybe_unmap_buffer('B')
-  call s:maybe_unmap_buffer('A')
   call s:maybe_unmap_buffer('X')
   call s:maybe_unmap_buffer('C')
   call s:maybe_unmap_buffer('Y')

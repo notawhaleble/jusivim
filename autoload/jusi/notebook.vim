@@ -1516,7 +1516,9 @@ function! s:apply_history_entry(cell, entry) abort
 endfunction
 
 function! s:append_history_entry(cell) abort
-  if empty(a:cell) || get(a:cell, 'kind', '') !=# 'magic'
+  if empty(a:cell)
+        \ || get(a:cell, 'kind', '') !=# 'magic'
+        \ || !jusi#plugins#is_followup_magic(bufnr('%'), get(a:cell, 'magic', ''))
     return {}
   endif
 
@@ -1807,6 +1809,31 @@ function! jusi#notebook#execute_or_apply_history() abort
     return l:applied
   endif
   return jusi#session#execute_current()
+endfunction
+
+function! jusi#notebook#execute_and_edit_current() abort
+  let l:bufnr = bufnr('%')
+  call jusi#notebook#handle_insert_exit(l:bufnr)
+  let l:cell = jusi#notebook#cell_at_line(l:bufnr, line('.'))
+  if empty(l:cell)
+    return {}
+  endif
+
+  if get(l:cell, 'status', '') ==# 'follow-up'
+        \ && get(get(l:cell, 'owner', {}), 'kind', '') ==# 'handler'
+    let l:response = jusi#session#send_handler_followup_current()
+    if get(l:response, 'ok', 0)
+      return jusi#notebook#edit_current()
+    endif
+    return l:response
+  endif
+
+  let l:result = jusi#session#execute_current()
+  let l:updated = jusi#notebook#cell_by_id(get(l:cell, 'id', 0), l:bufnr)
+  if !empty(l:updated) && get(l:updated, 'status', '') ==# 'busy'
+    return jusi#notebook#edit_current()
+  endif
+  return l:result
 endfunction
 
 function! jusi#notebook#apply_history_relative(direction) abort

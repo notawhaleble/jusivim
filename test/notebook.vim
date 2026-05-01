@@ -195,6 +195,7 @@ function! Test_edit_current_preserves_magic_history_region() abort
         \ 'select 0',
         \ '##>>',
         \ ])
+  call jusi#session#apply({'plugin_specs': {'sql': {'syntax': 'sql'}}})
   call cursor(3, 1)
   call jusi#notebook#edit_current()
   call assert_equal(['##', '%%sql main', '', '##<<', '###', 'select 0', '##>>'], getline(1, '$'))
@@ -209,6 +210,7 @@ function! Test_append_history_entry_creates_magic_history_region() abort
         \ '%%sql main',
         \ 'select 1',
         \ ])
+  call jusi#session#apply({'plugin_specs': {'sql': {'syntax': 'sql'}}})
   call cursor(3, 1)
   call jusi#notebook#append_history_entry()
 
@@ -236,6 +238,7 @@ function! Test_append_history_entry_prepends_to_existing_magic_history_region() 
         \ 'select 0',
         \ '##>>',
         \ ])
+  call jusi#session#apply({'plugin_specs': {'sql': {'syntax': 'sql'}}})
   call cursor(3, 1)
   call jusi#notebook#append_history_entry()
 
@@ -267,6 +270,7 @@ function! Test_append_history_entry_moves_duplicate_to_top() abort
         \ 'select 1',
         \ '##>>',
         \ ])
+  call jusi#session#apply({'plugin_specs': {'sql': {'syntax': 'sql'}}})
   call cursor(3, 1)
   call jusi#notebook#append_history_entry()
 
@@ -298,6 +302,7 @@ function! Test_append_history_entry_dedupes_inside_closed_history_fold() abort
         \ '##',
         \ 'tail',
         \ ])
+  call jusi#session#apply({'plugin_specs': {'sql': {'syntax': 'sql'}}})
   call cursor(3, 1)
   call jusi#notebook#fold_all_history(bufnr('%'))
   call assert_equal(4, foldclosed(4))
@@ -335,6 +340,7 @@ function! Test_paste_below_refolds_history_regions() abort
         \ '##',
         \ 'print("host")',
         \ ])
+  call jusi#session#apply({'plugin_specs': {'sql': {'syntax': 'sql'}}})
   call cursor(2, 1)
 
   call jusi#notebook#paste_below()
@@ -357,6 +363,7 @@ function! Test_capture_history_and_fold_all_preserves_cursor() abort
         \ '##',
         \ 'tail',
         \ ])
+  call jusi#session#apply({'plugin_specs': {'sql': {'syntax': 'sql'}}})
   call cursor(3, 4)
   call jusi#notebook#fold_all_history(bufnr('%'))
 
@@ -388,6 +395,19 @@ function! Test_append_history_entry_ignores_regular_code_cells() abort
   call jusi#notebook#append_history_entry()
 
   call assert_equal(['##', 'print("hello")'], getline(1, '$'))
+  call assert_equal([], jusi#notebook#cell_history_lines())
+endfunction
+
+function! Test_append_history_entry_ignores_non_plugin_magics() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%time',
+        \ 'print("hello")',
+        \ ])
+  call cursor(3, 1)
+  call jusi#notebook#append_history_entry()
+
+  call assert_equal(['##', '%%time', 'print("hello")'], getline(1, '$'))
   call assert_equal([], jusi#notebook#cell_history_lines())
 endfunction
 
@@ -1961,7 +1981,7 @@ function! Test_execute_magic_cell_appends_history_after_accepted_request() abort
           \ '%%sql main',
           \ 'select 1',
           \ ])
-    call jusi#session#apply({'id': 'sess-1', 'state': 'connected'})
+    call jusi#session#apply({'id': 'sess-1', 'state': 'connected', 'plugin_specs': {'sql': {'syntax': 'sql'}}})
     call cursor(3, 1)
 
     call jusi#session#execute_current()
@@ -1978,6 +1998,39 @@ function! Test_execute_magic_cell_appends_history_after_accepted_request() abort
     call assert_equal('busy', b:jusi_nb.cells[0].status)
     call assert_equal(['%%sql main', 'select 1'], jusi#notebook#cell_main_lines(b:jusi_nb.cells[0]))
     call assert_equal([3, 1], [line('.'), col('.')])
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_execute_and_edit_current_clears_body_after_accepted_magic_execute() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'execute': function('s:test_session_adapter_execute'),
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ '%%sql main',
+          \ 'select 1',
+          \ ])
+    call jusi#session#apply({'id': 'sess-1', 'state': 'connected', 'plugin_specs': {'sql': {'syntax': 'sql'}}})
+    call cursor(3, 1)
+
+    call jusi#notebook#execute_and_edit_current()
+
+    call assert_equal([
+          \ '##',
+          \ '%%sql main',
+          \ '',
+          \ '##<<',
+          \ '###',
+          \ 'select 1',
+          \ '##>>',
+          \ ], getline(1, '$'))
+    call assert_equal(['%%sql main', ''], jusi#notebook#cell_main_lines(b:jusi_nb.cells[0]))
+    call assert_equal(['##<<', '###', 'select 1', '##>>'], jusi#notebook#cell_history_lines(b:jusi_nb.cells[0]))
+    call assert_equal(3, line('.'))
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
@@ -2016,7 +2069,7 @@ function! Test_execute_rejected_magic_cell_does_not_append_history() abort
           \ '%%sql main',
           \ 'select 1',
           \ ])
-    call jusi#session#apply({'id': 'sess-1', 'state': 'connected'})
+    call jusi#session#apply({'id': 'sess-1', 'state': 'connected', 'plugin_specs': {'sql': {'syntax': 'sql'}}})
     call cursor(3, 1)
 
     call jusi#session#execute_current()
@@ -3515,7 +3568,7 @@ function! Test_send_handler_followup_current_builds_generic_followup_message() a
           \ 'select 1',
           \ ])
     let l:client = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
-    call jusi#session#apply({'state': 'connected', 'id': 'sess-1'})
+    call jusi#session#apply({'state': 'connected', 'id': 'sess-1', 'plugin_specs': {'sql': {'syntax': 'sql'}}})
     let b:jusi_nb.cells[0].status = 'follow-up'
     let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
     let b:jusi_nb.cells[0].client_id = 'client-1'
@@ -5855,7 +5908,11 @@ function! Test_default_buffer_mappings_exist() abort
   call assert_equal(':JusiCellEdit<CR>', maparg('<leader>c', 'n', 0, 1).rhs)
   call assert_equal(':JusiCellCopy<CR>', maparg('<leader>y', 'n', 0, 1).rhs)
   call assert_equal(':JusiCellPasteBelow<CR>', maparg('<leader>p', 'n', 0, 1).rhs)
+  call assert_equal(':<C-U>call jusi#notebook#toggle_history_fold_current()<CR>', maparg('<leader>h', 'n', 0, 1).rhs)
+  call assert_equal(':<C-U>call jusi#notebook#execute_or_apply_history()<CR>', maparg('<leader>j', 'n', 0, 1).rhs)
   call assert_equal(':JusiTogglePark<CR>', maparg('<leader>s', 'n', 0, 1).rhs)
+  call assert_equal(':<C-U>call jusi#cellmode#close_client(v:count)<CR>', maparg('<leader>q', 'n', 0, 1).rhs)
+  call assert_equal(':<C-U>call jusi#cellmode#goto_client(v:count)<CR>', maparg('<leader>g', 'n', 0, 1).rhs)
   call assert_equal('', maparg('<leader><Space>', 'n'))
   call assert_equal(':JusiToggleFocus<CR>', maparg("\<C-\\>\<C-\\>", 'n', 0, 1).rhs)
   call assert_equal('', maparg(']]', 'n'))
@@ -5866,6 +5923,7 @@ function! Test_default_buffer_mappings_exist() abort
   call assert_equal('', maparg('p', 'x'))
   call assert_equal('<C-R>=jusi#focus#toggle()<CR>', maparg("\<C-\\>\<C-\\>", 'i', 0, 1).rhs)
   call assert_equal('', maparg('<CR>', 'i'))
+  call assert_equal('<C-\><C-o>:call jusi#notebook#execute_and_edit_current()<CR>', maparg('<C-Y>', 'i', 0, 1).rhs)
   call assert_equal('<C-\><C-n>:call jusi#notebook#handle_insert_exit()<Bar>call jusi#cellmode#update_indicator()<CR>', maparg('<C-C>', 'i', 0, 1).rhs)
 endfunction
 
@@ -5888,8 +5946,8 @@ function! Test_cell_mode_toggle_maps_navigation_keys() abort
   call assert_equal(':<C-U>call jusi#notebook#toggle_history_fold_current()<CR>', maparg('H', 'n', 0, 1).rhs)
   call assert_equal('', maparg('J', 'n'))
   call assert_equal('', maparg('<leader><Space>', 'n'))
-  call assert_equal(':JusiCellNewBelow<CR>', maparg('B', 'n', 0, 1).rhs)
-  call assert_equal(':JusiCellNewAbove<CR>', maparg('A', 'n', 0, 1).rhs)
+  call assert_equal('', maparg('B', 'n'))
+  call assert_equal('', maparg('A', 'n'))
   call assert_equal(':JusiCellDelete<CR>', maparg('X', 'n', 0, 1).rhs)
   call assert_equal(':JusiCellEdit<CR>', maparg('C', 'n', 0, 1).rhs)
   call assert_equal(':JusiCellCopy<CR>', maparg('Y', 'n', 0, 1).rhs)

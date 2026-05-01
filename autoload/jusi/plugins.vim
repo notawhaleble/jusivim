@@ -64,6 +64,18 @@ function! s:spec_for_magic(bufnr, magic) abort
   return {}
 endfunction
 
+function! jusi#plugins#is_followup_magic(bufnr, magic) abort
+  let l:bufnr = s:normalize_bufnr(a:bufnr)
+  if empty(a:magic)
+    return 0
+  endif
+  if !empty(s:spec_for_magic(l:bufnr, a:magic))
+    return 1
+  endif
+  let l:defaults = s:default_specs()
+  return has_key(l:defaults, a:magic)
+endfunction
+
 function! jusi#plugins#syntax_for_magic(bufnr, magic) abort
   let l:bufnr = s:normalize_bufnr(a:bufnr)
   if empty(a:magic)
