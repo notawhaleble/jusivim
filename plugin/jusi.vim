@@ -135,6 +135,7 @@ augroup jusi_notebook
   au BufEnter,CursorMoved *.vipynb call jusi#notebook#refresh_if_changed(expand('<abuf>'))
   au BufEnter,CursorMoved,CursorMovedI,InsertEnter,InsertLeave,TextChanged *.vipynb call jusi#indent#refresh(expand('<abuf>'))
   au BufEnter,CursorMoved,CursorMovedI *.vipynb call jusi#syntax#request_refresh(expand('<abuf>'))
+  au BufWinEnter,BufEnter * call jusi#focus#refresh_client_window(expand('<abuf>'))
   if exists('##WinScrolled')
     au WinScrolled *.vipynb call jusi#syntax#request_refresh(expand('<abuf>'))
   endif

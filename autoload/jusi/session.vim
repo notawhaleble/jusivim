@@ -821,6 +821,27 @@ function! s:target_kind_from_value(value) abort
   return empty(l:kind) ? '' : l:kind
 endfunction
 
+function! s:session_target_kind(session) abort
+  let l:target = get(a:session, 'target', {})
+  let l:kind = get(l:target, 'kind', '')
+  return tolower(type(l:kind) == type('') ? l:kind : '')
+endfunction
+
+function! s:session_supports_local_filesystem_actions(session) abort
+  let l:kind = s:session_target_kind(a:session)
+  return empty(l:kind) || index(['kernel', 'local', 'venv', 'connection_file'], l:kind) >= 0
+endfunction
+
+function! s:reject_local_filesystem_action(bufnr, action_name) abort
+  let l:kind = s:session_target_kind(jusi#session#state(a:bufnr))
+  let l:message = 'Cannot use local-only action "' . a:action_name . '" for non-local session target'
+  if !empty(l:kind)
+    let l:message .= ' kind "' . l:kind . '"'
+  endif
+  call s:reject_action(a:bufnr, {'last_action': 'handler_message'}, l:message)
+  return 0
+endfunction
+
 function! s:normalize_target_config(alias, spec) abort
   let l:target = jusi#session#default_target()
   let l:target.alias = a:alias
@@ -901,10 +922,19 @@ function! s:load_session_config_result() abort
   return jusi#config#load()
 endfunction
 
+function! s:load_visidatarc_result() abort
+  return jusi#config#load_visidatarc()
+endfunction
+
 function! s:start_kernel_session(bufnr, kernel_name, target, action) abort
+  let l:visidatarc_result = s:load_visidatarc_result()
+  if !get(l:visidatarc_result, 'ok', 0)
+    return s:reject_action(a:bufnr, {'last_action': a:action}, get(l:visidatarc_result, 'error', 'Failed to load VisiData config'))
+  endif
   let l:request = {
         \ 'kernel_name': a:kernel_name,
         \ 'target': copy(a:target),
+        \ 'visidatarc': get(l:visidatarc_result, 'content', ''),
         \ }
   call s:update_session(a:bufnr, {
         \ 'state': 'starting',
@@ -1298,9 +1328,12 @@ function! s:open_path_command(open_in) abort
   return get(l:map, l:open_in, '')
 endfunction
 
-function! s:open_path_action(payload) abort
+function! s:open_path_action(bufnr, payload) abort
   if type(a:payload) != type({})
     return 0
+  endif
+  if !s:session_supports_local_filesystem_actions(jusi#session#state(a:bufnr))
+    return s:reject_local_filesystem_action(a:bufnr, 'open_path')
   endif
   let l:path = get(a:payload, 'path', '')
   if empty(l:path)
@@ -1321,6 +1354,119 @@ function! s:open_path_action(payload) abort
   return 1
 endfunction
 
+function! s:setup_edit_path_buffer(bufnr) abort
+  let l:bufnr = str2nr(a:bufnr)
+  if l:bufnr <= 0 || !bufexists(l:bufnr)
+    return 0
+  endif
+  augroup jusi_edit_path
+    execute 'autocmd! * <buffer=' . l:bufnr . '>'
+    execute 'autocmd BufHidden <buffer=' . l:bufnr . '> call jusi#session#finish_edit_path(' . l:bufnr . ')'
+    execute 'autocmd BufUnload <buffer=' . l:bufnr . '> call jusi#session#finish_edit_path(' . l:bufnr . ')'
+    execute 'autocmd BufWipeout <buffer=' . l:bufnr . '> call jusi#session#finish_edit_path(' . l:bufnr . ')'
+  augroup END
+  return 1
+endfunction
+
+function! s:send_edit_path_action_result(bufnr, ctx, ok) abort
+  let l:bufnr = str2nr(a:bufnr)
+  let l:ctx = type(a:ctx) == type({}) ? copy(a:ctx) : {}
+  let l:request_id = get(l:ctx, 'request_id', '')
+  let l:client_id = get(l:ctx, 'client_id', '')
+  let l:handler_id = get(l:ctx, 'handler_id', '')
+  if l:bufnr <= 0 || empty(l:request_id) || empty(l:client_id) || empty(l:handler_id)
+    return 0
+  endif
+  if !s:require_notebook_buffer(l:bufnr, 'send edit_path action_result')
+    return 0
+  endif
+
+  let l:session = jusi#session#state(l:bufnr)
+  if get(l:session, 'state', '') !=# 'connected'
+    call s:debug_log(l:bufnr, 'edit-path-action-result-skipped', {
+          \ 'request_id': l:request_id,
+          \ 'client_id': l:client_id,
+          \ 'handler_id': l:handler_id,
+          \ 'ok': a:ok ? 1 : 0,
+          \ 'reason': 'session-not-connected',
+          \ })
+    return 0
+  endif
+
+  let l:response = jusi#adapter#call_async('handler_message', l:bufnr, {
+        \ 'client_id': l:client_id,
+        \ 'handler_id': l:handler_id,
+        \ 'message_type': 'action_result',
+        \ 'payload': {
+        \   'request_id': l:request_id,
+        \   'ok': a:ok ? v:true : v:false,
+        \   },
+        \ })
+  call s:debug_log(l:bufnr, 'edit-path-action-result', {
+        \ 'request_id': l:request_id,
+        \ 'client_id': l:client_id,
+        \ 'handler_id': l:handler_id,
+        \ 'ok': a:ok ? 1 : 0,
+        \ 'response_ok': get(l:response, 'ok', 0),
+        \ })
+  return get(l:response, 'ok', 0)
+endfunction
+
+function! s:edit_path_action(bufnr, cell_id, client_id, handler_id, payload) abort
+  if type(a:payload) != type({})
+    return 0
+  endif
+  let l:path = get(a:payload, 'path', '')
+  let l:request_id = get(a:payload, 'request_id', '')
+  if empty(l:path) || empty(l:request_id)
+    return 0
+  endif
+  if !s:session_supports_local_filesystem_actions(jusi#session#state(a:bufnr))
+    call s:reject_local_filesystem_action(a:bufnr, 'edit_path')
+    call s:send_edit_path_action_result(a:bufnr, {
+          \ 'client_id': a:client_id,
+          \ 'handler_id': a:handler_id,
+          \ 'request_id': l:request_id,
+          \ }, v:false)
+    return 0
+  endif
+
+  let l:cmd = s:open_path_command(get(a:payload, 'open_in', 'split'))
+  if empty(l:cmd)
+    return 0
+  endif
+  execute 'keepalt ' . l:cmd . ' ' . fnameescape(l:path)
+  let l:edit_bufnr = bufnr('%')
+  let l:line = str2nr(get(a:payload, 'line', 1))
+  if l:line > 0
+    call cursor(l:line, 1)
+  endif
+  call setbufvar(l:edit_bufnr, 'jusi_edit_path_request', {
+        \ 'notebook_bufnr': a:bufnr,
+        \ 'cell_id': a:cell_id,
+        \ 'client_id': a:client_id,
+        \ 'handler_id': a:handler_id,
+        \ 'request_id': l:request_id,
+        \ 'path': fnamemodify(l:path, ':p'),
+        \ })
+  call setbufvar(l:edit_bufnr, 'jusi_edit_path_done', 0)
+  call s:setup_edit_path_buffer(l:edit_bufnr)
+  return 1
+endfunction
+
+function! s:yank_text_action(payload) abort
+  if type(a:payload) != type({})
+    return 0
+  endif
+  let l:text = get(a:payload, 'text', '')
+  if type(l:text) != type('')
+    let l:text = string(l:text)
+  endif
+  call setreg('"', l:text, 'v')
+  call setreg('0', l:text, 'v')
+  return 1
+endfunction
+
 function! s:handle_handler_action_request(bufnr, cell_id, client_id, handler_id, payload) abort
   if type(a:payload) != type({})
     return 0
@@ -1334,7 +1480,25 @@ function! s:handle_handler_action_request(bufnr, cell_id, client_id, handler_id,
           \ 'handler_id': a:handler_id,
           \ 'payload': l:action_payload,
           \ })
-    return s:open_path_action(l:action_payload)
+    return s:open_path_action(a:bufnr, l:action_payload)
+  endif
+  if l:action_type ==# 'edit_path'
+    call s:debug_log(a:bufnr, 'handler-action-edit-path', {
+          \ 'cell_id': a:cell_id,
+          \ 'client_id': a:client_id,
+          \ 'handler_id': a:handler_id,
+          \ 'payload': l:action_payload,
+          \ })
+    return s:edit_path_action(a:bufnr, a:cell_id, a:client_id, a:handler_id, l:action_payload)
+  endif
+  if l:action_type ==# 'yank_text'
+    call s:debug_log(a:bufnr, 'handler-action-yank-text', {
+          \ 'cell_id': a:cell_id,
+          \ 'client_id': a:client_id,
+          \ 'handler_id': a:handler_id,
+          \ 'payload': l:action_payload,
+          \ })
+    return s:yank_text_action(l:action_payload)
   endif
   call s:debug_log(a:bufnr, 'handler-action-ignored', {
         \ 'cell_id': a:cell_id,
@@ -1372,6 +1536,18 @@ function! jusi#session#send_handler_message(client_id, handler_id, message_type,
   return s:fail_session(l:bufnr, {
         \ 'last_action': 'handler_message',
         \ }, get(l:response, 'error', 'Failed to send handler message'))
+endfunction
+
+function! jusi#session#finish_edit_path(bufnr) abort
+  let l:bufnr = s:normalize_bufnr(a:bufnr)
+  let l:ctx = getbufvar(l:bufnr, 'jusi_edit_path_request', {})
+  if type(l:ctx) != type({}) || empty(l:ctx) || getbufvar(l:bufnr, 'jusi_edit_path_done', 0)
+    return 0
+  endif
+  call setbufvar(l:bufnr, 'jusi_edit_path_done', 1)
+  let l:notebook = str2nr(get(l:ctx, 'notebook_bufnr', 0))
+  let l:ok = getbufvar(l:bufnr, '&modified') ? v:false : v:true
+  return s:send_edit_path_action_result(l:notebook, l:ctx, l:ok)
 endfunction
 
 function! jusi#session#apply_handler_completion_result(bufnr, cell_id, client_id, handler_id, payload) abort
@@ -1765,6 +1941,10 @@ function! jusi#session#attach(target) abort
   if !get(l:config_result, 'ok', 0)
     return s:reject_action(l:bufnr, {'last_action': 'attach'}, get(l:config_result, 'error', 'Failed to load Jusi config'))
   endif
+  let l:visidatarc_result = s:load_visidatarc_result()
+  if !get(l:visidatarc_result, 'ok', 0)
+    return s:reject_action(l:bufnr, {'last_action': 'attach'}, get(l:visidatarc_result, 'error', 'Failed to load VisiData config'))
+  endif
 
   let l:registry_entry = type(a:target) == type('') ? s:attach_registry_entry(a:target) : {}
   if type(a:target) == type('')
@@ -1823,7 +2003,10 @@ function! jusi#session#attach(target) abort
   let l:resolved_target = jusi#config#merge_target_config(
         \ s:resolve_attach_target(a:target),
         \ get(l:config_result, 'config', {}))
-  let l:request = {'target': copy(l:resolved_target)}
+  let l:request = {
+        \ 'target': copy(l:resolved_target),
+        \ 'visidatarc': get(l:visidatarc_result, 'content', ''),
+        \ }
   call s:update_session(l:bufnr, {
         \ 'state': 'starting',
         \ 'attach_name': '',
@@ -1967,8 +2150,8 @@ function! jusi#session#interrupt_current() abort
   endif
 
   let l:cell = jusi#notebook#cell_at_line(l:bufnr, line('.'))
-  if empty(l:cell) || index(['busy', 'follow-up'], get(l:cell, 'status', '')) < 0
-    return s:fail_session(l:bufnr, {'last_action': 'interrupt'}, 'Cannot interrupt the current cell unless it is busy or in follow-up')
+  if empty(l:cell) || get(l:cell, 'status', '') !=# 'busy'
+    return s:reject_action(l:bufnr, {'last_action': 'interrupt'}, 'Cannot interrupt the current cell unless it is busy')
   endif
 
   let l:response = jusi#adapter#call('interrupt', l:bufnr, {'cell': copy(l:cell)})

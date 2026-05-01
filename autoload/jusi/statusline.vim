@@ -112,26 +112,21 @@ function! s:client_terminal_mode(bufnr) abort
   return ''
 endfunction
 
-function! s:client_status(cell) abort
-  if empty(a:cell)
-    return ''
-  endif
-  let l:status = get(a:cell, 'status', '')
-  if l:status ==# 'parked'
-    let l:parked = get(a:cell, 'parked_status', '')
-    return empty(l:parked) ? 'parked' : 'parked:' . l:parked
-  endif
-  return l:status
-endfunction
-
 function! s:statusline_prefix(group) abort
   return '%#' . a:group . '#'
 endfunction
 
 function! jusi#statusline#setup_notebook(...) abort
   let l:expr = '%!jusi#statusline#render_notebook()'
-  if a:0 >= 1 && exists('*setwinvar') && a:1 > 0
-    call setwinvar(a:1, '&statusline', l:expr)
+  if a:0 >= 1 && a:1 > 0
+    if exists('*win_execute')
+      call win_execute(a:1, 'setlocal statusline=' . l:expr, 'silent!')
+      return
+    endif
+    if exists('*setwinvar')
+      call setwinvar(a:1, '&statusline', l:expr)
+      return
+    endif
     return
   endif
   let &l:statusline = l:expr
@@ -139,8 +134,15 @@ endfunction
 
 function! jusi#statusline#setup_client(...) abort
   let l:expr = '%!jusi#statusline#render_client()'
-  if a:0 >= 1 && exists('*setwinvar') && a:1 > 0
-    call setwinvar(a:1, '&statusline', l:expr)
+  if a:0 >= 1 && a:1 > 0
+    if exists('*win_execute')
+      call win_execute(a:1, 'setlocal statusline=' . l:expr, 'silent!')
+      return
+    endif
+    if exists('*setwinvar')
+      call setwinvar(a:1, '&statusline', l:expr)
+      return
+    endif
     return
   endif
   let &l:statusline = l:expr
@@ -177,26 +179,16 @@ function! jusi#statusline#render_client() abort
   let l:bufnr = l:ctx.bufnr
   let l:notebook_bufnr = getbufvar(l:bufnr, 'jusi_client_notebook_bufnr', 0)
   let l:client_id = getbufvar(l:bufnr, 'jusi_client_id', '')
-  let l:cell_id = getbufvar(l:bufnr, 'jusi_client_cell_id', 0)
   let l:role = getbufvar(l:bufnr, 'jusi_client_role', 'cell')
   let l:mode = s:client_terminal_mode(l:bufnr)
-  let l:nb_state = l:notebook_bufnr > 0 ? s:notebook_state(l:notebook_bufnr) : {}
-  let l:cell = l:cell_id > 0 ? s:cell_by_id_from_state(l:nb_state, l:cell_id) : {}
-  let l:status = s:client_status(l:cell)
   let l:group = l:mode ==# 'job'
         \ ? 'JusiStatusClientInteractive'
         \ : 'StatusLine'
   let l:parts = [s:statusline_prefix(l:group), ' Jusi ']
 
-  call add(l:parts, !empty(l:client_id) ? 'client:' . s:escape(l:client_id) : 'client')
-  if l:cell_id > 0
-    call add(l:parts, ' cell:' . l:cell_id)
-  endif
+  call add(l:parts, !empty(l:client_id) ? s:escape(l:client_id) : 'client')
   if l:notebook_bufnr > 0
     call add(l:parts, ' nb:' . s:escape(s:notebook_label(l:notebook_bufnr)))
-  endif
-  if !empty(l:status)
-    call add(l:parts, ' status:' . s:escape(l:status))
   endif
   if !empty(l:role) && l:role !=# 'cell'
     call add(l:parts, ' role:' . s:escape(l:role))

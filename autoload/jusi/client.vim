@@ -245,11 +245,13 @@ endfunction
 
 function! s:bind_native_terminal_buffer(notebook_bufnr, cell_id, client_id, bufnr, transport) abort
   call jusi#client#mark_attached_buffer(a:notebook_bufnr, a:cell_id, a:client_id, a:bufnr)
+  call jusi#focus#prime_client_windows_for_buffer(a:bufnr)
   call s:set_native_terminal_buffer_transport(a:bufnr, a:transport)
   call jusi#session#callback_cell(a:cell_id, {
         \ 'client_bufnr': a:bufnr,
         \ 'client_state': 'active',
         \ }, a:notebook_bufnr)
+  call jusi#focus#prime_client_windows_for_buffer(a:bufnr)
   return a:bufnr
 endfunction
 
@@ -285,6 +287,8 @@ function! s:launch_native_terminal_default(notebook_bufnr, cell_id, client_id, t
   endif
   if l:bufnr > 0
     call setbufvar(l:bufnr, '&bufhidden', 'hide')
+    setlocal nonumber norelativenumber
+    let &l:statusline = '%!jusi#statusline#render_client()'
   endif
   call s:native_terminal_debug('launch-default-end', {
         \ 'bufnr': l:bufnr,

@@ -166,6 +166,14 @@ function! jusi#config#path() abort
   return fnamemodify('~/.jusi/jusi.toml', ':p')
 endfunction
 
+function! jusi#config#visidatarc_path() abort
+  let l:path = get(g:, 'jusi_visidatarc_file', '')
+  if type(l:path) == type('') && !empty(l:path)
+    return fnamemodify(l:path, ':p')
+  endif
+  return fnamemodify('~/.jusi/visidatarc', ':p')
+endfunction
+
 function! jusi#config#ensure_file() abort
   let l:path = jusi#config#path()
   let l:dir = fnamemodify(l:path, ':h')
@@ -174,6 +182,18 @@ function! jusi#config#ensure_file() abort
   endif
   if !filereadable(l:path)
     call writefile(s:config_default_lines(), l:path)
+  endif
+  return l:path
+endfunction
+
+function! jusi#config#ensure_visidatarc() abort
+  let l:path = jusi#config#visidatarc_path()
+  let l:dir = fnamemodify(l:path, ':h')
+  if !isdirectory(l:dir)
+    call mkdir(l:dir, 'p')
+  endif
+  if !filereadable(l:path)
+    call writefile([], l:path)
   endif
   return l:path
 endfunction
@@ -226,6 +246,29 @@ function! jusi#config#load() abort
         \ 'ok': 1,
         \ 'path': l:path,
         \ 'config': l:config,
+        \ }
+endfunction
+
+function! jusi#config#load_visidatarc() abort
+  let l:path = jusi#config#ensure_visidatarc()
+  try
+    let l:lines = readfile(l:path)
+  catch
+    return {
+          \ 'ok': 0,
+          \ 'path': l:path,
+          \ 'content': '',
+          \ 'error': 'Failed to read VisiData config at ' . l:path . ': ' . v:exception,
+          \ }
+  endtry
+  let l:content = empty(l:lines) ? '' : join(l:lines, "\n")
+  if !empty(l:content)
+    let l:content .= "\n"
+  endif
+  return {
+        \ 'ok': 1,
+        \ 'path': l:path,
+        \ 'content': l:content,
         \ }
 endfunction
 

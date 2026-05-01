@@ -88,6 +88,7 @@ function! s:request_payload(op, bufnr, payload) abort
           \ 'notebook_id': l:notebook_id,
           \ 'kernel_name': get(a:payload, 'kernel_name', ''),
           \ 'target': get(a:payload, 'target', {}),
+          \ 'visidatarc': get(a:payload, 'visidatarc', ''),
           \ }
   endif
 
@@ -95,6 +96,7 @@ function! s:request_payload(op, bufnr, payload) abort
     return {
           \ 'notebook_id': l:notebook_id,
           \ 'target': get(a:payload, 'target', a:payload),
+          \ 'visidatarc': get(a:payload, 'visidatarc', ''),
           \ }
   endif
 

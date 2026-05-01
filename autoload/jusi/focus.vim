@@ -15,6 +15,14 @@ function! s:apply_client_window_options() abort
   return 1
 endfunction
 
+function! jusi#focus#refresh_client_window(...) abort
+  let l:bufnr = a:0 >= 1 ? str2nr(a:1) : bufnr('%')
+  if l:bufnr != bufnr('%')
+    return 0
+  endif
+  return s:apply_client_window_options()
+endfunction
+
 function! s:prime_visible_client_window(winid) abort
   if a:winid <= 0 || !exists('*win_execute')
     return 0
@@ -22,6 +30,17 @@ function! s:prime_visible_client_window(winid) abort
   call win_execute(a:winid, 'setlocal nonumber norelativenumber', 'silent!')
   call jusi#statusline#setup_client(a:winid)
   return 1
+endfunction
+
+function! jusi#focus#prime_client_windows_for_buffer(bufnr) abort
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
+    return 0
+  endif
+  let l:primed = 0
+  for l:info in filter(copy(getwininfo()), {_, v -> get(v, 'bufnr', 0) == a:bufnr})
+    let l:primed += s:prime_visible_client_window(get(l:info, 'winid', 0))
+  endfor
+  return l:primed
 endfunction
 
 function! s:restore_terminal_job_mode_if_visible(winid, bufnr) abort
