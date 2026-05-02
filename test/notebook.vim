@@ -1337,6 +1337,37 @@ function! Test_start_kernel_alias_preserves_dict_target_config() abort
   endtry
 endfunction
 
+function! Test_start_kernel_request_preserves_nested_target_config_without_structural_nesting() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_targets = get(g:, 'jusi_kernel_targets', {})
+  try
+    let g:jusi_session_adapter = {'request': function('s:test_request_adapter')}
+    let g:jusi_kernel_targets = {
+          \ 'dockerjusi': {
+          \   'kind': 'docker',
+          \   'value': 'docker://jolly_blackwell',
+          \   'config': {'kernel_name': 'python3'},
+          \   },
+          \ }
+    let s:last_request_envelope = {}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#start('dockerjusi')
+    call assert_equal('start_session', get(s:last_request_envelope, 'type', ''))
+    call assert_equal('docker', get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'kind', ''))
+    call assert_equal('docker://jolly_blackwell', get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'value', ''))
+    call assert_equal('python3', get(get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'config', {}), 'kernel_name', ''))
+    call assert_false(has_key(get(get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'config', {}), 'config', {}), 'kernel_name'))
+    call assert_false(has_key(get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'config', {}), 'kind'))
+    call assert_false(has_key(get(get(get(s:last_request_envelope, 'payload', {}), 'target', {}), 'config', {}), 'value'))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_kernel_targets = l:save_targets
+  endtry
+endfunction
+
 function! Test_transport_backend_cmd_for_venv_target_uses_venv_python() abort
   let l:venv = '/tmp/jusi-test-venv'
   let l:cmd = jusi#transport#backend_cmd_for_target({
@@ -1393,6 +1424,60 @@ function! Test_transport_backend_cmd_for_docker_ssh_target_combines_remote_and_c
         \   },
         \ })
   call assert_equal(['ssh', '-i', '/tmp/test-key', 'niku@example.com', 'docker', 'exec', '-i', 'jusi-backend', 'python3', '-m', 'jusi'], l:cmd)
+endfunction
+
+function! Test_transport_terminal_attach_spec_for_venv_target_rewrites_python_and_keeps_env() abort
+  let l:venv = '/tmp/jusi-test-venv'
+  let l:spec = jusi#transport#terminal_attach_spec_for_target({
+        \ 'kind': 'venv',
+        \ 'value': 'venv://' . l:venv,
+        \ }, ['python3', '-m', 'jusi', 'client-process', 'terminal-attach'], {'A': '1'})
+  call assert_equal([fnamemodify(l:venv . '/bin/python', ':p'), '-m', 'jusi', 'client-process', 'terminal-attach'], get(l:spec, 'cmd', []))
+  call assert_equal({'A': '1'}, get(l:spec, 'env', {}))
+endfunction
+
+function! Test_transport_terminal_attach_spec_for_docker_target_wraps_command_and_env() abort
+  let l:save_term = $TERM
+  let l:save_colorterm = $COLORTERM
+  try
+    let $TERM = 'xterm-256color'
+    let $COLORTERM = 'truecolor'
+    let l:spec = jusi#transport#terminal_attach_spec_for_target({
+          \ 'kind': 'docker',
+          \ 'value': 'docker://jusi-backend',
+          \ }, ['python3', '-m', 'jusi', 'client-process', 'terminal-attach'], {'B': '2', 'A': '1'})
+    call assert_equal(['docker', 'exec', '-it', '-e', 'A=1', '-e', 'B=2', '-e', 'COLORTERM=truecolor', '-e', 'TERM=xterm-256color', 'jusi-backend', 'python3', '-m', 'jusi', 'client-process', 'terminal-attach'], get(l:spec, 'cmd', []))
+    call assert_equal({}, get(l:spec, 'env', {}))
+  finally
+    let $TERM = l:save_term
+    let $COLORTERM = l:save_colorterm
+  endtry
+endfunction
+
+function! Test_transport_terminal_attach_spec_for_ssh_target_wraps_command_and_env() abort
+  let l:spec = jusi#transport#terminal_attach_spec_for_target({
+        \ 'kind': 'ssh',
+        \ 'value': 'ssh://niku@example.com',
+        \ 'config': {'key_path': '/tmp/test-key'},
+        \ }, ['python3', '-m', 'jusi', 'client-process', 'terminal-attach'], {'A': '1'})
+  call assert_equal(['ssh', '-tt', '-i', '/tmp/test-key', 'niku@example.com', 'env', 'A=1', 'python3', '-m', 'jusi', 'client-process', 'terminal-attach'], get(l:spec, 'cmd', []))
+  call assert_equal({}, get(l:spec, 'env', {}))
+endfunction
+
+function! Test_transport_terminal_attach_spec_for_docker_ssh_target_wraps_command_env_and_tty() abort
+  let l:save_term = $TERM
+  try
+    let $TERM = 'xterm-256color'
+    let l:spec = jusi#transport#terminal_attach_spec_for_target({
+          \ 'kind': 'docker+ssh',
+          \ 'value': 'docker+ssh://niku@example.com/jusi-backend',
+          \ 'config': {'key_path': '/tmp/test-key'},
+          \ }, ['python3', '-m', 'jusi', 'client-process', 'terminal-attach'], {'A': '1'})
+    call assert_equal(['ssh', '-tt', '-i', '/tmp/test-key', 'niku@example.com', 'docker', 'exec', '-it', '-e', 'A=1', '-e', 'TERM=xterm-256color', 'jusi-backend', 'python3', '-m', 'jusi', 'client-process', 'terminal-attach'], get(l:spec, 'cmd', []))
+    call assert_equal({}, get(l:spec, 'env', {}))
+  finally
+    let $TERM = l:save_term
+  endtry
 endfunction
 
 function! Test_cell_callback_ignores_stale_client_update_after_rebind() abort
@@ -2710,6 +2795,74 @@ function! Test_client_refresh_attached_view_rebinds_native_terminal_transport() 
   finally
     let g:jusi_session_adapter = l:save_adapter
     let g:jusi_native_terminal_launcher = l:save_launcher
+    if type(l:save_launcher_ref) == type(function('tr'))
+      let g:JusiNativeTerminalLauncher = l:save_launcher_ref
+    else
+      unlet! g:JusiNativeTerminalLauncher
+    endif
+  endtry
+endfunction
+
+function! Test_client_refresh_attached_view_can_keep_transcript_for_remote_kernel_cells() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_launcher = get(g:, 'jusi_native_terminal_launcher', 0)
+  let l:save_launcher_ref = get(g:, 'JusiNativeTerminalLauncher', 0)
+  let l:save_fallback = get(g:, 'jusi_remote_plain_cell_transcript_fallback', 0)
+  try
+    let g:jusi_session_adapter = {
+          \ 'inspect_client': function('s:test_session_adapter_inspect_client'),
+          \ 'request': function('s:test_request_adapter'),
+          \ }
+    let g:JusiNativeTerminalLauncher = function('TestNativeTerminalLauncher')
+    let g:jusi_remote_plain_cell_transcript_fallback = 1
+    let s:inspect_client_calls = 0
+    let s:native_terminal_launches = []
+    let s:request_envelopes = []
+    let s:inspect_client_response = {
+          \ 'revision': 8,
+          \ 'title': 'cell 1: done',
+          \ 'lines': [
+          \   'meta> client=client-1 session=sess-1 bufnr=unbound',
+          \   'started cell 1 [code:python]',
+          \   'execute[1]> print(''lalala'')',
+          \   'stdout> lalala',
+          \   'finished: done',
+          \   ],
+          \ 'execution_status': 'done',
+          \ 'transport': {
+          \   'kind': 'native_terminal',
+          \   'attach_cmd': ['python3', '-m', 'jusi', 'client-process', 'terminal-attach'],
+          \   'attach_env': {'JUSI_SESSION_ID': 'sess-1', 'JUSI_CLIENT_ID': 'client-1'},
+          \   'session_id': 'sess-1',
+          \   'client_id': 'client-1',
+          \   },
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    let l:notebook = bufnr('%')
+    let l:cell_id = b:jusi_nb.cells[0].id
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.state = 'connected'
+    let b:jusi_nb.session.target = {'kind': 'docker', 'value': 'docker://jusi-backend', 'config': {}}
+    let b:jusi_nb.cells[0].status = 'done'
+    let b:jusi_nb.cells[0].owner = {'kind': 'kernel'}
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = l:client
+    call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+
+    call jusi#client#refresh_attached_view(l:notebook, l:cell_id, 'client-1', l:client)
+
+    call assert_equal(0, len(s:native_terminal_launches))
+    call assert_equal(l:client, get(b:jusi_nb.cells[0], 'client_bufnr', -1))
+    call assert_equal('', getbufvar(l:client, 'jusi_client_transport_kind', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_native_terminal_launcher = l:save_launcher
+    let g:jusi_remote_plain_cell_transcript_fallback = l:save_fallback
     if type(l:save_launcher_ref) == type(function('tr'))
       let g:JusiNativeTerminalLauncher = l:save_launcher_ref
     else
@@ -5262,6 +5415,95 @@ function! Test_transport_request_can_start_backend_from_venv_target() abort
   finally
     call jusi#transport#stop(bufnr('%'))
     let g:jusi_backend_cmd = l:save_backend_cmd
+  endtry
+endfunction
+
+function! Test_transport_request_can_start_backend_from_docker_target() abort
+  let l:save_backend_cmd = get(g:, 'jusi_backend_cmd', [])
+  let l:save_path = $PATH
+  let l:root = tempname()
+  let l:bin = l:root . '/bin'
+  let l:docker = l:bin . '/docker'
+  try
+    call mkdir(l:bin, 'p')
+    call writefile([
+          \ '#!/bin/sh',
+          \ 'IFS= read -r line',
+          \ "printf '%s\\n' '{\"version\":1,\"kind\":\"response\",\"type\":\"start_session\",\"request_id\":\"req-test\",\"ok\":true,\"payload\":{}}'",
+          \ ], l:docker)
+    call setfperm(l:docker, 'rwxr-xr-x')
+    let $PATH = l:bin . ':' . l:save_path
+    let g:jusi_backend_cmd = []
+    call Test_open_scratch([
+          \ '##',
+          \ 'print(\"hello\")',
+          \ ])
+    let l:response = jusi#transport#request(bufnr('%'), {
+          \ 'version': 1,
+          \ 'kind': 'request',
+          \ 'type': 'start_session',
+          \ 'request_id': 'req-test',
+          \ 'payload': {
+          \   'notebook_id': 'nb-1',
+          \   'kernel_name': 'py',
+          \   'target': {
+          \     'kind': 'docker',
+          \     'value': 'docker://jusi-backend',
+          \     },
+          \   },
+          \ })
+    call assert_equal(1, get(l:response, 'ok', 0))
+    call assert_equal('', get(l:response, 'error', ''))
+  finally
+    call jusi#transport#stop(bufnr('%'))
+    let g:jusi_backend_cmd = l:save_backend_cmd
+    let $PATH = l:save_path
+  endtry
+endfunction
+
+function! Test_transport_request_can_start_backend_from_docker_ssh_target() abort
+  let l:save_backend_cmd = get(g:, 'jusi_backend_cmd', [])
+  let l:save_path = $PATH
+  let l:root = tempname()
+  let l:bin = l:root . '/bin'
+  let l:ssh = l:bin . '/ssh'
+  try
+    call mkdir(l:bin, 'p')
+    call writefile([
+          \ '#!/bin/sh',
+          \ 'IFS= read -r line',
+          \ "printf '%s\\n' '{\"version\":1,\"kind\":\"response\",\"type\":\"start_session\",\"request_id\":\"req-test\",\"ok\":true,\"payload\":{}}'",
+          \ ], l:ssh)
+    call setfperm(l:ssh, 'rwxr-xr-x')
+    let $PATH = l:bin . ':' . l:save_path
+    let g:jusi_backend_cmd = []
+    call Test_open_scratch([
+          \ '##',
+          \ 'print(\"hello\")',
+          \ ])
+    let l:response = jusi#transport#request(bufnr('%'), {
+          \ 'version': 1,
+          \ 'kind': 'request',
+          \ 'type': 'start_session',
+          \ 'request_id': 'req-test',
+          \ 'payload': {
+          \   'notebook_id': 'nb-1',
+          \   'kernel_name': 'py',
+          \   'target': {
+          \     'kind': 'docker+ssh',
+          \     'value': 'docker+ssh://niku@example.com/jusi-backend',
+          \     'config': {
+          \       'key_path': '/tmp/test-key',
+          \     },
+          \     },
+          \   },
+          \ })
+    call assert_equal(1, get(l:response, 'ok', 0))
+    call assert_equal('', get(l:response, 'error', ''))
+  finally
+    call jusi#transport#stop(bufnr('%'))
+    let g:jusi_backend_cmd = l:save_backend_cmd
+    let $PATH = l:save_path
   endtry
 endfunction
 

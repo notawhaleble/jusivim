@@ -152,6 +152,15 @@ function! s:target_python_cmd(target) abort
   return [l:python, '-m', 'jusi']
 endfunction
 
+function! s:target_python_program(target) abort
+  let l:kind = get(a:target, 'kind', '')
+  if l:kind ==# 'venv'
+    return s:venv_python_path(s:target_value_body(get(a:target, 'value', '')))
+  endif
+  let l:python = s:target_config_string(a:target, 'python')
+  return empty(l:python) ? 'python3' : l:python
+endfunction
+
 function! s:ssh_host(target) abort
   let l:host = s:target_config_string(a:target, 'host')
   if empty(l:host)
@@ -199,6 +208,142 @@ function! s:ssh_prefix(target) abort
   endif
   call add(l:cmd, l:host)
   return l:cmd
+endfunction
+
+function! s:ssh_attach_prefix(target) abort
+  let l:host = s:ssh_host(a:target)
+  if empty(l:host)
+    return []
+  endif
+  let l:cmd = []
+  let l:password = s:target_config_string(a:target, 'password')
+  if !empty(l:password)
+    call extend(l:cmd, ['sshpass', '-p', l:password])
+  endif
+  call add(l:cmd, 'ssh')
+  call add(l:cmd, '-tt')
+  let l:key_path = s:target_config_string(a:target, 'key_path', 'identity_file')
+  if !empty(l:key_path)
+    call extend(l:cmd, ['-i', l:key_path])
+  endif
+  let l:port = s:target_config_number(a:target, 'port')
+  if l:port > 0
+    call extend(l:cmd, ['-p', string(l:port)])
+  endif
+  call add(l:cmd, l:host)
+  return l:cmd
+endfunction
+
+function! s:attach_cmd_list(cmd) abort
+  if type(a:cmd) == type([])
+    return copy(a:cmd)
+  endif
+  return []
+endfunction
+
+function! s:attach_env_assignments(env) abort
+  if type(a:env) != type({})
+    return []
+  endif
+  let l:pairs = []
+  for l:key in sort(keys(a:env))
+    call add(l:pairs, l:key . '=' . get(a:env, l:key, ''))
+  endfor
+  return l:pairs
+endfunction
+
+function! s:host_terminal_env() abort
+  let l:env = {}
+  for l:key in ['TERM', 'COLORTERM']
+    let l:value = exists('$' . l:key) ? eval('$' . l:key) : ''
+    if type(l:value) == type('') && !empty(l:value)
+      let l:env[l:key] = l:value
+    endif
+  endfor
+  return l:env
+endfunction
+
+function! s:docker_attach_env(env) abort
+  let l:env = type(a:env) == type({}) ? copy(a:env) : {}
+  for [l:key, l:value] in items(s:host_terminal_env())
+    if !has_key(l:env, l:key)
+      let l:env[l:key] = l:value
+    endif
+  endfor
+  return l:env
+endfunction
+
+function! s:terminal_attach_cmd_for_venv(target, attach_cmd) abort
+  let l:cmd = s:attach_cmd_list(a:attach_cmd)
+  if empty(l:cmd)
+    return []
+  endif
+  let l:python = s:target_python_program(a:target)
+  if empty(l:python)
+    return []
+  endif
+  let l:cmd[0] = l:python
+  return l:cmd
+endfunction
+
+function! jusi#transport#terminal_attach_spec_for_target(target, attach_cmd, attach_env) abort
+  let l:target = type(a:target) == type({}) ? a:target : {}
+  let l:kind = get(l:target, 'kind', '')
+  let l:attach_cmd = s:attach_cmd_list(a:attach_cmd)
+  let l:attach_env = type(a:attach_env) == type({}) ? copy(a:attach_env) : {}
+
+  if empty(l:attach_cmd)
+    return {'cmd': [], 'env': {}}
+  endif
+
+  if empty(l:kind) || index(['kernel', 'local', 'connection_file'], l:kind) >= 0
+    return {'cmd': l:attach_cmd, 'env': l:attach_env}
+  endif
+
+  if l:kind ==# 'venv'
+    return {'cmd': s:terminal_attach_cmd_for_venv(l:target, l:attach_cmd), 'env': l:attach_env}
+  endif
+
+  if l:kind ==# 'ssh'
+    let l:prefix = s:ssh_attach_prefix(l:target)
+    if empty(l:prefix)
+      return {'cmd': [], 'env': {}}
+    endif
+    return {'cmd': l:prefix + ['env'] + s:attach_env_assignments(l:attach_env) + l:attach_cmd, 'env': {}}
+  endif
+
+  if l:kind ==# 'docker'
+    let l:container = s:docker_container(l:target)
+    if empty(l:container)
+      return {'cmd': [], 'env': {}}
+    endif
+    let l:attach_env = s:docker_attach_env(l:attach_env)
+    let l:cmd = ['docker', 'exec', '-it']
+    for l:pair in s:attach_env_assignments(l:attach_env)
+      call extend(l:cmd, ['-e', l:pair])
+    endfor
+    call add(l:cmd, l:container)
+    call extend(l:cmd, l:attach_cmd)
+    return {'cmd': l:cmd, 'env': {}}
+  endif
+
+  if l:kind ==# 'docker+ssh'
+    let l:prefix = s:ssh_attach_prefix(l:target)
+    let l:container = s:docker_container(l:target)
+    if empty(l:prefix) || empty(l:container)
+      return {'cmd': [], 'env': {}}
+    endif
+    let l:attach_env = s:docker_attach_env(l:attach_env)
+    let l:cmd = l:prefix + ['docker', 'exec', '-it']
+    for l:pair in s:attach_env_assignments(l:attach_env)
+      call extend(l:cmd, ['-e', l:pair])
+    endfor
+    call add(l:cmd, l:container)
+    call extend(l:cmd, l:attach_cmd)
+    return {'cmd': l:cmd, 'env': {}}
+  endif
+
+  return {'cmd': l:attach_cmd, 'env': l:attach_env}
 endfunction
 
 function! jusi#transport#backend_cmd_for_target(target) abort

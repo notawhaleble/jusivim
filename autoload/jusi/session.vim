@@ -840,6 +840,23 @@ function! s:target_kind_from_value(value) abort
   return empty(l:kind) ? '' : l:kind
 endfunction
 
+function! s:extract_target_config(spec) abort
+  if type(a:spec) != type({})
+    return {}
+  endif
+  let l:config = copy(a:spec)
+  let l:nested = get(l:config, 'config', {})
+  for l:key in ['kind', 'value', 'connection', 'target', 'config', 'alias', 'source']
+    if has_key(l:config, l:key)
+      call remove(l:config, l:key)
+    endif
+  endfor
+  if type(l:nested) == type({})
+    call extend(l:config, copy(l:nested), 'force')
+  endif
+  return l:config
+endfunction
+
 function! s:session_target_kind(session) abort
   let l:target = get(a:session, 'target', {})
   let l:kind = get(l:target, 'kind', '')
@@ -871,7 +888,7 @@ function! s:normalize_target_config(alias, spec) abort
     return l:target
   endif
   if type(a:spec) == type({})
-    let l:target.config = copy(a:spec)
+    let l:target.config = s:extract_target_config(a:spec)
     let l:value = get(a:spec, 'value', get(a:spec, 'connection', get(a:spec, 'target', '')))
     let l:target.value = type(l:value) == type('') ? l:value : ''
     let l:target.kind = get(a:spec, 'kind', s:target_kind_from_value(l:target.value))
@@ -911,7 +928,7 @@ function! s:resolve_attach_target(target) abort
     let l:value = get(a:target, 'value', get(a:target, 'connection', get(a:target, 'target', '')))
     let l:resolved.value = type(l:value) == type('') ? l:value : ''
     let l:resolved.kind = get(a:target, 'kind', s:target_kind_from_value(l:resolved.value))
-    let l:resolved.config = copy(a:target)
+    let l:resolved.config = s:extract_target_config(a:target)
     let l:resolved.alias = get(a:target, 'alias', '')
     return l:resolved
   endif

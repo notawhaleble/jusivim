@@ -229,6 +229,39 @@ function! s:native_terminal_launcher() abort
   return function('s:launch_native_terminal_default')
 endfunction
 
+function! s:is_executable_command(cmd) abort
+  if type(a:cmd) == type([])
+    if empty(a:cmd)
+      return 0
+    endif
+    let l:program = a:cmd[0]
+    if type(l:program) != type('') || empty(l:program)
+      return 0
+    endif
+    if l:program =~# '[/\\]'
+      return executable(fnamemodify(l:program, ':p'))
+    endif
+    return executable(l:program)
+  endif
+  return type(a:cmd) == type('') && !empty(a:cmd)
+endfunction
+
+function! s:remote_target_kind(kind) abort
+  return index(['ssh', 'docker', 'docker+ssh'], a:kind) >= 0
+endfunction
+
+function! s:should_skip_native_terminal_for_cell(notebook_bufnr, cell) abort
+  let l:target = jusi#session#target(a:notebook_bufnr)
+  let l:kind = tolower(get(l:target, 'kind', ''))
+  if !s:remote_target_kind(l:kind)
+    return 0
+  endif
+  if !get(g:, 'jusi_remote_plain_cell_transcript_fallback', 0)
+    return 0
+  endif
+  return get(get(a:cell, 'owner', {}), 'kind', '') ==# 'kernel'
+endfunction
+
 function! s:native_terminal_key(notebook_bufnr, cell_id, client_id) abort
   return a:notebook_bufnr . ':' . a:cell_id . ':' . a:client_id
 endfunction
@@ -256,17 +289,27 @@ function! s:bind_native_terminal_buffer(notebook_bufnr, cell_id, client_id, bufn
 endfunction
 
 function! s:launch_native_terminal_default(notebook_bufnr, cell_id, client_id, transport) abort
-  let l:cmd = get(a:transport, 'attach_cmd', [])
-  let l:env = get(a:transport, 'attach_env', {})
+  let l:target = jusi#session#target(a:notebook_bufnr)
+  let l:spec = jusi#transport#terminal_attach_spec_for_target(
+        \ l:target,
+        \ get(a:transport, 'attach_cmd', []),
+        \ get(a:transport, 'attach_env', {}))
+  let l:cmd = get(l:spec, 'cmd', [])
+  let l:env = get(l:spec, 'env', {})
   call s:native_terminal_debug('launch-default-begin', {
         \ 'notebook_bufnr': a:notebook_bufnr,
         \ 'cell_id': a:cell_id,
         \ 'client_id': a:client_id,
+        \ 'target': l:target,
         \ 'cmd': l:cmd,
         \ 'env': l:env,
         \ })
   if !(type(l:cmd) == type([]) && !empty(l:cmd)) && !(type(l:cmd) == type('') && !empty(l:cmd))
     call s:native_terminal_debug('launch-default-invalid-cmd', l:cmd)
+    return 0
+  endif
+  if !s:is_executable_command(l:cmd)
+    call s:native_terminal_debug('launch-default-unlaunchable-cmd', l:cmd)
     return 0
   endif
   let l:source_winid = exists('*win_getid') ? win_getid() : 0
@@ -570,6 +613,7 @@ function! jusi#client#detach_buffer(bufnr) abort
   call setbufvar(a:bufnr, 'jusi_client_cell_id', 0)
   return empty(filter(copy(getwininfo()), {_, v -> get(v, 'bufnr', 0) == a:bufnr})) ? 1 : 0
 endfunction
+
 
 function! jusi#client#destroy_buffer(bufnr) abort
   if !jusi#buffer#is_valid_bufnr(a:bufnr)
@@ -948,7 +992,7 @@ function! s:refresh_attached_now(notebook_bufnr, cell_id, client_id, client_bufn
   endif
 
   let l:view = s:normalize_client_view(l:response)
-  if s:is_native_terminal_view(l:view)
+  if s:is_native_terminal_view(l:view) && !s:should_skip_native_terminal_for_cell(a:notebook_bufnr, l:ctx.cell)
     let l:transport = s:native_terminal_transport(l:view)
     let l:terminal_bufnr = s:ensure_native_terminal_buffer(a:notebook_bufnr, a:cell_id, a:client_id, a:client_bufnr, l:transport)
     if l:terminal_bufnr > 0
