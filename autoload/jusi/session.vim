@@ -237,6 +237,8 @@ function! s:cell_close_reset_update() abort
         \ 'client_state': 'shutdown',
         \ 'client_bufnr': -1,
         \ 'close_requested': 0,
+        \ 'transport': {},
+        \ 'runtime_mode': '',
         \ 'handler': {'id': '', 'last_message_type': '', 'payload': {}, 'snapshot': {}},
         \ 'pending_input': {},
         \ 'parked_status': '',

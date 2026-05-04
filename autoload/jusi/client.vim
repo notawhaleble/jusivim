@@ -216,13 +216,13 @@ function! s:sanitize_native_terminal_transport(transport) abort
 endfunction
 
 function! s:native_terminal_launcher() abort
-  let l:launcher = get(g:, 'jusi_native_terminal_launcher', get(g:, 'JusiNativeTerminalLauncher', 0))
-  if type(l:launcher) == type(function('tr'))
-    return l:launcher
+  let l:Launcher = get(g:, 'jusi_native_terminal_launcher', get(g:, 'JusiNativeTerminalLauncher', 0))
+  if type(l:Launcher) == type(function('tr'))
+    return l:Launcher
   endif
-  if type(l:launcher) == type('') && !empty(l:launcher)
+  if type(l:Launcher) == type('') && !empty(l:Launcher)
     try
-      return function(l:launcher)
+      return function(l:Launcher)
     catch
     endtry
   endif
@@ -280,10 +280,11 @@ function! s:bind_native_terminal_buffer(notebook_bufnr, cell_id, client_id, bufn
   call jusi#client#mark_attached_buffer(a:notebook_bufnr, a:cell_id, a:client_id, a:bufnr)
   call jusi#focus#prime_client_windows_for_buffer(a:bufnr)
   call s:set_native_terminal_buffer_transport(a:bufnr, a:transport)
-  call jusi#session#callback_cell(a:cell_id, {
-        \ 'client_bufnr': a:bufnr,
-        \ 'client_state': 'active',
-        \ }, a:notebook_bufnr)
+  call jusi#session#repair_local_client_binding(
+        \ a:cell_id,
+        \ a:client_id,
+        \ a:bufnr,
+        \ a:notebook_bufnr)
   call jusi#focus#prime_client_windows_for_buffer(a:bufnr)
   return a:bufnr
 endfunction
@@ -460,6 +461,22 @@ function! jusi#client#allow_editor_close(bufnr) abort
   return 1
 endfunction
 
+function! s:suppress_editor_close(bufnr) abort
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
+    return 0
+  endif
+  call setbufvar(a:bufnr, 'jusi_client_editor_close_blocked', 1)
+  call setbufvar(a:bufnr, 'jusi_client_close_observed', 1)
+  call setbufvar(a:bufnr, 'jusi_client_role', 'detached')
+  call setbufvar(a:bufnr, 'jusi_client_cell_id', 0)
+  call s:client_debug('suppress-editor-close', {
+        \ 'bufnr': a:bufnr,
+        \ 'client_id': getbufvar(a:bufnr, 'jusi_client_id', ''),
+        \ 'displayed': bufwinid(a:bufnr) > 0,
+        \ })
+  return 1
+endfunction
+
 function! s:create_managed_buffer(name, notebook_bufnr, client_id, role, ...) abort
   let l:bufnr = bufadd(a:name)
   call bufload(l:bufnr)
@@ -622,6 +639,7 @@ function! jusi#client#destroy_buffer(bufnr) abort
   if !getbufvar(a:bufnr, 'jusi_client_managed', 0)
     return 0
   endif
+  call s:suppress_editor_close(a:bufnr)
   call s:stop_refresh_timer(a:bufnr)
   if jusi#client#is_native_terminal_buffer(a:bufnr)
     call s:native_terminal_debug('destroy-buffer-begin', {
@@ -764,7 +782,11 @@ function! jusi#client#recover_attached_buffer(notebook_bufnr, cell_id, client_id
     let l:role = getbufvar(l:bufnr, 'jusi_client_role', '')
     let l:cell_match = getbufvar(l:bufnr, 'jusi_client_cell_id', 0) == a:cell_id
     let l:client_match = !empty(a:client_id) && getbufvar(l:bufnr, 'jusi_client_id', '') ==# a:client_id
-    if !l:cell_match && !l:client_match
+    if !empty(a:client_id)
+      if !l:client_match
+        continue
+      endif
+    elseif !l:cell_match
       continue
     endif
     let l:score = 0
