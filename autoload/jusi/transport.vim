@@ -69,10 +69,18 @@ function! s:copy_cmd(cmd) abort
   return a:cmd
 endfunction
 
+function! s:has_cmd(cmd) abort
+  return (type(a:cmd) == type([]) && !empty(a:cmd))
+        \ || (type(a:cmd) == type('') && !empty(a:cmd))
+endfunction
+
+function! s:same_cmd(left, right) abort
+  return type(a:left) == type(a:right) && string(a:left) ==# string(a:right)
+endfunction
+
 function! s:has_backend_cmd() abort
   let l:cmd = s:backend_cmd()
-  return (type(l:cmd) == type([]) && !empty(l:cmd))
-        \ || (type(l:cmd) == type('') && !empty(l:cmd))
+  return s:has_cmd(l:cmd)
 endfunction
 
 function! s:default_python() abort
@@ -263,6 +271,53 @@ function! s:host_terminal_env() abort
   return l:env
 endfunction
 
+function! s:host_env_value(key) abort
+  let l:value = exists('$' . a:key) ? eval('$' . a:key) : ''
+  return type(l:value) == type('') ? l:value : ''
+endfunction
+
+function! s:venv_target_root(target) abort
+  return s:target_value_body(get(a:target, 'value', ''))
+endfunction
+
+function! s:rewrite_exec_attach_child_env_for_target(target, child_env) abort
+  let l:target = type(a:target) == type({}) ? a:target : {}
+  let l:kind = get(l:target, 'kind', '')
+  let l:child_env = type(a:child_env) == type({}) ? copy(a:child_env) : {}
+  if index(['', 'kernel', 'local', 'connection_file', 'venv'], l:kind) < 0
+    return l:child_env
+  endif
+
+  let l:rewritten = {}
+  for [l:key, l:value] in items(l:child_env)
+    if l:key =~# '^JUSI_'
+      let l:rewritten[l:key] = l:value
+    endif
+  endfor
+  for l:key in ['TERM', 'COLORTERM', 'LANG', 'LC_ALL', 'LC_CTYPE', 'HOME', 'PYTHONPATH']
+    let l:value = s:host_env_value(l:key)
+    if !empty(l:value)
+      let l:rewritten[l:key] = l:value
+    endif
+  endfor
+  let l:path = s:host_env_value('PATH')
+  if l:kind ==# 'venv'
+    let l:venv_root = s:venv_target_root(l:target)
+    let l:venv_bin = fnamemodify(s:venv_python_path(l:venv_root), ':h')
+    if !empty(l:venv_root)
+      let l:rewritten.VIRTUAL_ENV = l:venv_root
+    endif
+    if !empty(l:venv_bin)
+      let l:rewritten.PATH = empty(l:path) ? l:venv_bin : l:venv_bin . ':' . l:path
+    elseif !empty(l:path)
+      let l:rewritten.PATH = l:path
+    endif
+  elseif !empty(l:path)
+    let l:rewritten.PATH = l:path
+  endif
+  return l:rewritten
+endfunction
+
 function! s:docker_attach_env(env) abort
   let l:env = type(a:env) == type({}) ? copy(a:env) : {}
   for [l:key, l:value] in items(s:host_terminal_env())
@@ -346,6 +401,36 @@ function! jusi#transport#terminal_attach_spec_for_target(target, attach_cmd, att
   return {'cmd': l:attach_cmd, 'env': l:attach_env}
 endfunction
 
+function! jusi#transport#rewrite_native_terminal_attach_env_for_target(target, attach_env) abort
+  let l:target = type(a:target) == type({}) ? a:target : {}
+  let l:kind = get(l:target, 'kind', '')
+  let l:attach_env = type(a:attach_env) == type({}) ? copy(a:attach_env) : {}
+
+  if has_key(l:attach_env, 'JUSI_TERMINAL_CMD_JSON')
+    try
+      let l:command = json_decode(l:attach_env.JUSI_TERMINAL_CMD_JSON)
+      if type(l:command) == type([])
+        if l:kind ==# 'venv'
+          let l:command = s:terminal_attach_cmd_for_venv(l:target, l:command)
+        endif
+        let l:attach_env.JUSI_TERMINAL_CMD_JSON = json_encode(l:command)
+      endif
+    catch
+    endtry
+  endif
+
+  if has_key(l:attach_env, 'JUSI_TERMINAL_ENV_JSON')
+    try
+      let l:child_env = json_decode(l:attach_env.JUSI_TERMINAL_ENV_JSON)
+      let l:child_env = s:rewrite_exec_attach_child_env_for_target(l:target, l:child_env)
+      let l:attach_env.JUSI_TERMINAL_ENV_JSON = json_encode(l:child_env)
+    catch
+    endtry
+  endif
+
+  return l:attach_env
+endfunction
+
 function! jusi#transport#backend_cmd_for_target(target) abort
   let l:target = type(a:target) == type({}) ? a:target : {}
   let l:kind = get(l:target, 'kind', '')
@@ -417,11 +502,18 @@ endfunction
 
 function! s:channel_send(bufnr, text) abort
   let l:state = s:ensure_state(a:bufnr)
-  if has('nvim')
-    call chansend(l:state.job, a:text)
-    return
-  endif
-  call ch_sendraw(l:state.channel, a:text)
+  try
+    if has('nvim')
+      call chansend(l:state.job, a:text)
+      return 1
+    endif
+    call ch_sendraw(l:state.channel, a:text)
+    return 1
+  catch
+    call s:debug_log(a:bufnr, 'channel-send-failed', v:exception)
+    call s:stop_job(a:bufnr)
+    return 0
+  endtry
 endfunction
 
 function! s:job_is_running(bufnr) abort
@@ -437,6 +529,42 @@ function! s:job_is_running(bufnr) abort
     return l:job > 0 && job_status(l:job) ==# 'run'
   endif
   return !empty(l:job) && job_status(l:job) ==# 'run'
+endfunction
+
+function! s:matches_current_job(bufnr, job) abort
+  if !has_key(s:transport, a:bufnr)
+    return 0
+  endif
+  return string(get(s:transport[a:bufnr], 'job', 0)) ==# string(a:job)
+endfunction
+
+function! s:matches_current_channel(bufnr, channel) abort
+  if !has_key(s:transport, a:bufnr)
+    return 0
+  endif
+  return string(get(s:transport[a:bufnr], 'channel', 0)) ==# string(a:channel)
+endfunction
+
+function! s:stop_job(bufnr) abort
+  if !has_key(s:transport, a:bufnr)
+    return
+  endif
+  let l:state = s:transport[a:bufnr]
+  if has('nvim')
+    if get(l:state, 'job', 0) > 0
+      call jobstop(l:state.job)
+    endif
+  else
+    let l:job = get(l:state, 'job', 0)
+    if type(l:job) == type(0)
+      if l:job > 0
+        call job_stop(l:job)
+      endif
+    elseif !empty(l:job)
+      call job_stop(l:job)
+    endif
+  endif
+  call s:clear_state(a:bufnr)
 endfunction
 
 function! s:on_message(bufnr, envelope) abort
@@ -551,10 +679,18 @@ function! s:parse_vim_chunk(bufnr, msg) abort
 endfunction
 
 function! s:nvim_stdout(bufnr, jobid, data, event) abort
+  if !s:matches_current_job(a:bufnr, a:jobid)
+    call s:debug_log(a:bufnr, 'nvim-stdout-ignored-stale-job', 'job=' . a:jobid)
+    return
+  endif
   call s:parse_nvim_chunks(a:bufnr, a:data)
 endfunction
 
 function! s:nvim_exit(bufnr, jobid, code, event) abort
+  if !s:matches_current_job(a:bufnr, a:jobid)
+    call s:debug_log(a:bufnr, 'nvim-exit-ignored-stale-job', 'job=' . a:jobid, 'code=' . a:code)
+    return
+  endif
   call s:debug_log(a:bufnr, 'nvim-exit', 'job=' . a:jobid, 'code=' . a:code)
   let l:state = s:ensure_state(a:bufnr)
   let l:state.job = 0
@@ -562,10 +698,18 @@ function! s:nvim_exit(bufnr, jobid, code, event) abort
 endfunction
 
 function! s:vim_out(bufnr, channel, msg) abort
+  if !s:matches_current_channel(a:bufnr, a:channel)
+    call s:debug_log(a:bufnr, 'vim-out-ignored-stale-channel', 'channel=' . string(a:channel))
+    return
+  endif
   call s:parse_vim_chunk(a:bufnr, a:msg)
 endfunction
 
 function! s:vim_exit(bufnr, job, status) abort
+  if !s:matches_current_job(a:bufnr, a:job)
+    call s:debug_log(a:bufnr, 'vim-exit-ignored-stale-job', 'job=' . string(a:job), 'status=' . a:status)
+    return
+  endif
   call s:debug_log(a:bufnr, 'vim-exit', 'status=' . a:status)
   let l:state = s:ensure_state(a:bufnr)
   let l:state.job = 0
@@ -574,12 +718,21 @@ function! s:vim_exit(bufnr, job, status) abort
 endfunction
 
 function! s:start_job(bufnr, envelope) abort
-  if s:job_is_running(a:bufnr)
-    call s:debug_log(a:bufnr, 'start-job-skip-already-running')
-    return 1
-  endif
   let l:cmd = s:backend_cmd_for_envelope(a:bufnr, a:envelope)
-  if !((type(l:cmd) == type([]) && !empty(l:cmd)) || (type(l:cmd) == type('') && !empty(l:cmd)))
+  if s:job_is_running(a:bufnr)
+    let l:state = s:ensure_state(a:bufnr)
+    let l:current_cmd = get(l:state, 'cmd', [])
+    if get(a:envelope, 'type', '') ==# 'start_session'
+          \ && s:has_cmd(l:cmd)
+          \ && !s:same_cmd(l:current_cmd, l:cmd)
+      call s:debug_log(a:bufnr, 'start-job-restart-command-changed', l:current_cmd, l:cmd)
+      call s:stop_job(a:bufnr)
+    else
+      call s:debug_log(a:bufnr, 'start-job-skip-already-running', l:current_cmd)
+      return 1
+    endif
+  endif
+  if !s:has_cmd(l:cmd)
     call s:debug_log(a:bufnr, 'start-job-no-backend-cmd')
     return 0
   endif
@@ -656,7 +809,14 @@ function! jusi#transport#request(bufnr, envelope) abort
   let l:state.pending[l:request_id] = {'done': 0, 'response': {}}
   call s:set_state(l:bufnr, l:state)
   call s:debug_log(l:bufnr, 'request-pending', l:request_id, get(a:envelope, 'type', ''))
-  call s:channel_send(l:bufnr, json_encode(a:envelope) . "\n")
+  if !s:channel_send(l:bufnr, json_encode(a:envelope) . "\n")
+    let l:state = s:ensure_state(l:bufnr)
+    if has_key(l:state.pending, l:request_id)
+      call remove(l:state.pending, l:request_id)
+      call s:set_state(l:bufnr, l:state)
+    endif
+    return {'ok': 0, 'error': 'Transport write failed', 'error_code': 'transport_unreachable'}
+  endif
   call s:debug_log(l:bufnr, 'request-sent', l:request_id)
 
   let l:timeout = get(g:, 'jusi_transport_timeout_ms', 5000)
@@ -701,7 +861,9 @@ function! jusi#transport#notify(bufnr, envelope) abort
     return {'ok': 0, 'error': 'Transport is not configured', 'error_code': 'transport_unreachable'}
   endif
 
-  call s:channel_send(l:bufnr, json_encode(a:envelope) . "\n")
+  if !s:channel_send(l:bufnr, json_encode(a:envelope) . "\n")
+    return {'ok': 0, 'error': 'Transport write failed', 'error_code': 'transport_unreachable'}
+  endif
   call s:debug_log(l:bufnr, 'notify-sent', get(a:envelope, 'request_id', ''), get(a:envelope, 'type', ''))
   return {'ok': 1}
 endfunction
@@ -712,23 +874,5 @@ endfunction
 
 function! jusi#transport#stop(...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
-  if !has_key(s:transport, l:bufnr)
-    return
-  endif
-  let l:state = s:transport[l:bufnr]
-  if has('nvim')
-    if get(l:state, 'job', 0) > 0
-      call jobstop(l:state.job)
-    endif
-  else
-    let l:job = get(l:state, 'job', 0)
-    if type(l:job) == type(0)
-      if l:job > 0
-        call job_stop(l:job)
-      endif
-    elseif !empty(l:job)
-      call job_stop(l:job)
-    endif
-  endif
-  call s:clear_state(l:bufnr)
+  call s:stop_job(l:bufnr)
 endfunction

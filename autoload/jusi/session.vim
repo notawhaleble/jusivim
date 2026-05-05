@@ -353,6 +353,24 @@ function! s:clear_all_cell_runtime(bufnr) abort
   return jusi#notebook#state(a:bufnr)
 endfunction
 
+function! s:purge_notebook_local_clients(bufnr) abort
+  call jusi#client#clear_notebook_runtime(a:bufnr)
+  for l:info in getbufinfo()
+    let l:managed_bufnr = get(l:info, 'bufnr', 0)
+    if l:managed_bufnr <= 0
+      continue
+    endif
+    if !getbufvar(l:managed_bufnr, 'jusi_client_managed', 0)
+      continue
+    endif
+    if getbufvar(l:managed_bufnr, 'jusi_client_notebook_bufnr', -1) != a:bufnr
+      continue
+    endif
+    call jusi#client#destroy_buffer(l:managed_bufnr)
+  endfor
+  return 1
+endfunction
+
 function! s:maybe_finalize_closed_cell(bufnr, cell) abort
   if empty(a:cell) || !get(a:cell, 'close_requested', 0)
     return a:cell
@@ -392,6 +410,24 @@ function! s:refresh_stale_cells(bufnr) abort
           \ l:cell.id,
           \ get(l:cell, 'client_id', ''),
           \ l:cell.client_bufnr)
+    if !get(l:validation, 'ok', 0)
+      let l:recovered_bufnr = jusi#client#recover_attached_buffer(
+            \ a:bufnr,
+            \ l:cell.id,
+            \ get(l:cell, 'client_id', ''))
+      if l:recovered_bufnr > 0 && l:recovered_bufnr != get(l:cell, 'client_bufnr', -1)
+        let l:cell = s:update_cell(a:bufnr, l:cell.id, {
+              \ 'client_bufnr': l:recovered_bufnr,
+              \ 'client_state': 'active',
+              \ })
+        let l:missing_locally = 0
+        let l:validation = jusi#client#validate_attached_binding(
+              \ a:bufnr,
+              \ l:cell.id,
+              \ get(l:cell, 'client_id', ''),
+              \ l:cell.client_bufnr)
+      endif
+    endif
     if get(l:validation, 'ok', 0)
       continue
     endif
@@ -1130,6 +1166,22 @@ function! jusi#session#callback_cell(cell_id, update, ...) abort
   call s:debug_log(l:bufnr, 'callback-cell-begin', a:cell_id, l:update, l:session)
   if !s:accept_runtime_callbacks(l:session)
     call s:debug_log(l:bufnr, 'callback-cell-ignored-inactive', a:cell_id, l:update, l:session)
+    return jusi#notebook#state(l:bufnr)
+  endif
+  let l:source_session_id = get(l:update, '_source_session_id', '')
+  if has_key(l:update, '_source_session_id')
+    call remove(l:update, '_source_session_id')
+  endif
+  if empty(l:source_session_id)
+    let l:transport = get(l:update, 'transport', {})
+    if type(l:transport) == type({})
+      let l:source_session_id = get(l:transport, 'session_id', '')
+    endif
+  endif
+  if !empty(l:source_session_id)
+        \ && !empty(get(l:session, 'id', ''))
+        \ && l:source_session_id !=# get(l:session, 'id', '')
+    call s:debug_log(l:bufnr, 'callback-cell-ignored-stale-session', a:cell_id, l:source_session_id, l:session)
     return jusi#notebook#state(l:bufnr)
   endif
   let l:state = s:notebook_state(l:bufnr)
@@ -1961,6 +2013,7 @@ function! jusi#session#start(...) abort
     return s:fail_session(l:bufnr, {'last_action': 'start'}, 'Kernel session is already active for this notebook')
   endif
 
+  call s:purge_notebook_local_clients(l:bufnr)
   call s:clear_all_cell_runtime(l:bufnr)
   return s:start_kernel_session(l:bufnr, l:kernel_name, l:target, 'start')
 endfunction
@@ -2053,8 +2106,8 @@ function! jusi#session#attach(target) abort
         \ 'last_action': 'attach',
         \ 'last_error': '',
         \ 'last_error_code': '',
-          \ 'request': l:request,
-          \ })
+        \ 'request': l:request,
+        \ })
   let l:response = jusi#adapter#call('attach', l:bufnr, l:request)
   if get(l:response, 'ok', 0)
     call s:clear_all_cell_runtime(l:bufnr)
@@ -2620,6 +2673,7 @@ function! jusi#session#restart() abort
     call s:update_session(l:bufnr, {'restart_request': {}})
   endif
 
+  call s:purge_notebook_local_clients(l:bufnr)
   call s:clear_all_cell_runtime(l:bufnr)
   return s:start_kernel_session(l:bufnr, l:kernel_name, l:target, 'restart')
 endfunction
@@ -2636,6 +2690,7 @@ function! jusi#session#stop() abort
   endif
 
   call jusi#session#shutdown_all_clients('session_stop', l:bufnr)
+  call s:purge_notebook_local_clients(l:bufnr)
   call s:update_session(l:bufnr, {
         \ 'state': 'stopping',
         \ 'last_action': 'stop',

@@ -1,6 +1,16 @@
 let s:debug_clock = {'sec': localtime(), 'rel': reltime()}
 let s:native_terminal_pending = {}
 
+function! s:notebook_session_id(notebook_bufnr) abort
+  if !bufexists(a:notebook_bufnr)
+    return ''
+  endif
+  let l:state = getbufvar(a:notebook_bufnr, 'jusi_nb', {})
+  let l:session = get(l:state, 'session', {})
+  let l:session_id = get(l:session, 'id', '')
+  return type(l:session_id) == type('') ? l:session_id : ''
+endfunction
+
 function! s:native_terminal_debug_enabled() abort
   return type(get(g:, 'jusi_native_terminal_debug_log', 0)) == type('')
         \ && !empty(get(g:, 'jusi_native_terminal_debug_log', ''))
@@ -197,7 +207,7 @@ function! s:sanitize_terminal_env(env) abort
   return l:env
 endfunction
 
-function! s:sanitize_native_terminal_transport(transport) abort
+function! s:sanitize_native_terminal_transport(transport, target) abort
   if type(a:transport) != type({})
     return {}
   endif
@@ -211,6 +221,7 @@ function! s:sanitize_native_terminal_transport(transport) abort
     catch
     endtry
   endif
+  let l:attach_env = jusi#transport#rewrite_native_terminal_attach_env_for_target(a:target, l:attach_env)
   let l:transport.attach_env = l:attach_env
   return l:transport
 endfunction
@@ -263,7 +274,7 @@ function! s:should_skip_native_terminal_for_cell(notebook_bufnr, cell) abort
 endfunction
 
 function! s:native_terminal_key(notebook_bufnr, cell_id, client_id) abort
-  return a:notebook_bufnr . ':' . a:cell_id . ':' . a:client_id
+  return a:notebook_bufnr . ':' . s:notebook_session_id(a:notebook_bufnr) . ':' . a:cell_id . ':' . a:client_id
 endfunction
 
 function! s:is_reusable_native_terminal_buffer(bufnr, client_id) abort
@@ -346,7 +357,7 @@ function! s:launch_native_terminal_default(notebook_bufnr, cell_id, client_id, t
 endfunction
 
 function! s:ensure_native_terminal_buffer(notebook_bufnr, cell_id, client_id, client_bufnr, transport) abort
-  let l:transport = s:sanitize_native_terminal_transport(a:transport)
+  let l:transport = s:sanitize_native_terminal_transport(a:transport, jusi#session#target(a:notebook_bufnr))
   let l:key = s:native_terminal_key(a:notebook_bufnr, a:cell_id, a:client_id)
   let l:existing = jusi#client#recover_attached_buffer(a:notebook_bufnr, a:cell_id, a:client_id)
   if l:existing > 0 && s:is_reusable_native_terminal_buffer(l:existing, a:client_id)
@@ -437,9 +448,11 @@ function! s:set_managed_vars(bufnr, notebook_bufnr, client_id, role, ...) abort
   endif
   call setbufvar(a:bufnr, 'jusi_client_managed', 1)
   call setbufvar(a:bufnr, 'jusi_client_notebook_bufnr', a:notebook_bufnr)
+  call setbufvar(a:bufnr, 'jusi_client_session_id', s:notebook_session_id(a:notebook_bufnr))
   call setbufvar(a:bufnr, 'jusi_client_id', a:client_id)
   call setbufvar(a:bufnr, 'jusi_client_role', a:role)
   call setbufvar(a:bufnr, 'jusi_client_editor_close_blocked', 1)
+  call setbufvar(a:bufnr, 'jusi_client_close_observed', 0)
   if a:0 >= 1
     call setbufvar(a:bufnr, 'jusi_client_cell_id', a:1)
   elseif getbufvar(a:bufnr, 'jusi_client_cell_id', 0) != 0
@@ -728,6 +741,7 @@ function! jusi#client#handle_editor_close(bufnr) abort
     if l:cell_id > 0
       let l:cell = jusi#notebook#cell_by_id(l:cell_id, l:notebook_bufnr)
       let l:update = empty(l:cell) ? s:closed_cell_update() : s:closed_cell_update_for_cell(l:cell)
+      let l:update._source_session_id = getbufvar(a:bufnr, 'jusi_client_session_id', '')
       let l:update._preserve_local_buffer = 1
       call s:client_debug('handle-editor-close-apply-cell-reset', {
             \ 'bufnr': a:bufnr,
@@ -754,6 +768,11 @@ function! jusi#client#validate_attached_binding(notebook_bufnr, cell_id, client_
   if getbufvar(a:bufnr, 'jusi_client_notebook_bufnr', -1) != a:notebook_bufnr
     return s:binding_mismatch('Client buffer belongs to another notebook')
   endif
+  let l:session_id = s:notebook_session_id(a:notebook_bufnr)
+  if !empty(l:session_id)
+        \ && getbufvar(a:bufnr, 'jusi_client_session_id', '') !=# l:session_id
+    return s:binding_mismatch('Client buffer belongs to another session')
+  endif
   if getbufvar(a:bufnr, 'jusi_client_role', '') !=# 'cell'
     return s:binding_mismatch('Client buffer has inconsistent role metadata')
   endif
@@ -769,11 +788,16 @@ endfunction
 function! jusi#client#recover_attached_buffer(notebook_bufnr, cell_id, client_id) abort
   let l:best = 0
   let l:best_score = -1
+  let l:session_id = s:notebook_session_id(a:notebook_bufnr)
   for l:bufnr in range(1, bufnr('$'))
     if !jusi#buffer#is_valid_bufnr(l:bufnr)
       continue
     endif
     if getbufvar(l:bufnr, 'jusi_client_notebook_bufnr', -1) != a:notebook_bufnr
+      continue
+    endif
+    if !empty(l:session_id)
+          \ && getbufvar(l:bufnr, 'jusi_client_session_id', '') !=# l:session_id
       continue
     endif
     if !getbufvar(l:bufnr, 'jusi_client_managed', 0)
@@ -808,6 +832,15 @@ function! jusi#client#recover_attached_buffer(notebook_bufnr, cell_id, client_id
     endif
   endfor
   return l:best
+endfunction
+
+function! jusi#client#clear_notebook_runtime(notebook_bufnr) abort
+  for l:key in keys(copy(s:native_terminal_pending))
+    if l:key =~# '^' . a:notebook_bufnr . ':'
+      call remove(s:native_terminal_pending, l:key)
+    endif
+  endfor
+  return 1
 endfunction
 
 function! s:notebook_cell(notebook_bufnr, cell_id) abort

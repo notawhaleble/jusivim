@@ -507,8 +507,7 @@ function! Test_integration_start_after_transport_close_clears_cell_runtime_witho
     call assert_equal('', b:jusi_nb.cells[0].client_id)
     call assert_equal(-1, b:jusi_nb.cells[0].client_bufnr)
     call assert_false(has_key(b:jusi_nb.session, 'prepared'))
-    call assert_true(bufexists(l:old_client))
-    call assert_equal('detached', getbufvar(l:old_client, 'jusi_client_role', ''))
+    call assert_false(bufexists(l:old_client))
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
@@ -1415,6 +1414,41 @@ function! Test_integration_client_editor_close_clears_cell_binding_without_disco
   call assert_equal('shutdown', b:jusi_nb.cells[0].client_state)
   call assert_equal(-1, b:jusi_nb.cells[0].client_bufnr)
   call assert_equal('', get(get(b:jusi_nb.cells[0], 'owner', {}), 'kind', ''))
+endfunction
+
+function! Test_integration_stale_session_client_editor_close_does_not_reset_new_binding() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd pods',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+
+  call jusi#session#set_connected(0, {'id': 'sess-old'})
+  let l:old = jusi#client#create_managed_buffer(l:notebook, 'client-old')
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[0].client_id = 'client-old'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:old
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-old', l:old)
+  call jusi#client#allow_editor_close(l:old)
+
+  call jusi#session#set_connected(0, {'id': 'sess-new'})
+  let l:new = jusi#client#create_managed_buffer(l:notebook, 'client-new')
+  let b:jusi_nb.cells[0].client_id = 'client-new'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:new
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-new', l:new)
+
+  call assert_equal(1, jusi#client#handle_editor_close(l:old))
+
+  call assert_equal('connected', b:jusi_nb.session.state)
+  call assert_equal('follow-up', b:jusi_nb.cells[0].status)
+  call assert_equal('client-new', b:jusi_nb.cells[0].client_id)
+  call assert_equal('active', b:jusi_nb.cells[0].client_state)
+  call assert_equal(l:new, b:jusi_nb.cells[0].client_bufnr)
+  call assert_equal('handler', get(get(b:jusi_nb.cells[0], 'owner', {}), 'kind', ''))
 endfunction
 
 function! Test_integration_quit_guard_allows_closing_one_of_multiple_visible_notebook_tabs() abort
