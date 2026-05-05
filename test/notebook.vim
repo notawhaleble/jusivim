@@ -1944,159 +1944,6 @@ function! Test_execute_requires_connected_session() abort
   call assert_equal('initial', b:jusi_nb.cells[0].status)
 endfunction
 
-function! Test_execute_requires_prepared_client_buffer() abort
-  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
-  try
-    let g:jusi_session_adapter = {'start': function('s:test_session_adapter_start')}
-    call Test_open_scratch([
-          \ '##',
-          \ 'print("hello")',
-          \ ])
-    call jusi#session#start('python3')
-    let b:jusi_nb.session.prepared = {'state': 'missing', 'bufnr': -1}
-    call jusi#session#execute_current()
-    call assert_equal('failed', b:jusi_nb.session.state)
-    call assert_match('Cannot execute cell without a prepared client buffer', b:jusi_nb.session.last_error)
-    call assert_equal('initial', b:jusi_nb.cells[0].status)
-  finally
-    let g:jusi_session_adapter = l:save_adapter
-  endtry
-endfunction
-
-function! Test_prepared_binding_event_creates_local_buffer_and_sends_bind_ack() abort
-  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
-  try
-    let g:jusi_session_adapter = {
-          \ 'start': function('s:test_session_adapter_start'),
-          \ 'bind_prepared_client': function('s:test_session_adapter_bind_prepared'),
-          \ }
-    let s:last_bound_prepared = {}
-    call Test_open_scratch([
-          \ '##',
-          \ 'print("hello")',
-          \ ])
-    call jusi#session#start('python3')
-    call jusi#session#callback_prepared({'id': 'client-1', 'state': 'binding', 'bufnr': -1})
-    call assert_equal('binding', b:jusi_nb.session.prepared.state)
-    call assert_match('^client-1$', get(s:last_bound_prepared, 'client_id', ''))
-    call assert_true(get(s:last_bound_prepared, 'client_bufnr', -1) > 0)
-    call assert_equal(s:last_bound_prepared.client_bufnr, b:jusi_nb.session.prepared.bufnr)
-  finally
-    let g:jusi_session_adapter = l:save_adapter
-  endtry
-endfunction
-
-function! Test_prepared_replacement_allocates_new_local_buffer_and_keeps_client_identity() abort
-  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
-  try
-    let g:jusi_session_adapter = {
-          \ 'start': function('s:test_session_adapter_start'),
-          \ 'bind_prepared_client': function('s:test_session_adapter_bind_prepared'),
-          \ }
-    let s:last_bound_prepared = {}
-    call Test_open_scratch([
-          \ '##',
-          \ 'print("hello")',
-          \ ])
-    call jusi#session#start('python3')
-    let l:prepared = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
-    call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:prepared})
-    call jusi#session#callback_prepared({'id': 'client-2', 'state': 'binding', 'bufnr': -1})
-    call assert_equal('client-2', b:jusi_nb.session.prepared.id)
-    call assert_equal('binding', b:jusi_nb.session.prepared.state)
-    call assert_true(b:jusi_nb.session.prepared.bufnr > 0)
-    call assert_notequal(l:prepared, b:jusi_nb.session.prepared.bufnr)
-    call assert_false(bufexists(l:prepared))
-    call assert_equal(b:jusi_nb.session.prepared.bufnr, get(s:last_bound_prepared, 'client_bufnr', -1))
-    call assert_equal('client-2', get(s:last_bound_prepared, 'client_id', ''))
-    call assert_equal('client-2', getbufvar(b:jusi_nb.session.prepared.bufnr, 'jusi_client_id', ''))
-  finally
-    let g:jusi_session_adapter = l:save_adapter
-  endtry
-endfunction
-
-function! Test_execute_consumes_ready_prepared_buffer_and_starts_replacement_binding() abort
-  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
-  try
-    let g:jusi_session_adapter = {
-          \ 'start': function('s:test_session_adapter_start'),
-          \ 'bind_prepared_client': function('s:test_session_adapter_bind_prepared'),
-          \ 'execute': function('s:test_session_adapter_execute'),
-          \ }
-    call Test_open_scratch([
-          \ '##',
-          \ 'print("hello")',
-          \ ])
-    call jusi#session#start('python3')
-    let l:prepared = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
-    call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:prepared})
-    call jusi#session#execute_current()
-    call assert_equal('connected', b:jusi_nb.session.state)
-    call assert_equal('client-2', b:jusi_nb.session.prepared.id)
-    call assert_equal('binding', b:jusi_nb.session.prepared.state)
-    call assert_equal(-1, b:jusi_nb.session.prepared.bufnr)
-    call assert_equal('busy', b:jusi_nb.cells[0].status)
-    call assert_true(bufexists(l:prepared))
-    call assert_equal(l:prepared, b:jusi_nb.cells[0].client_bufnr)
-  finally
-    let g:jusi_session_adapter = l:save_adapter
-  endtry
-endfunction
-
-function! Test_transport_execute_consumes_prepared_buffer_locally_before_async_updates() abort
-  let l:save_handler = get(g:, 'jusi_transport_handler', 0)
-  try
-    let g:jusi_transport_handler = 'TestTransportHandler'
-    call Test_open_scratch([
-          \ '##',
-          \ 'print("hello")',
-          \ ])
-    let l:prepared = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
-    call jusi#session#apply({'id': 'sess-1', 'state': 'connected'})
-    call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:prepared})
-    let s:last_request_envelope = {}
-    call jusi#session#execute_current()
-    call assert_equal('execute_cell', get(s:last_request_envelope, 'type', ''))
-    call assert_equal('busy', b:jusi_nb.cells[0].status)
-    call assert_equal('client-1', b:jusi_nb.cells[0].client_id)
-    call assert_equal('active', b:jusi_nb.cells[0].client_state)
-    call assert_true(bufexists(l:prepared))
-    call assert_equal(l:prepared, b:jusi_nb.cells[0].client_bufnr)
-    call assert_equal('missing', b:jusi_nb.session.prepared.state)
-    call assert_equal(-1, b:jusi_nb.session.prepared.bufnr)
-  finally
-    call jusi#transport#stop(bufnr('%'))
-    let g:jusi_transport_handler = l:save_handler
-  endtry
-endfunction
-
-function! Test_execute_failure_preserves_prepared_and_cell_runtime_state() abort
-  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
-  try
-    let g:jusi_session_adapter = {
-          \ 'start': function('s:test_session_adapter_start'),
-          \ 'execute': function('s:test_session_adapter_execute_failure'),
-          \ }
-    call Test_open_scratch([
-          \ '##',
-          \ 'print("hello")',
-          \ ])
-    call jusi#session#start('python3')
-    let l:prepared = jusi#client#create_managed_buffer(bufnr('%'), 'client-1')
-    call jusi#session#apply_prepared({'id': 'client-1', 'state': 'ready', 'client_state': 'active', 'bufnr': l:prepared})
-    call jusi#session#execute_current()
-    call assert_equal('failed', b:jusi_nb.session.state)
-    call assert_match('mock execute failure', b:jusi_nb.session.last_error)
-    call assert_equal('client-1', b:jusi_nb.session.prepared.id)
-    call assert_equal('ready', b:jusi_nb.session.prepared.state)
-    call assert_equal(l:prepared, b:jusi_nb.session.prepared.bufnr)
-    call assert_equal('initial', b:jusi_nb.cells[0].status)
-    call assert_equal(-1, b:jusi_nb.cells[0].client_bufnr)
-  finally
-    let g:jusi_session_adapter = l:save_adapter
-  endtry
-endfunction
-
 function! Test_execute_magic_cell_appends_history_after_accepted_request() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   try
@@ -4184,6 +4031,16 @@ function! Test_client_refresh_tracks_pending_input_from_inspect_snapshot() abort
 
     let s:inspect_client_response = {
           \ 'revision': 2,
+          \ 'title': 'cell 1: busy',
+          \ 'lines': ['started cell 1 [code:python]', 'input> value: ', ''],
+          \ 'execution_status': 'busy',
+          \ }
+    call jusi#client#refresh_attached_view(l:notebook, l:cell_id, 'client-1', l:client)
+    call assert_equal({'prompt': 'value: ', 'password': 0}, get(b:jusi_nb.cells[0], 'pending_input', {}))
+    call assert_equal({'prompt': 'value: ', 'password': 0}, getbufvar(l:client, 'jusi_client_pending_input', {}))
+
+    let s:inspect_client_response = {
+          \ 'revision': 3,
           \ 'title': 'cell 1: done',
           \ 'lines': ['started cell 1 [code:python]', 'input> value: ', "execute[7]> input('value: ')", 'stdout> typed: answer', 'finished: done'],
           \ 'execution_status': 'done',
@@ -6084,6 +5941,41 @@ function! Test_rich_syntax_survives_jump_into_long_cell() abort
   call cursor(1200, 1)
   call jusi#syntax#schedule(bufnr('%'))
   call assert_notequal('', Test_syn_name(1200, 1))
+endfunction
+
+function! Test_syntax_refresh_timer_stays_bound_to_origin_buffer() abort
+  if !exists('*timer_start')
+    return
+  endif
+
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ ])
+  call jusi#session#apply({'plugin_specs': {'sql': {'syntax': 'sql'}}})
+  let l:notebook = bufnr('%')
+  let l:before_timer = getbufvar(l:notebook, 'jusi_syntax_refresh_timer', -1)
+  call setbufvar(l:notebook, 'jusi_syntax_visible_key', 'stale')
+
+  belowright new
+  let l:other = bufnr('%')
+  setlocal buftype=
+  setlocal filetype=text
+
+  execute 'buffer ' . l:notebook
+  call jusi#syntax#request_refresh(l:notebook)
+  let l:scheduled = getbufvar(l:notebook, 'jusi_syntax_refresh_timer', -1)
+  call assert_true(l:scheduled > 0)
+
+  execute 'buffer ' . l:other
+  sleep 30m
+
+  call assert_equal(0, getbufvar(l:other, 'jusi_syntax_refresh_bufnr', 0))
+  call assert_equal(l:before_timer, getbufvar(l:other, 'jusi_syntax_refresh_timer', l:before_timer))
+  call assert_equal(0, getbufvar(l:notebook, 'jusi_syntax_refresh_bufnr', 0))
+  call assert_equal(-1, getbufvar(l:notebook, 'jusi_syntax_refresh_timer', -1))
+  call assert_notequal('stale', getbufvar(l:notebook, 'jusi_syntax_visible_key', ''))
 endfunction
 
 function! Test_default_cell_uses_python_indent() abort

@@ -477,27 +477,7 @@ function! s:pending_input_equal(left, right) abort
 endfunction
 
 function! s:pending_input_from_view(view) abort
-  if get(a:view, 'execution_status', '') !=# 'busy'
-    return {}
-  endif
-  let l:lines = get(a:view, 'lines', [])
-  if empty(l:lines)
-    return {}
-  endif
-  let l:last = l:lines[-1]
-  if l:last =~# '^input>\s*'
-    return {
-          \ 'prompt': matchstr(l:last, '^input>\s*\zs.*$'),
-          \ 'password': 0,
-          \ }
-  endif
-  if l:last =~# '^password>\s*'
-    return {
-          \ 'prompt': matchstr(l:last, '^password>\s*\zs.*$'),
-          \ 'password': 1,
-          \ }
-  endif
-  return {}
+  return jusi#input#pending_input_from_view(a:view)
 endfunction
 
 function! s:reply_input_prompt(pending_input) abort

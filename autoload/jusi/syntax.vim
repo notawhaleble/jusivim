@@ -182,14 +182,29 @@ function! jusi#syntax#schedule(bufnr, ...) abort
   redraw
 endfunction
 
-function! s:refresh_timer(timer) abort
-  let l:bufnr = getbufvar(bufnr('%'), 'jusi_syntax_refresh_bufnr', bufnr('%'))
-  unlet! b:jusi_syntax_refresh_timer
-  unlet! b:jusi_syntax_refresh_bufnr
-  if !s:is_notebook_buffer(l:bufnr) || l:bufnr != bufnr('%')
+function! s:schedule_visible_buffer(bufnr) abort
+  if !s:is_notebook_buffer(a:bufnr)
     return
   endif
-  call jusi#syntax#schedule(l:bufnr)
+  if a:bufnr == bufnr('%')
+    call jusi#syntax#schedule(a:bufnr)
+    return
+  endif
+  if exists('*win_findbuf') && exists('*win_execute')
+    let l:winids = win_findbuf(a:bufnr)
+    if !empty(l:winids)
+      call win_execute(l:winids[0], 'call jusi#syntax#schedule(' . a:bufnr . ')')
+    endif
+  endif
+endfunction
+
+function! s:refresh_timer(bufnr, timer) abort
+  if getbufvar(a:bufnr, 'jusi_syntax_refresh_timer', -1) != a:timer
+    return
+  endif
+  call setbufvar(a:bufnr, 'jusi_syntax_refresh_timer', -1)
+  call setbufvar(a:bufnr, 'jusi_syntax_refresh_bufnr', 0)
+  call s:schedule_visible_buffer(a:bufnr)
 endfunction
 
 function! jusi#syntax#request_refresh(bufnr) abort
@@ -205,19 +220,22 @@ function! jusi#syntax#request_refresh(bufnr) abort
     return
   endif
 
-  if exists('b:jusi_syntax_refresh_timer') && b:jusi_syntax_refresh_timer > 0
-    call timer_stop(b:jusi_syntax_refresh_timer)
+  let l:timer = getbufvar(l:bufnr, 'jusi_syntax_refresh_timer', -1)
+  if type(l:timer) == type(0) && l:timer > 0
+    call timer_stop(l:timer)
   endif
-  let b:jusi_syntax_refresh_bufnr = l:bufnr
-  let b:jusi_syntax_refresh_timer = timer_start(0, function('s:refresh_timer'))
+  call setbufvar(l:bufnr, 'jusi_syntax_refresh_bufnr', l:bufnr)
+  let l:timer = timer_start(0, function('s:refresh_timer', [l:bufnr]))
+  call setbufvar(l:bufnr, 'jusi_syntax_refresh_timer', l:timer)
 endfunction
 
 function! jusi#syntax#cleanup(bufnr) abort
-  if a:bufnr == bufnr('%') && exists('b:jusi_syntax_refresh_timer') && b:jusi_syntax_refresh_timer > 0
-    call timer_stop(b:jusi_syntax_refresh_timer)
-    unlet! b:jusi_syntax_refresh_timer
-    unlet! b:jusi_syntax_refresh_bufnr
+  let l:timer = getbufvar(a:bufnr, 'jusi_syntax_refresh_timer', -1)
+  if type(l:timer) == type(0) && l:timer > 0
+    call timer_stop(l:timer)
   endif
+  call setbufvar(a:bufnr, 'jusi_syntax_refresh_timer', -1)
+  call setbufvar(a:bufnr, 'jusi_syntax_refresh_bufnr', 0)
   if a:bufnr == bufnr('%')
     call s:clear_dynamic()
   endif
