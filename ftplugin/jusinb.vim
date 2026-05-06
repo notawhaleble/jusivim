@@ -22,7 +22,7 @@ if !exists('b:jusi_mappings_initialized')
   nnoremap <silent> <buffer> <leader>g :<C-U>call jusi#cellmode#goto_client(v:count)<CR>
   nnoremap <silent> <buffer> <C-\><C-\> :JusiToggleFocus<CR>
   inoremap <silent> <buffer> <C-\><C-\> <C-R>=jusi#focus#toggle()<CR>
-  inoremap <silent> <buffer> <Tab> <C-\><C-o>:JusiHandlerComplete<CR>
+  inoremap <silent> <buffer> <Tab> <C-\><C-o>:JusiComplete<CR>
   inoremap <silent> <buffer> <C-Y> <C-\><C-o>:call jusi#notebook#execute_and_edit_current()<CR>
   inoremap <silent> <buffer> <C-C> <C-\><C-n>:call jusi#notebook#handle_insert_exit()<Bar>call jusi#cellmode#update_indicator()<CR>
 endif

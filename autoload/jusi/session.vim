@@ -1335,7 +1335,7 @@ function! jusi#session#callback_handler_message(payload, ...) abort
     endif
     let l:message_type = get(l:payload, 'message_type', '')
     if l:message_type ==# 'complete_result'
-      call jusi#session#apply_handler_completion_result(
+      call jusi#session#apply_completion_result(
             \ l:bufnr,
             \ l:cell.id,
             \ get(l:payload, 'client_id', ''),
@@ -1620,7 +1620,76 @@ function! jusi#session#finish_edit_path(bufnr) abort
   return s:send_edit_path_action_result(l:notebook, l:ctx, l:ok)
 endfunction
 
-function! jusi#session#apply_handler_completion_result(bufnr, cell_id, client_id, handler_id, payload) abort
+function! s:clear_pending_completion_popup(bufnr) abort
+  call setbufvar(a:bufnr, 'jusi_pending_completion_popup', {})
+  let l:timer = getbufvar(a:bufnr, 'jusi_pending_completion_timer', -1)
+  if type(l:timer) == type(0) && l:timer >= 0 && exists('*timer_stop')
+    call timer_stop(l:timer)
+  endif
+  call setbufvar(a:bufnr, 'jusi_pending_completion_timer', -1)
+  return 1
+endfunction
+
+function! s:show_pending_completion_popup(bufnr) abort
+  if bufnr('%') != a:bufnr || mode() !~# '^[iR]'
+    return 0
+  endif
+  let l:pending = getbufvar(a:bufnr, 'jusi_pending_completion_popup', {})
+  if type(l:pending) != type({}) || empty(l:pending)
+    return 0
+  endif
+  let l:startcol = get(l:pending, 'startcol', 0)
+  let l:items = get(l:pending, 'items', [])
+  if l:startcol < 1 || type(l:items) != type([]) || empty(l:items)
+    call s:clear_pending_completion_popup(a:bufnr)
+    return 0
+  endif
+  call s:clear_pending_completion_popup(a:bufnr)
+  call complete(l:startcol, l:items)
+  return 1
+endfunction
+
+function! s:pending_completion_timer(bufnr, timer) abort
+  if !bufexists(a:bufnr)
+    return 0
+  endif
+  let l:pending = getbufvar(a:bufnr, 'jusi_pending_completion_popup', {})
+  if type(l:pending) != type({}) || empty(l:pending)
+    call setbufvar(a:bufnr, 'jusi_pending_completion_timer', -1)
+    return 0
+  endif
+  if s:show_pending_completion_popup(a:bufnr)
+    return 1
+  endif
+  let l:retries = get(l:pending, 'retries', 0) - 1
+  if l:retries <= 0 || !exists('*timer_start')
+    call s:clear_pending_completion_popup(a:bufnr)
+    return 0
+  endif
+  let l:pending.retries = l:retries
+  call setbufvar(a:bufnr, 'jusi_pending_completion_popup', l:pending)
+  call setbufvar(a:bufnr, 'jusi_pending_completion_timer', timer_start(10, function('s:pending_completion_timer', [a:bufnr])))
+  return 0
+endfunction
+
+function! s:schedule_pending_completion_popup(bufnr, startcol, items) abort
+  call s:clear_pending_completion_popup(a:bufnr)
+  if a:startcol < 1 || type(a:items) != type([]) || empty(a:items)
+    return 0
+  endif
+  call setbufvar(a:bufnr, 'jusi_pending_completion_popup', {
+        \ 'startcol': a:startcol,
+        \ 'items': copy(a:items),
+        \ 'retries': 8,
+        \ })
+  if !exists('*timer_start')
+    return 0
+  endif
+  call setbufvar(a:bufnr, 'jusi_pending_completion_timer', timer_start(10, function('s:pending_completion_timer', [a:bufnr])))
+  return 1
+endfunction
+
+function! jusi#session#apply_completion_result(bufnr, cell_id, client_id, handler_id, payload) abort
   let l:bufnr = s:normalize_bufnr(a:bufnr)
   let l:items = get(a:payload, 'items', [])
   if type(l:items) != type([])
@@ -1664,16 +1733,18 @@ function! jusi#session#apply_handler_completion_result(bufnr, cell_id, client_id
         \ })
 
   let l:request_ctx = getbufvar(l:bufnr, 'jusi_handler_completion_request', {})
-
-  if bufnr('%') != l:bufnr || mode() !~# '^[iR]'
+  if bufnr('%') != l:bufnr
     return copy(l:vim_items)
   endif
-
   let l:cell = jusi#notebook#cell_at_line(l:bufnr, line('.'))
-  if empty(l:cell)
-        \ || get(l:cell, 'id', 0) != a:cell_id
-        \ || get(l:cell, 'client_id', '') !=# a:client_id
-        \ || get(get(l:cell, 'handler', {}), 'id', '') !=# a:handler_id
+  if empty(l:cell) || get(l:cell, 'id', 0) != a:cell_id
+    return copy(l:vim_items)
+  endif
+  if !empty(a:client_id) && get(l:cell, 'client_id', '') !=# a:client_id
+    return copy(l:vim_items)
+  endif
+  if !empty(a:handler_id)
+        \ && get(get(l:cell, 'handler', {}), 'id', '') !=# a:handler_id
     return copy(l:vim_items)
   endif
 
@@ -1682,8 +1753,8 @@ function! jusi#session#apply_handler_completion_result(bufnr, cell_id, client_id
     let l:startcol = l:preview_startcol
   endif
   if get(l:request_ctx, 'cell_id', 0) != a:cell_id
-        \ || get(l:request_ctx, 'client_id', '') !=# a:client_id
-        \ || get(l:request_ctx, 'handler_id', '') !=# a:handler_id
+        \ || (!empty(a:client_id) && get(l:request_ctx, 'client_id', '') !=# a:client_id)
+        \ || (!empty(a:handler_id) && get(l:request_ctx, 'handler_id', '') !=# a:handler_id)
         \ || l:startcol < 1
     let l:current_word = expand('<cword>')
     let l:startcol = col('.') - len(l:current_word)
@@ -1691,8 +1762,14 @@ function! jusi#session#apply_handler_completion_result(bufnr, cell_id, client_id
       let l:startcol = col('.')
     endif
   endif
-  if !empty(l:vim_items)
+  if empty(l:vim_items)
+    return copy(l:vim_items)
+  endif
+  if bufnr('%') == l:bufnr && mode() =~# '^[iR]'
+    call s:clear_pending_completion_popup(l:bufnr)
     call complete(l:startcol, l:vim_items)
+  else
+    call s:schedule_pending_completion_popup(l:bufnr, l:startcol, l:vim_items)
   endif
   return copy(l:vim_items)
 endfunction
@@ -1845,6 +1922,12 @@ function! s:handler_followup_payload(bufnr, cell) abort
   let l:line_text = getline('.')
   return {
         \ 'cell_text': join(jusi#notebook#cell_main_lines(a:cell), "\n"),
+        \ 'cell': {
+        \   'id': get(a:cell, 'id', 0),
+        \   'kind': get(a:cell, 'kind', ''),
+        \   'syntax': get(a:cell, 'syntax', ''),
+        \   'main_lines': jusi#notebook#cell_main_lines(a:cell),
+        \   },
         \ 'cursor_row': l:cursor_row,
         \ 'cursor_col': col('.'),
         \ 'line_text': l:line_text,
@@ -1904,6 +1987,107 @@ function! jusi#session#request_handler_completion_current() abort
         \ 'complete',
         \ l:payload,
         \ l:bufnr)
+endfunction
+
+function! s:complete_current_handler_context(bufnr, ctx) abort
+  let l:cell = get(a:ctx, 'cell', {})
+  let l:payload = s:handler_followup_payload(a:bufnr, l:cell)
+  call setbufvar(a:bufnr, 'jusi_handler_completion_request', {
+        \ 'cell_id': get(l:cell, 'id', 0),
+        \ 'client_id': get(l:cell, 'client_id', ''),
+        \ 'handler_id': get(a:ctx, 'handler_id', ''),
+        \ 'current_word': get(l:payload, 'current_word', ''),
+        \ 'startcol': s:completion_startcol(),
+        \ 'line_nr': line('.'),
+        \ 'line_text': getline('.'),
+        \ })
+  return jusi#session#send_handler_message(
+        \ get(l:cell, 'client_id', ''),
+        \ get(a:ctx, 'handler_id', ''),
+        \ 'complete',
+        \ l:payload,
+        \ a:bufnr)
+endfunction
+
+function! s:apply_completion_response(bufnr, cell_id, response) abort
+  let l:response = type(a:response) == type({}) ? copy(a:response) : {}
+  let l:cell_update = has_key(l:response, 'cell') && type(l:response.cell) == type({})
+        \ ? {'id': a:cell_id}
+        \ : {}
+  let l:state = s:apply_response(a:bufnr, l:response, {'state': 'connected'}, l:cell_update, a:cell_id)
+  let l:completion = get(l:response, 'completion', {})
+  if type(l:completion) == type({})
+    call jusi#session#apply_completion_result(
+          \ a:bufnr,
+          \ a:cell_id,
+          \ get(l:completion, 'client_id', ''),
+          \ get(l:completion, 'handler_id', ''),
+          \ l:completion)
+  endif
+  return l:state
+endfunction
+
+function! jusi#session#request_completion_current() abort
+  let l:bufnr = s:normalize_bufnr(bufnr('%'))
+  if !s:require_notebook_buffer(l:bufnr, 'request completion')
+    return {}
+  endif
+
+  let l:session = jusi#session#state(l:bufnr)
+  if get(l:session, 'state', 'idle') !=# 'connected'
+    return s:reject_action(l:bufnr, {'last_action': 'complete_cell'}, 'Cannot complete without a connected session')
+  endif
+
+  let l:cell = jusi#notebook#cell_at_line(l:bufnr, line('.'))
+  if empty(l:cell)
+    return s:reject_action(l:bufnr, {'last_action': 'complete_cell'}, 'Cannot complete without an active cell')
+  endif
+
+  let l:ctx = s:current_handler_context(l:bufnr)
+  if get(l:ctx, 'ok', 0)
+    return s:complete_current_handler_context(l:bufnr, l:ctx)
+  endif
+  if get(l:cell, 'kind', '') ==# 'magic'
+    return s:reject_action(
+          \ l:bufnr,
+          \ {'last_action': 'complete_cell'},
+          \ 'Cannot complete a plugin cell before it has an active client')
+  endif
+
+  let l:payload = s:handler_followup_payload(l:bufnr, l:cell)
+  call setbufvar(l:bufnr, 'jusi_handler_completion_request', {
+        \ 'cell_id': get(l:cell, 'id', 0),
+        \ 'client_id': '',
+        \ 'handler_id': '',
+        \ 'current_word': get(l:payload, 'current_word', ''),
+        \ 'startcol': s:completion_startcol(),
+        \ 'line_nr': line('.'),
+        \ 'line_text': getline('.'),
+        \ })
+  call s:update_session(l:bufnr, {
+        \ 'last_action': 'complete_cell',
+        \ 'last_error': '',
+        \ 'request': {'cell_id': get(l:cell, 'id', 0)},
+        \ })
+
+  let l:response = jusi#adapter#call('complete_cell', l:bufnr, l:payload)
+  if get(l:response, 'ok', 0)
+    return s:apply_completion_response(l:bufnr, l:cell.id, l:response)
+  endif
+  if s:is_transport_failure(l:response)
+    return s:reject_transport_failure(l:bufnr, {
+          \ 'last_action': 'complete_cell',
+          \ 'request': {'cell_id': get(l:cell, 'id', 0)},
+          \ }, l:response, 'Failed to complete cell')
+  endif
+  return s:reject_action(l:bufnr, {
+        \ 'last_action': 'complete_cell',
+        \ 'request': {'cell_id': get(l:cell, 'id', 0)},
+        \ }, get(l:response, 'error', 'Failed to complete cell'))
+endfunction
+
+function! jusi#session#request_handler_completion_current() abort
+  return jusi#session#request_completion_current()
 endfunction
 
 function! jusi#session#sync_client_view(bufnr, cell_id, client_id, view) abort

@@ -46,6 +46,7 @@ function! s:request_type(op) abort
   let l:map = {
         \ 'start': 'start_session',
         \ 'attach': 'attach_session',
+        \ 'complete_cell': 'complete_cell',
         \ 'execute': 'execute_cell',
         \ 'inspect_client': 'inspect_client',
         \ 'healthcheck_reply': 'healthcheck_reply',
@@ -111,6 +112,24 @@ function! s:request_payload(op, bufnr, payload) abort
           \   'syntax': get(l:cell, 'syntax', ''),
           \   'main_lines': get(l:cell, 'main_lines', []),
           \   },
+          \ }
+  endif
+
+  if a:op ==# 'complete_cell'
+    let l:cell = get(a:payload, 'cell', {})
+    return {
+          \ 'notebook_id': l:notebook_id,
+          \ 'session_id': l:session_id,
+          \ 'cell': {
+          \   'id': get(l:cell, 'id', 0),
+          \   'kind': get(l:cell, 'kind', ''),
+          \   'syntax': get(l:cell, 'syntax', ''),
+          \   'main_lines': get(l:cell, 'main_lines', []),
+          \   },
+          \ 'cursor_row': get(a:payload, 'cursor_row', 0),
+          \ 'cursor_col': get(a:payload, 'cursor_col', 1),
+          \ 'line_text': get(a:payload, 'line_text', ''),
+          \ 'current_word': get(a:payload, 'current_word', ''),
           \ }
   endif
 

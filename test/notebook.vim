@@ -800,10 +800,14 @@ endfunction
 
 let s:last_request_envelope = {}
 let s:request_envelopes = []
+let s:test_request_response = {}
 
 function! s:test_request_adapter(bufnr, envelope) abort
   let s:last_request_envelope = copy(a:envelope)
   call add(s:request_envelopes, copy(a:envelope))
+  if type(s:test_request_response) == type({}) && !empty(s:test_request_response)
+    return copy(s:test_request_response)
+  endif
   return {'ok': 1}
 endfunction
 
@@ -3149,6 +3153,33 @@ function! Test_handler_complete_result_event_normalizes_and_stores_completion_it
   call assert_equal('complete_result', get(get(b:jusi_nb.cells[0], 'handler', {}), 'last_message_type', ''))
 endfunction
 
+function! Test_completion_result_in_normal_mode_schedules_pending_popup() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'pr',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+  call setbufvar(l:notebook, 'jusi_handler_completion_request', {
+        \ 'cell_id': l:cell_id,
+        \ 'client_id': '',
+        \ 'handler_id': '',
+        \ 'startcol': 1,
+        \ 'line_nr': 2,
+        \ 'line_text': 'pr',
+        \ })
+
+  call jusi#session#apply_completion_result(l:notebook, l:cell_id, '', '', {
+        \ 'items': [
+        \   {'value': 'print', 'label': 'print', 'start_col': 0, 'end_col': 2},
+        \   ],
+        \ })
+
+  let l:pending = getbufvar(l:notebook, 'jusi_pending_completion_popup', {})
+  call assert_equal(1, get(l:pending, 'startcol', 0))
+  call assert_equal('print', get(get(l:pending, 'items', [{}])[0], 'word', ''))
+endfunction
+
 function! Test_handler_action_request_open_path_opens_file_at_requested_position() abort
   call Test_open_scratch([
         \ '##',
@@ -3659,6 +3690,7 @@ function! Test_handler_completion_does_not_append_history() abort
           \ 'request': function('s:test_request_adapter'),
           \ }
     let s:last_request_envelope = {}
+    let s:test_request_response = {}
     call Test_open_scratch([
           \ '##',
           \ '%%sql main',
@@ -3674,23 +3706,25 @@ function! Test_handler_completion_does_not_append_history() abort
     let b:jusi_nb.cells[0].handler = {'id': 'sqlite', 'last_message_type': 'handler_snapshot', 'payload': {}}
     call cursor(3, 4)
 
-    call jusi#session#request_handler_completion_current()
+    call jusi#session#request_completion_current()
 
     call assert_equal('handler_message', get(s:last_request_envelope, 'type', ''))
     call assert_equal('complete', get(get(s:last_request_envelope, 'payload', {}), 'message_type', ''))
     call assert_equal(['##', '%%sql main', 'select 1'], getline(1, '$'))
   finally
+    let s:test_request_response = {}
     let g:jusi_session_adapter = l:save_adapter
   endtry
 endfunction
 
-function! Test_request_handler_completion_current_builds_generic_complete_message() abort
+function! Test_request_completion_current_reuses_active_handler_context() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   try
     let g:jusi_session_adapter = {
           \ 'request': function('s:test_request_adapter'),
           \ }
     let s:last_request_envelope = {}
+    let s:test_request_response = {}
     call Test_open_scratch([
           \ '##',
           \ '%%sql main',
@@ -3704,17 +3738,88 @@ function! Test_request_handler_completion_current_builds_generic_complete_messag
     let b:jusi_nb.cells[0].client_state = 'active'
     let b:jusi_nb.cells[0].client_bufnr = l:client
     let b:jusi_nb.cells[0].handler = {'id': 'sqlite', 'last_message_type': 'handler_snapshot', 'payload': {}}
-    call cursor(3, 10)
+    call cursor(3, 13)
 
-    call jusi#session#request_handler_completion_current()
+    call jusi#session#request_completion_current()
     call assert_equal('handler_message', get(s:last_request_envelope, 'type', ''))
     call assert_equal('complete', get(get(s:last_request_envelope, 'payload', {}), 'message_type', ''))
     call assert_equal("%%sql main\nselect value from items", get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'cell_text', ''))
     call assert_equal(2, get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'cursor_row', -1))
-    call assert_equal(10, get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'cursor_col', -1))
+    call assert_equal(13, get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'cursor_col', -1))
     call assert_equal('select value from items', get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'line_text', ''))
     call assert_equal('value', get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'current_word', ''))
   finally
+    let s:test_request_response = {}
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_request_completion_current_uses_complete_cell_for_plain_code_cells() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'request': function('s:test_request_adapter'),
+          \ }
+    let s:last_request_envelope = {}
+    let s:test_request_response = {
+          \ 'ok': 1,
+          \ 'completion': {
+          \   'items': [
+          \     {'value': 'print', 'label': 'print', 'start_col': 0, 'end_col': 2},
+          \   ],
+          \   },
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ 'pr ',
+          \ ])
+    call jusi#session#apply({'state': 'connected', 'id': 'sess-1'})
+    call cursor(2, 3)
+
+    call jusi#session#request_completion_current()
+
+    call assert_equal('complete_cell', get(s:last_request_envelope, 'type', ''))
+    call assert_equal(1, get(get(get(s:last_request_envelope, 'payload', {}), 'cell', {}), 'id', 0))
+    call assert_equal('code', get(get(get(s:last_request_envelope, 'payload', {}), 'cell', {}), 'kind', ''))
+    call assert_equal(['pr '], get(get(get(s:last_request_envelope, 'payload', {}), 'cell', {}), 'main_lines', []))
+    call assert_equal(1, get(get(s:last_request_envelope, 'payload', {}), 'cursor_row', -1))
+    call assert_equal(3, get(get(s:last_request_envelope, 'payload', {}), 'cursor_col', -1))
+    call assert_equal('pr ', get(get(s:last_request_envelope, 'payload', {}), 'line_text', ''))
+    call assert_equal('pr', get(get(s:last_request_envelope, 'payload', {}), 'current_word', ''))
+    call assert_equal('print', get(get(getbufvar(bufnr('%'), 'jusi_handler_completion_result', {}), 'items', [{}])[0], 'word', ''))
+  finally
+    let s:test_request_response = {}
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_request_completion_current_rejects_unbootstrapped_magic_cells() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'request': function('s:test_request_adapter'),
+          \ }
+    let s:last_request_envelope = {}
+    let s:test_request_response = {}
+    call Test_open_scratch([
+          \ '##',
+          \ '%%shell',
+          \ 'ls',
+          \ ])
+    call jusi#session#apply({'state': 'connected', 'id': 'sess-1'})
+    call cursor(3, 3)
+
+    call jusi#session#request_completion_current()
+
+    call assert_equal({}, s:last_request_envelope)
+    call assert_equal('Cannot complete a plugin cell before it has an active client', get(b:jusi_nb.session, 'last_error', ''))
+    call assert_equal('complete_cell', get(b:jusi_nb.session, 'last_action', ''))
+    call assert_equal('', get(b:jusi_nb.cells[0], 'client_id', ''))
+    call assert_equal('', get(get(b:jusi_nb.cells[0], 'owner', {}), 'kind', ''))
+    call assert_equal('initial', get(b:jusi_nb.cells[0], 'status', ''))
+    call assert_equal(['##', '%%shell', 'ls'], getline(1, '$'))
+  finally
+    let s:test_request_response = {}
     let g:jusi_session_adapter = l:save_adapter
   endtry
 endfunction
@@ -6410,6 +6515,7 @@ function! Test_default_buffer_mappings_exist() abort
   call assert_equal('', maparg('d', 'n'))
   call assert_equal('', maparg('p', 'x'))
   call assert_equal('<C-R>=jusi#focus#toggle()<CR>', maparg("\<C-\\>\<C-\\>", 'i', 0, 1).rhs)
+  call assert_equal('<C-\><C-o>:JusiComplete<CR>', maparg('<Tab>', 'i', 0, 1).rhs)
   call assert_equal('', maparg('<CR>', 'i'))
   call assert_equal('<C-\><C-o>:call jusi#notebook#execute_and_edit_current()<CR>', maparg('<C-Y>', 'i', 0, 1).rhs)
   call assert_equal('<C-\><C-n>:call jusi#notebook#handle_insert_exit()<Bar>call jusi#cellmode#update_indicator()<CR>', maparg('<C-C>', 'i', 0, 1).rhs)
