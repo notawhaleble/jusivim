@@ -16,6 +16,8 @@ if !exists('b:jusi_mappings_initialized')
   nnoremap <silent> <buffer> <leader>h :<C-U>call jusi#notebook#toggle_history_fold_current()<CR>
   nnoremap <silent> <buffer> <leader>j :<C-U>call jusi#notebook#execute_or_apply_history()<CR>
   nnoremap <silent> <buffer> <leader>s :JusiTogglePark<CR>
+  nnoremap <silent> <buffer> <leader>00 :JusiRestartKernel<CR>
+  nnoremap <silent> <buffer> <leader>ii :JusiInterruptKernel<CR>
   nnoremap <silent> <buffer> <leader>q :<C-U>call jusi#cellmode#close_client(v:count)<CR>
   nnoremap <silent> <buffer> <leader>g :<C-U>call jusi#cellmode#goto_client(v:count)<CR>
   nnoremap <silent> <buffer> <C-\><C-\> :JusiToggleFocus<CR>

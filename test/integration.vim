@@ -923,6 +923,72 @@ function! Test_integration_mutating_active_cell_body_keeps_runtime_binding() abo
   call assert_equal(['%%vd pods', 'tail line'], jusi#notebook#cell_main_lines(b:jusi_nb.cells[0]))
 endfunction
 
+function! Test_integration_mutating_done_code_cell_before_shell_keeps_client_binding() abort
+  call Test_open_scratch([
+        \ '##',
+        \ "print('lalala')",
+        \ '##',
+        \ '%%shell',
+        \ 'ls',
+        \ '##',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:active_id = b:jusi_nb.cells[0].id
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+  let b:jusi_nb.cells[0].status = 'done'
+  let b:jusi_nb.cells[0].owner = {'kind': 'kernel'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  call jusi#client#mark_attached_buffer(l:notebook, l:active_id, 'client-1', l:client)
+
+  call setline(2, "print('ololo')")
+  call jusi#notebook#handle_text_changed_insert()
+  call jusi#notebook#handle_insert_exit()
+
+  call assert_equal(3, len(b:jusi_nb.cells))
+  call assert_equal(l:active_id, b:jusi_nb.cells[0].id)
+  call assert_equal('done', b:jusi_nb.cells[0].status)
+  call assert_equal('client-1', b:jusi_nb.cells[0].client_id)
+  call assert_equal(l:client, b:jusi_nb.cells[0].client_bufnr)
+  call assert_true(bufexists(l:client))
+  call assert_equal(["print('ololo')"], jusi#notebook#cell_main_lines(b:jusi_nb.cells[0]))
+endfunction
+
+function! Test_integration_deleting_done_code_cell_does_not_rebind_client_to_shifted_cell() abort
+  call Test_open_scratch([
+        \ '##',
+        \ "print('lalala')",
+        \ '##',
+        \ "print('ololo')",
+        \ '##',
+        \ '%%shell',
+        \ 'ls',
+        \ '##',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:active_id = b:jusi_nb.cells[0].id
+  let l:next_id = b:jusi_nb.cells[1].id
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+  let b:jusi_nb.cells[0].status = 'done'
+  let b:jusi_nb.cells[0].owner = {'kind': 'kernel'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  call jusi#client#mark_attached_buffer(l:notebook, l:active_id, 'client-1', l:client)
+
+  call cursor(2, 1)
+  call jusi#notebook#delete_current()
+
+  call assert_false(bufexists(l:client))
+  call assert_equal(3, len(b:jusi_nb.cells))
+  call assert_equal(l:next_id, b:jusi_nb.cells[0].id)
+  call assert_equal(["print('ololo')"], jusi#notebook#cell_main_lines(b:jusi_nb.cells[0]))
+  call assert_equal('initial', b:jusi_nb.cells[0].status)
+  call assert_equal('', b:jusi_nb.cells[0].client_id)
+  call assert_equal(-1, b:jusi_nb.cells[0].client_bufnr)
+endfunction
+
 function! Test_integration_delete_active_cell_then_undo_does_not_restore_client_binding() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   try

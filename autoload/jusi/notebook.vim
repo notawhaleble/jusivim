@@ -108,6 +108,7 @@ function! s:ensure_state(bufnr) abort
       \ 'session': jusi#session#default_state(),
       \ 'dirty_insert': 0,
       \ 'inserted_cell_hint': {},
+      \ 'deleted_cell_ids': {},
       \ 'syntax_dirty': 0,
       \ 'syntax_dirty_from': 0,
       \ 'consistency_check_pending': 0,
@@ -482,11 +483,16 @@ function! s:reconcile_cells(parsed_cells, prev_cells, state) abort
   let l:used_prev = {}
   let l:signature_map = {}
   let l:inserted_hint = get(a:state, 'inserted_cell_hint', {})
+  let l:deleted_ids = get(a:state, 'deleted_cell_ids', {})
   let l:unmatched = []
   let l:i = 0
 
   while l:i < len(a:prev_cells)
-    call s:add_signature_index(l:signature_map, a:prev_cells[l:i], l:i)
+    if has_key(l:deleted_ids, string(get(a:prev_cells[l:i], 'id', 0)))
+      let l:used_prev[l:i] = 1
+    else
+      call s:add_signature_index(l:signature_map, a:prev_cells[l:i], l:i)
+    endif
     let l:i += 1
   endwhile
 
@@ -550,9 +556,10 @@ function! jusi#notebook#parse_lines(lines, ...) abort
   let l:prev_cells = get(l:prev_state, 'cells', [])
   let l:next_cell_id = get(l:prev_state, 'next_cell_id', s:max_cell_id(l:prev_cells) + 1)
   let l:state = {
-        \ 'next_cell_id': l:next_cell_id,
-        \ 'inserted_cell_hint': copy(get(l:prev_state, 'inserted_cell_hint', {})),
-        \ }
+      \ 'next_cell_id': l:next_cell_id,
+      \ 'inserted_cell_hint': copy(get(l:prev_state, 'inserted_cell_hint', {})),
+      \ 'deleted_cell_ids': copy(get(l:prev_state, 'deleted_cell_ids', {})),
+      \ }
   let l:parsed_cells = s:parse_raw_cells(a:lines)
   let l:cells = s:reconcile_cells(l:parsed_cells, l:prev_cells, l:state)
   return {
@@ -799,6 +806,7 @@ function! jusi#notebook#rebuild(...) abort
   let l:state.syntax_dirty = 0
   let l:state.syntax_dirty_from = 0
   let l:state.consistency_check_pending = 0
+  let l:state.deleted_cell_ids = {}
 
   call setbufvar(l:bufnr, 'jusi_nb', l:state)
   call s:update_buffer_cache_lines(l:bufnr, l:lines)
@@ -1686,6 +1694,10 @@ function! jusi#notebook#delete_current() abort
 
   let l:cell = l:state.cells[l:idx]
   let l:target_idx = s:replacement_index_after_delete(l:state, l:idx)
+  let l:deleted_ids = get(l:state, 'deleted_cell_ids', {})
+  let l:deleted_ids[string(get(l:cell, 'id', 0))] = 1
+  let l:state.deleted_cell_ids = l:deleted_ids
+  call setbufvar(bufnr('%'), 'jusi_nb', l:state)
 
   if len(l:state.cells) <= 1
     call setline(1, ['##'])

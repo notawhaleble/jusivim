@@ -6397,6 +6397,8 @@ function! Test_default_buffer_mappings_exist() abort
   call assert_equal(':<C-U>call jusi#notebook#toggle_history_fold_current()<CR>', maparg('<leader>h', 'n', 0, 1).rhs)
   call assert_equal(':<C-U>call jusi#notebook#execute_or_apply_history()<CR>', maparg('<leader>j', 'n', 0, 1).rhs)
   call assert_equal(':JusiTogglePark<CR>', maparg('<leader>s', 'n', 0, 1).rhs)
+  call assert_equal(':JusiRestartKernel<CR>', maparg('<leader>00', 'n', 0, 1).rhs)
+  call assert_equal(':JusiInterruptKernel<CR>', maparg('<leader>ii', 'n', 0, 1).rhs)
   call assert_equal(':<C-U>call jusi#cellmode#close_client(v:count)<CR>', maparg('<leader>q', 'n', 0, 1).rhs)
   call assert_equal(':<C-U>call jusi#cellmode#goto_client(v:count)<CR>', maparg('<leader>g', 'n', 0, 1).rhs)
   call assert_equal('', maparg('<leader><Space>', 'n'))
