@@ -6741,7 +6741,7 @@ function! Test_insert_invalidation_defers_rebuild_until_exit() abort
   call assert_notequal(l:tick_before, b:jusi_nb.changedtick)
 endfunction
 
-function! Test_insert_mode_line_insert_updates_ranges_incrementally() abort
+function! Test_insert_mode_text_changed_only_invalidates_until_exit() abort
   call Test_open_scratch([
         \ '##',
         \ 'one',
@@ -6750,6 +6750,10 @@ function! Test_insert_mode_line_insert_updates_ranges_incrementally() abort
         \ ])
   call append(2, 'one more')
   call jusi#notebook#handle_text_changed_insert()
+  call assert_equal(2, b:jusi_nb.cells[0].end)
+  call assert_equal(3, b:jusi_nb.cells[1].start)
+  call assert_equal(1, b:jusi_nb.dirty_insert)
+  call jusi#notebook#handle_insert_exit()
   call assert_equal(3, b:jusi_nb.cells[0].end)
   call assert_equal(4, b:jusi_nb.cells[1].start)
   call assert_equal(0, b:jusi_nb.dirty_insert)
@@ -6762,6 +6766,7 @@ function! Test_insert_mode_o_from_single_delimiter_cell_does_not_crash() abort
   call assert_equal(['##', ''], getline(1, '$'))
   call assert_equal(1, len(b:jusi_nb.cells))
   call assert_equal(1, b:jusi_nb.cells[0].start)
+  call assert_equal(1, b:jusi_nb.dirty_insert)
   call jusi#notebook#handle_insert_exit()
   call assert_equal(2, b:jusi_nb.cells[0].end)
   call assert_equal(0, b:jusi_nb.dirty_insert)

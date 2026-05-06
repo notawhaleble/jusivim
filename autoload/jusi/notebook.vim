@@ -869,18 +869,6 @@ function! jusi#notebook#handle_text_changed_insert(...) abort
     return {}
   endif
   let l:state = s:ensure_state(l:bufnr)
-  if !empty(l:state.cells)
-    let l:fast = s:maybe_fast_update(l:bufnr, l:state)
-    if !empty(l:fast)
-      call s:perf_log('handle_text_changed_insert-fast', l:perf_start, 'buf=' . l:bufnr)
-      return l:fast
-    endif
-    let l:resize = s:maybe_resize_cell(l:bufnr, l:state)
-    if !empty(l:resize)
-      call s:perf_log('handle_text_changed_insert-resize', l:perf_start, 'buf=' . l:bufnr)
-      return l:resize
-    endif
-  endif
   call jusi#notebook#invalidate(l:bufnr)
   call s:perf_log('handle_text_changed_insert-invalidate', l:perf_start, 'buf=' . l:bufnr)
   return l:state
@@ -892,6 +880,9 @@ function! jusi#notebook#invalidate(...) abort
     return
   endif
   let l:state = s:ensure_state(l:bufnr)
+  if get(l:state, 'dirty_insert', 0)
+    return
+  endif
   let l:state.dirty_insert = 1
   call setbufvar(l:bufnr, 'jusi_nb', l:state)
 endfunction
@@ -1194,6 +1185,20 @@ function! jusi#notebook#cell_at_line(...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
   let l:lnum = a:0 >= 2 ? a:2 : line('.')
   let l:state = jusi#notebook#rebuild(l:bufnr)
+  if empty(l:state)
+    return {}
+  endif
+  let l:idx = s:cell_index_at_line(l:state, l:lnum)
+  if l:idx < 0
+    return {}
+  endif
+  return l:state.cells[l:idx]
+endfunction
+
+function! jusi#notebook#cell_at_line_cached(...) abort
+  let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
+  let l:lnum = a:0 >= 2 ? a:2 : line('.')
+  let l:state = s:ensure_state(l:bufnr)
   if empty(l:state)
     return {}
   endif

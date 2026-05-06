@@ -150,13 +150,26 @@ function! s:delegate_indent(lnum) abort
   endtry
 endfunction
 
+function! s:dirty_insert_cell_at_line(bufnr, lnum) abort
+  let l:start = a:lnum
+  while l:start > 1 && getline(l:start) !~# '^##\s*$'
+    let l:start -= 1
+  endwhile
+  return jusi#notebook#cell_at_line_cached(a:bufnr, l:start)
+endfunction
+
 function! jusi#indent#expr(lnum) abort
   let l:bufnr = bufnr('%')
   if !s:is_notebook_buffer(l:bufnr)
     return s:delegate_indent(a:lnum)
   endif
 
-  let l:cell = jusi#notebook#cell_at_line(l:bufnr, a:lnum)
+  let l:state = getbufvar(l:bufnr, 'jusi_nb', {})
+  if get(l:state, 'dirty_insert', 0)
+    let l:cell = s:dirty_insert_cell_at_line(l:bufnr, a:lnum)
+  else
+    let l:cell = jusi#notebook#cell_at_line(l:bufnr, a:lnum)
+  endif
   if empty(l:cell)
     return 0
   endif
