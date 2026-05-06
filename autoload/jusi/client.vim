@@ -41,10 +41,6 @@ function! jusi#client#debug_terminal_focus(message, payload) abort
 endfunction
 
 function! s:exit_terminal_job_mode() abort
-  if has('nvim')
-    call feedkeys("\<C-\\>\<C-N>", 'xt')
-    return
-  endif
   silent! stopinsert
 endfunction
 
@@ -70,6 +66,18 @@ function! jusi#client#ensure_terminal_focus_mode(...) abort
   endif
   call s:enter_terminal_job_mode()
   return 1
+endfunction
+
+function! jusi#client#follow_terminal_output(bufnr) abort
+  if !jusi#client#is_native_terminal_buffer(a:bufnr) || !exists('*win_execute')
+    return 0
+  endif
+  let l:followed = 0
+  for l:info in filter(copy(getwininfo()), {_, v -> get(v, 'bufnr', 0) == a:bufnr})
+    call win_execute(get(l:info, 'winid', 0), 'normal! G', 'silent!')
+    let l:followed += 1
+  endfor
+  return l:followed
 endfunction
 
 function! s:restore_terminal_job_mode_now(winid, bufnr) abort

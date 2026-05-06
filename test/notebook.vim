@@ -6487,6 +6487,54 @@ function! Test_client_buffer_bufenter_hook_applies_statusline() abort
   call win_gotoid(bufwinid(l:notebook))
 endfunction
 
+function! Test_nvim_native_terminal_bufenter_follows_output_tail() abort
+  if !has('nvim')
+    return
+  endif
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd pods',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+  call setbufvar(l:client, 'jusi_client_transport_kind', 'native_terminal')
+  call setbufline(l:client, 1, ['one', 'two', 'three', 'four', 'five', 'six'])
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+
+  call jusi#focus#place_client_buffer(l:client, 'bsplit', 0)
+  normal! gg
+  call jusi#focus#refresh_client_window(l:client)
+
+  call assert_equal(line('$'), line('.'))
+  call win_gotoid(bufwinid(l:notebook))
+endfunction
+
+function! Test_nvim_native_terminal_prime_visible_window_follows_output_tail() abort
+  if !has('nvim')
+    return
+  endif
+  call Test_open_scratch([
+        \ '##',
+        \ '%%shell',
+        \ 'echo hi',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+  call setbufvar(l:client, 'jusi_client_transport_kind', 'native_terminal')
+  call setbufline(l:client, 1, ['one', 'two', 'three', 'four', 'five', 'six'])
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+
+  call jusi#focus#place_client_buffer(l:client, 'bsplit', 1)
+  let l:client_winid = bufwinid(l:client)
+  call win_execute(l:client_winid, 'normal! gg')
+
+  call jusi#focus#prime_client_windows_for_buffer(l:client)
+
+  call assert_equal(trim(win_execute(l:client_winid, 'echo line("$")')), trim(win_execute(l:client_winid, 'echo line(".")')))
+endfunction
+
 function! Test_notebook_statusline_shows_session_and_current_cell() abort
   call Test_open_scratch([
         \ '##',

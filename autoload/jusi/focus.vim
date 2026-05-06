@@ -12,6 +12,7 @@ function! s:apply_client_window_options() abort
     tnoremap <silent> <buffer> <C-\><C-\> <C-\><C-n>:call jusi#focus#toggle_from_terminal()<CR>
   endif
   call jusi#client#ensure_terminal_focus_mode(bufnr('%'))
+  call jusi#client#follow_terminal_output(bufnr('%'))
   return 1
 endfunction
 
@@ -29,6 +30,7 @@ function! s:prime_visible_client_window(winid) abort
   endif
   call win_execute(a:winid, 'setlocal nonumber norelativenumber', 'silent!')
   call jusi#statusline#setup_client(a:winid)
+  call jusi#client#follow_terminal_output(winbufnr(a:winid))
   return 1
 endfunction
 
