@@ -66,7 +66,7 @@ After toggling into cell mode with `<Space>`:
 Notes:
 
 - history-aware navigation treats open history entries as part of the movement surface
-- `<CR>` on a history entry applies that history entry back into the active magic-cell body
+- `<CR>` on a history entry applies that history entry back into the active Jusi-plugin cell body
 
 ## Insert Mode Mappings
 
@@ -177,3 +177,4 @@ Interrupt a busy cell:
 - Session quit and wipeout are guarded while a Jusi session is active.
 - Forced quit still works with `:q!` and forced wipeout still works with `:bwipeout!`.
 - Interactive plugin clients prefer native terminal buffers when backend advertises that transport.
+- History features are for Jusi plugin-backed magic cells, not arbitrary magic syntax in general.
