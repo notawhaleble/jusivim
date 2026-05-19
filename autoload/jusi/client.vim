@@ -80,6 +80,92 @@ function! jusi#client#follow_terminal_output(bufnr) abort
   return l:followed
 endfunction
 
+function! s:terminal_window_geometry(wininfo) abort
+  let l:width = get(a:wininfo, 'width', 0)
+  let l:height = get(a:wininfo, 'height', 0)
+  if l:width > 0 && l:height > 0
+    return {'width': l:width, 'height': l:height}
+  endif
+  if !exists('*win_execute')
+    return {'width': 0, 'height': 0}
+  endif
+  try
+    let l:width = str2nr(trim(win_execute(a:wininfo.winid, 'echo winwidth(0)')))
+    let l:height = str2nr(trim(win_execute(a:wininfo.winid, 'echo winheight(0)')))
+  catch
+    return {'width': 0, 'height': 0}
+  endtry
+  return {'width': l:width, 'height': l:height}
+endfunction
+
+function! s:resize_native_terminal_buffer(bufnr, width, height) abort
+  if a:bufnr <= 0 || a:width <= 0 || a:height <= 0
+    return 0
+  endif
+  if !jusi#client#is_native_terminal_buffer(a:bufnr)
+    return 0
+  endif
+  if has('nvim') && exists('*jobresize')
+    let l:job_id = getbufvar(a:bufnr, 'terminal_job_id', 0)
+    if type(l:job_id) == type(0) && l:job_id > 0
+      try
+        call jobresize(l:job_id, a:width, a:height)
+        return 1
+      catch
+        call s:client_debug('native-terminal-jobresize-failed', {
+              \ 'bufnr': a:bufnr,
+              \ 'job_id': l:job_id,
+              \ 'width': a:width,
+              \ 'height': a:height,
+              \ 'error': v:exception,
+              \ })
+      endtry
+    endif
+  endif
+  if exists('*term_setsize')
+    try
+      call term_setsize(a:bufnr, a:height, a:width)
+      return 1
+    catch
+      call s:client_debug('native-terminal-term-setsize-failed', {
+            \ 'bufnr': a:bufnr,
+            \ 'width': a:width,
+            \ 'height': a:height,
+            \ 'error': v:exception,
+            \ })
+    endtry
+  endif
+  return 0
+endfunction
+
+function! jusi#client#resize_visible_native_terminals() abort
+  let l:resized = 0
+  for l:info in getwininfo()
+    let l:bufnr = get(l:info, 'bufnr', 0)
+    if l:bufnr <= 0 || !jusi#client#is_native_terminal_buffer(l:bufnr)
+      continue
+    endif
+    let l:geometry = s:terminal_window_geometry(l:info)
+    let l:resized += s:resize_native_terminal_buffer(
+          \ l:bufnr,
+          \ get(l:geometry, 'width', 0),
+          \ get(l:geometry, 'height', 0))
+  endfor
+  return l:resized
+endfunction
+
+function! s:resize_visible_native_terminals_timer(timer) abort
+  call jusi#client#resize_visible_native_terminals()
+endfunction
+
+function! jusi#client#schedule_resize_visible_native_terminals() abort
+  if exists('*timer_start')
+    call timer_start(0, function('s:resize_visible_native_terminals_timer'))
+    return 1
+  endif
+  return jusi#client#resize_visible_native_terminals()
+endfunction
+
 function! s:restore_terminal_job_mode_now(winid, bufnr) abort
   if has('nvim') || a:winid <= 0 || !exists('*win_execute') || !exists('*win_id2win')
     call s:client_debug('restore-terminal-job-mode-skip', {
@@ -812,22 +898,21 @@ function! jusi#client#recover_attached_buffer(notebook_bufnr, cell_id, client_id
       continue
     endif
     let l:role = getbufvar(l:bufnr, 'jusi_client_role', '')
+    if l:role !=# 'cell'
+      continue
+    endif
     let l:cell_match = getbufvar(l:bufnr, 'jusi_client_cell_id', 0) == a:cell_id
+    if !l:cell_match
+      continue
+    endif
     let l:client_match = !empty(a:client_id) && getbufvar(l:bufnr, 'jusi_client_id', '') ==# a:client_id
     if !empty(a:client_id)
       if !l:client_match
         continue
       endif
-    elseif !l:cell_match
-      continue
     endif
     let l:score = 0
-    if l:role ==# 'cell'
-      let l:score += 100
-    endif
-    if l:cell_match
-      let l:score += 50
-    endif
+    let l:score += 150
     if l:client_match
       let l:score += 25
     endif

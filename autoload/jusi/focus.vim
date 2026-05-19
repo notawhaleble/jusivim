@@ -31,6 +31,7 @@ function! s:prime_visible_client_window(winid) abort
   call win_execute(a:winid, 'setlocal nonumber norelativenumber', 'silent!')
   call jusi#statusline#setup_client(a:winid)
   call jusi#client#follow_terminal_output(winbufnr(a:winid))
+  call jusi#client#schedule_resize_visible_native_terminals()
   return 1
 endfunction
 
@@ -107,6 +108,7 @@ function! jusi#focus#place_client_buffer(bufnr, ...) abort
     execute l:info.winnr . 'wincmd w'
   endif
   call s:apply_client_window_options()
+  call jusi#client#schedule_resize_visible_native_terminals()
   if l:return_focus && win_gotoid(l:source_winid)
     return a:bufnr
   endif

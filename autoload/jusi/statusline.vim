@@ -112,6 +112,13 @@ function! s:client_terminal_mode(bufnr) abort
   return ''
 endfunction
 
+function! s:notebook_mode_label(bufnr) abort
+  if exists('*jusi#cellmode#mode') && jusi#cellmode#mode(a:bufnr) ==# 'cell'
+    return 'cell'
+  endif
+  return ''
+endfunction
+
 function! s:statusline_prefix(group) abort
   return '%#' . a:group . '#'
 endfunction
@@ -154,6 +161,7 @@ function! jusi#statusline#render_notebook() abort
   let l:session = jusi#session#state(l:bufnr)
   let l:state = get(l:session, 'state', 'idle')
   let l:target = s:session_target_label(l:session)
+  let l:notebook_mode = s:notebook_mode_label(l:bufnr)
   let l:parts = []
 
   call add(l:parts, s:statusline_prefix('StatusLine'))
@@ -169,6 +177,11 @@ function! jusi#statusline#render_notebook() abort
 
   if !empty(l:target)
     call add(l:parts, ' target:' . s:escape(l:target))
+  endif
+  if !empty(l:notebook_mode)
+    call add(l:parts, s:statusline_prefix('JusiStatusNotebookMode'))
+    call add(l:parts, ' mode:' . s:escape(l:notebook_mode))
+    call add(l:parts, s:statusline_prefix('StatusLine'))
   endif
 
   return join(l:parts, '')

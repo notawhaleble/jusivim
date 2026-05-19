@@ -202,11 +202,12 @@ function! s:find_plain_code_cell(bufnr) abort
 endfunction
 
 function! s:find_cell_by_header_prefix(bufnr, header) abort
+  let l:pattern = '^' . escape(a:header, '\.^$~[]*') . '\%(\s\|$\)'
   for l:cell in jusi#notebook#cells(a:bufnr)
     if get(l:cell, 'kind', '') !=# 'magic'
       continue
     endif
-    if s:cell_header(l:cell, a:bufnr) =~# '^' . escape(a:header, '\.^$~[]*')
+    if s:cell_header(l:cell, a:bufnr) =~# l:pattern
       return l:cell
     endif
   endfor

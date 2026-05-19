@@ -106,44 +106,15 @@ function! jusi#cellmode#indicator_text(...) abort
   let l:bufnr = a:0 >= 1 ? str2nr(a:1) : bufnr('%')
   let l:mode = s:mode(l:bufnr)
   if l:mode ==# 'cell'
-    return '-- CELL --'
+    return 'cell'
   endif
   return ''
 endfunction
 
 function! jusi#cellmode#update_indicator(...) abort
   let l:perf_start = reltime()
-  let l:force_clear = a:0 >= 1 ? a:1 : v:false
-  let l:should_show = jusi#cellmode#should_show_indicator() && !l:force_clear
-  let l:text = l:should_show ? jusi#cellmode#indicator_text() : ''
-  let l:was_visible = get(g:, 'jusi_cellmode_indicator', 0)
-  let l:was_text = get(g:, 'jusi_cellmode_indicator_text', '')
-
-  if l:should_show
-    if l:was_visible && l:was_text ==# l:text
-      call s:perf_log('cellmode_indicator-noop', l:perf_start)
-      return
-    endif
-    redraw
-    echo ''
-    echohl ModeMsg
-    echon l:text
-    echohl None
-    let g:jusi_cellmode_indicator = 1
-    let g:jusi_cellmode_indicator_text = l:text
-    call s:perf_log('cellmode_indicator-show', l:perf_start)
-    return
-  endif
-
-  if l:was_visible
-    redraw
-    echo ''
-    let g:jusi_cellmode_indicator = 0
-    let g:jusi_cellmode_indicator_text = ''
-    call s:perf_log('cellmode_indicator-clear', l:perf_start)
-    return
-  endif
-  call s:perf_log('cellmode_indicator-noop', l:perf_start)
+  silent! redrawstatus
+  call s:perf_log('cellmode_indicator-redrawstatus', l:perf_start)
 endfunction
 
 function! jusi#cellmode#should_show_indicator() abort
