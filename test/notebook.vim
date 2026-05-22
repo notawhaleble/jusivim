@@ -7164,6 +7164,28 @@ function! Test_normal_mode_same_line_edit_uses_fast_path() abort
   call assert_equal(2, len(b:jusi_nb.cells))
 endfunction
 
+function! Test_normal_mode_same_line_edit_preserves_magic_history_region() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 0',
+        \ '##>>',
+        \ ])
+  let l:id_before = b:jusi_nb.cells[0].id
+
+  call setline(3, 'select 2')
+  call jusi#notebook#handle_text_changed()
+
+  call assert_equal(l:id_before, b:jusi_nb.cells[0].id)
+  call assert_equal(3, b:jusi_nb.cells[0].body_end)
+  call assert_equal(4, b:jusi_nb.cells[0].history_start)
+  call assert_equal(7, b:jusi_nb.cells[0].history_end)
+  call assert_equal(['%%sql main', 'select 2'], jusi#notebook#cell_main_lines(b:jusi_nb.cells[0]))
+endfunction
+
 function! Test_normal_mode_line_insert_inside_cell_updates_ranges_without_full_rebuild() abort
   call Test_open_scratch([
         \ '##',
@@ -7178,6 +7200,31 @@ function! Test_normal_mode_line_insert_inside_cell_updates_ranges_without_full_r
   call assert_equal(3, b:jusi_nb.cells[0].end)
   call assert_equal(4, b:jusi_nb.cells[1].start)
   call assert_equal(5, line('$'))
+endfunction
+
+function! Test_normal_mode_line_insert_preserves_magic_history_region() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 0',
+        \ '##>>',
+        \ '##',
+        \ 'print("next")',
+        \ ])
+  let l:ids_before = map(copy(b:jusi_nb.cells), 'v:val.id')
+
+  call append(3, 'limit 1')
+  call jusi#notebook#handle_text_changed()
+
+  call assert_equal(l:ids_before, map(copy(b:jusi_nb.cells), 'v:val.id'))
+  call assert_equal(4, b:jusi_nb.cells[0].body_end)
+  call assert_equal(5, b:jusi_nb.cells[0].history_start)
+  call assert_equal(8, b:jusi_nb.cells[0].history_end)
+  call assert_equal(9, b:jusi_nb.cells[1].start)
+  call assert_equal(['%%sql main', 'select 1', 'limit 1'], jusi#notebook#cell_main_lines(b:jusi_nb.cells[0]))
 endfunction
 
 function! Test_delimiter_insert_falls_back_to_full_rebuild() abort
