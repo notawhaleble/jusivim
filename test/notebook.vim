@@ -2502,6 +2502,34 @@ function! Test_toggle_focus_recovers_from_mismatched_existing_client_bufnr() abo
   call assert_equal(l:client, getbufvar(l:notebook, 'jusi_nb').cells[1].client_bufnr)
 endfunction
 
+function! Test_toggle_focus_from_plain_buffer_jumps_to_visible_notebook() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:notebook_tab = tabpagenr()
+  tabnew
+  call s:test_open_plain_buffer(tempname() . '.txt', ['outside'])
+
+  call jusi#focus#toggle()
+
+  call assert_equal(l:notebook_tab, tabpagenr())
+  call assert_equal(l:notebook, bufnr('%'))
+endfunction
+
+function! Test_global_toggle_focus_mapping_from_plain_buffer_jumps_to_notebook() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  tabnew
+  call s:test_open_plain_buffer(tempname() . '.txt', ['outside'])
+
+  call assert_equal(':JusiToggleFocus<CR>', maparg("\<C-\\>\<C-\\>", 'n', 0, 1).rhs)
+  call assert_equal('<C-\><C-o>:JusiToggleFocus<CR>', maparg("\<C-\\>\<C-\\>", 'i', 0, 1).rhs)
+endfunction
+
 function! Test_cell_callback_recovers_stale_attached_client_bufnr_from_managed_client_metadata() abort
   call Test_open_scratch([
         \ '##',
@@ -6801,6 +6829,24 @@ function! Test_palette_command_bang_splits_when_target_visible_only_in_other_tab
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
+endfunction
+
+function! Test_palette_command_splits_when_target_visible_only_in_other_tab() abort
+  call s:test_cleanup_palette_buffers()
+  let l:target = s:test_open_named_notebook('alpha.vipynb', ['##', '%%sql db1', 'select 1'], {
+        \ 'sql': {'entries': ['db1']},
+        \ })
+  tabnew
+  call s:test_open_plain_buffer(tempname() . '.txt', ['outside'])
+  let l:outside_tab = tabpagenr()
+
+  call jusi#palette#command(0, 0, 0, 'alpha sql db1')
+  silent! stopinsert
+
+  call assert_equal(l:outside_tab, tabpagenr())
+  call assert_equal('alpha.vipynb', bufname('%'))
+  call assert_true(len(filter(getwininfo(), 'v:val.tabnr == tabpagenr()')) > 1)
+  call assert_equal('initial', get(jusi#notebook#cell_at_line(), 'status', ''))
 endfunction
 
 function! Test_palette_command_range_replaces_target_cell_body() abort

@@ -118,6 +118,13 @@ command! -bang JusiInternalQuit call jusi#notebook#command_quit(<bang>0, 0)
 command! -bang JusiInternalQuitAll call jusi#notebook#command_quit(<bang>0, 1)
 command! -bang JusiInternalBwipeout call jusi#notebook#command_wipeout(<bang>0)
 
+if empty(maparg("\<C-\\>\<C-\\>", 'n'))
+  nnoremap <silent> <C-\><C-\> :JusiToggleFocus<CR>
+endif
+if empty(maparg("\<C-\\>\<C-\\>", 'i'))
+  inoremap <silent> <C-\><C-\> <C-\><C-o>:JusiToggleFocus<CR>
+endif
+
 cnoremap <expr> <CR> jusi#notebook#command_enter()
 
 augroup jusi_notebook

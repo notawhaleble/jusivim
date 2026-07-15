@@ -18,6 +18,15 @@ Assumptions:
 - Client buffer:
   - output or interactive surface attached to a cell
 
+## Global Focus Mapping
+
+Available outside notebook buffers too:
+
+| Mapping | Mode | Action |
+| --- | --- | --- |
+| `<C-\><C-\>` | Normal | Toggle focus between notebook and client; from an unrelated buffer, jump to the first known notebook |
+| `<C-\><C-\>` | Insert | Same, returning through a one-command insert-mode escape |
+
 ## Notebook Mappings
 
 Available in normal mode in a notebook buffer:
@@ -39,7 +48,6 @@ Available in normal mode in a notebook buffer:
 | `<leader>ii` | Interrupt kernel |
 | `<leader>q` | Close current cell client |
 | `<leader>g` | Jump to client by count |
-| `<C-\><C-\>` | Toggle focus between notebook and client |
 
 ## Cell Mode Mappings
 
@@ -59,14 +67,15 @@ After toggling into cell mode with `<Space>`:
 | `Y` | Copy current cell |
 | `P` | Paste copied cell below |
 | `S` | Toggle parked state |
-| `Q` | Close attached client |
-| `G` | Jump to client by count |
+| `Q` | Close attached client; count selects a relative cell client |
+| `G` | Jump to attached client; count selects a relative cell client |
 | `R` | Rebuild notebook model |
 
 Notes:
 
 - history-aware navigation treats open history entries as part of the movement surface
 - `<CR>` on a history entry applies that history entry back into the active Jusi-plugin cell body
+- cell mode remaps the listed normal-mode keys only while the current notebook buffer is in cell mode
 
 ## Insert Mode Mappings
 
@@ -75,7 +84,6 @@ Notes:
 | `<Tab>` | Request completion |
 | `<C-Y>` | Execute current cell and remain in editing flow |
 | `<C-C>` | Leave insert mode and force notebook insert-exit reconciliation |
-| `<C-\><C-\>` | Toggle focus between notebook and client |
 
 Completion behavior:
 
@@ -130,19 +138,23 @@ Completion behavior:
 | --- | --- |
 | `:JusiCloseClient` | Close the current cell's attached client |
 | `:JusiTogglePark` | Park/unpark a client |
-| `:JusiToggleFocus` | Toggle focus between notebook and client |
+| `:JusiToggleFocus` | Toggle focus between notebook and client; from an unrelated buffer, jump to the first known notebook |
 
 ## Palette Command
 
 | Command | Action |
 | --- | --- |
-| `:J {args}` | Plugin/session palette command with completion |
-| `:J! {args}` | Bang form of the same palette command |
+| `:J {args}` | Plugin/session palette command with completion; prepare or reuse the target cell |
+| `:J! {args}` | Same target-cell behavior, then execute immediately |
 
 The exact palette surface depends on backend-provided metadata such as:
 
 - `palette`
 - `plugin_specs`
+
+Both forms reuse the target notebook window in the current tab when present, or open that notebook in a vertical split in the current tab.
+
+When invoked from Visual mode or with a command range, `:J` / `:J!` use the selected text as the target cell body. If the target cell already exists, the selection replaces its body; if the target cell is new, the selection becomes its initial body. With `:J!`, that cell is executed after this update.
 
 ## Common Flows
 

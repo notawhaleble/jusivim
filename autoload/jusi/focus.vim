@@ -56,17 +56,6 @@ function! s:restore_terminal_job_mode_if_visible(winid, bufnr) abort
   return jusi#client#restore_terminal_job_mode(a:winid, a:bufnr)
 endfunction
 
-function! s:find_window_for_buffer(bufnr) abort
-  for l:tab in gettabinfo()
-    for l:win in get(l:tab, 'windows', [])
-      if winbufnr(l:win) == a:bufnr
-        return {'tabnr': l:tab.tabnr, 'winnr': bufwinnr(a:bufnr)}
-      endif
-    endfor
-  endfor
-  return {}
-endfunction
-
 function! s:jump_to_buffer(bufnr) abort
   if !jusi#buffer#is_valid_bufnr(a:bufnr)
     echohl ErrorMsg
