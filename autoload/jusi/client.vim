@@ -1064,6 +1064,15 @@ function! s:refresh_delay_ms() abort
   return get(g:, 'jusi_client_poll_ms', 150)
 endfunction
 
+function! s:buffer_has_display_content(bufnr) abort
+  for l:line in getbufline(a:bufnr, 1, '$')
+    if l:line !=# ''
+      return 1
+    endif
+  endfor
+  return 0
+endfunction
+
 function! s:refresh_context(notebook_bufnr, cell_id, client_id, client_bufnr) abort
   if !bufexists(a:notebook_bufnr) || !jusi#buffer#is_valid_bufnr(a:client_bufnr)
     return {}
@@ -1144,6 +1153,12 @@ function! s:refresh_attached_now(notebook_bufnr, cell_id, client_id, client_bufn
   endif
   call setbufvar(a:client_bufnr, 'jusi_client_pending_input', s:pending_input_from_view(l:view))
   call jusi#session#sync_client_view(a:notebook_bufnr, a:cell_id, a:client_id, l:view)
+  if bufwinid(a:client_bufnr) < 0
+        \ && get(l:ctx.cell, 'client_state', '') ==# 'active'
+        \ && get(l:ctx.cell, 'status', '') !=# 'initial'
+        \ && s:buffer_has_display_content(a:client_bufnr)
+    call jusi#focus#place_client_buffer(a:client_bufnr)
+  endif
 
   if s:client_should_poll(l:ctx.cell) && exists('*timer_start')
     let l:timer = timer_start(s:refresh_delay_ms(), function('s:refresh_timer', [a:notebook_bufnr, a:cell_id, a:client_id, a:client_bufnr]))

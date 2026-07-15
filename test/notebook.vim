@@ -2617,6 +2617,111 @@ function! Test_cell_callback_places_attached_client_in_tab_layout() abort
   endtry
 endfunction
 
+function! Test_handler_cell_callback_defers_fresh_placeholder_before_native_terminal_refresh() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_launcher = get(g:, 'jusi_native_terminal_launcher', 0)
+  let l:save_launcher_ref = get(g:, 'JusiNativeTerminalLauncher', 0)
+  try
+    let g:jusi_session_adapter = {'inspect_client': function('s:test_session_adapter_inspect_client')}
+    let g:JusiNativeTerminalLauncher = function('TestNativeTerminalLauncher')
+    let s:inspect_client_calls = 0
+    let s:native_terminal_launches = []
+    let s:inspect_client_response = {
+          \ 'revision': 1,
+          \ 'title': 'vd',
+          \ 'lines': [],
+          \ 'execution_status': 'follow-up',
+          \ 'transport': {
+          \   'kind': 'native_terminal',
+          \   'attach_cmd': ['python', '-m', 'jusi', 'client-process', 'terminal-attach'],
+          \   'attach_env': {'JUSI_SESSION_ID': 'sess-1', 'JUSI_CLIENT_ID': 'client-1'},
+          \   'session_id': 'sess-1',
+          \   'client_id': 'client-1',
+          \   },
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ '%%vd',
+          \ '[''lalala'', ''ololo'']',
+          \ ])
+    let l:notebook = bufnr('%')
+    let l:cell_id = b:jusi_nb.cells[0].id
+    let l:notebook_win = win_getid()
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.state = 'connected'
+
+    call jusi#session#callback_cell(l:cell_id, {
+          \ 'status': 'follow-up',
+          \ 'owner': {'kind': 'handler'},
+          \ 'client_id': 'client-1',
+          \ 'client_state': 'active',
+          \ 'client_bufnr': l:client,
+          \ })
+
+    call assert_equal(l:notebook, bufnr('%'))
+    call assert_equal(l:notebook_win, win_getid())
+    call assert_equal(1, winnr('$'))
+
+    call Test_wait_until({-> len(s:native_terminal_launches) == 1}, 500)
+    call assert_equal(1, len(s:native_terminal_launches))
+    call assert_false(bufexists(l:client))
+    call assert_equal(get(s:native_terminal_launches[0], 'bufnr', -1), get(b:jusi_nb.cells[0], 'client_bufnr', -1))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_native_terminal_launcher = l:save_launcher
+    if type(l:save_launcher_ref) == type(function('tr'))
+      let g:JusiNativeTerminalLauncher = l:save_launcher_ref
+    else
+      unlet! g:JusiNativeTerminalLauncher
+    endif
+  endtry
+endfunction
+
+function! Test_handler_cell_callback_places_fresh_transcript_after_refresh() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_layout = get(g:, 'jusi_client_layout', 'bsplit')
+  try
+    let g:jusi_client_layout = 'bsplit'
+    let g:jusi_session_adapter = {'inspect_client': function('s:test_session_adapter_inspect_client')}
+    let s:inspect_client_calls = 0
+    let s:inspect_client_response = {
+          \ 'revision': 1,
+          \ 'title': 'handler output',
+          \ 'lines': ['rendered handler output'],
+          \ 'execution_status': 'done',
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ '%%custom',
+          \ 'payload',
+          \ ])
+    let l:notebook = bufnr('%')
+    let l:cell_id = b:jusi_nb.cells[0].id
+    let l:notebook_win = win_getid()
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.state = 'connected'
+
+    call jusi#session#callback_cell(l:cell_id, {
+          \ 'status': 'done',
+          \ 'owner': {'kind': 'handler'},
+          \ 'client_id': 'client-1',
+          \ 'client_state': 'active',
+          \ 'client_bufnr': l:client,
+          \ })
+
+    call assert_equal(1, winnr('$'))
+    call Test_wait_until({-> winnr('$') == 2 && getbufline(l:client, 1, '$') == ['rendered handler output']}, 500)
+    call assert_equal(l:notebook, bufnr('%'))
+    call assert_equal(l:notebook_win, win_getid())
+    call assert_equal(l:client, winbufnr(2))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_client_layout = l:save_layout
+  endtry
+endfunction
+
 function! Test_client_refresh_attached_view_renders_inspect_snapshot() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   try

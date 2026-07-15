@@ -150,6 +150,19 @@ function! s:update_cell_sign(bufnr, cell) abort
         \ . ' buffer=' . a:bufnr
 endfunction
 
+function! s:should_defer_client_placement(state, cell) abort
+  if get(get(a:state, 'session', {}), 'state', '') !=# 'connected'
+    return 0
+  endif
+  let l:bufnr = get(a:cell, 'client_bufnr', -1)
+  if l:bufnr <= 0 || jusi#client#is_native_terminal_buffer(l:bufnr)
+    return 0
+  endif
+  return getbufvar(l:bufnr, 'jusi_client_managed', 0)
+        \ && getbufvar(l:bufnr, 'jusi_client_role', '') ==# 'cell'
+        \ && getbufvar(l:bufnr, 'jusi_client_revision', -1) < 0
+endfunction
+
 function! s:update_cell(bufnr, cell_id, update) abort
   let l:state = s:notebook_state(a:bufnr)
   if empty(l:state)
@@ -214,7 +227,9 @@ function! s:update_cell(bufnr, cell_id, update) abort
           \ l:state.cells[l:idx].client_bufnr)
     if get(l:state.cells[l:idx], 'client_state', '') ==# 'active'
           \ && get(l:state.cells[l:idx], 'status', '') !=# 'initial'
-      call jusi#focus#place_client_buffer(l:state.cells[l:idx].client_bufnr)
+      if !s:should_defer_client_placement(l:state, l:state.cells[l:idx])
+        call jusi#focus#place_client_buffer(l:state.cells[l:idx].client_bufnr)
+      endif
       call jusi#client#schedule_attached_refresh(
             \ a:bufnr,
             \ l:state.cells[l:idx].id,
