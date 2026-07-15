@@ -2340,6 +2340,40 @@ function! Test_close_client_transport_response_closes_visible_native_terminal_bu
   endtry
 endfunction
 
+function! Test_close_client_after_transport_close_requires_attached_buffer() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {'request': function('s:test_transport_like_request_adapter')}
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    let l:notebook = bufnr('%')
+    let l:cell_id = b:jusi_nb.cells[0].id
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.state = 'connected'
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+    call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+    let b:jusi_nb.cells[0].status = 'done'
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].client_bufnr = l:client
+    let b:jusi_nb.cells[0].owner = {'kind': 'kernel'}
+
+    call jusi#session#close_current_client()
+    call assert_equal('detached', getbufvar(l:client, 'jusi_client_role', ''))
+    call assert_equal('client-1', b:jusi_nb.cells[0].client_id)
+    call assert_equal(-1, b:jusi_nb.cells[0].client_bufnr)
+
+    call jusi#session#close_current_client()
+    call assert_match('Cannot close client without an attached client buffer', b:jusi_nb.session.last_error)
+    call assert_equal(-1, b:jusi_nb.cells[0].client_bufnr)
+    call assert_equal('detached', getbufvar(l:client, 'jusi_client_role', ''))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
 function! Test_toggle_park_marks_terminal_client_and_restores_status() abort
   call Test_open_scratch([
         \ '##',
@@ -2468,6 +2502,34 @@ function! Test_toggle_focus_recovers_from_mismatched_existing_client_bufnr() abo
   call assert_equal(l:client, getbufvar(l:notebook, 'jusi_nb').cells[1].client_bufnr)
 endfunction
 
+function! Test_toggle_focus_from_plain_buffer_jumps_to_visible_notebook() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:notebook_tab = tabpagenr()
+  tabnew
+  call s:test_open_plain_buffer(tempname() . '.txt', ['outside'])
+
+  call jusi#focus#toggle()
+
+  call assert_equal(l:notebook_tab, tabpagenr())
+  call assert_equal(l:notebook, bufnr('%'))
+endfunction
+
+function! Test_global_toggle_focus_mapping_from_plain_buffer_jumps_to_notebook() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  tabnew
+  call s:test_open_plain_buffer(tempname() . '.txt', ['outside'])
+
+  call assert_equal(':JusiToggleFocus<CR>', maparg("\<C-\\>\<C-\\>", 'n', 0, 1).rhs)
+  call assert_equal('<C-\><C-o>:JusiToggleFocus<CR>', maparg("\<C-\\>\<C-\\>", 'i', 0, 1).rhs)
+endfunction
+
 function! Test_cell_callback_recovers_stale_attached_client_bufnr_from_managed_client_metadata() abort
   call Test_open_scratch([
         \ '##',
@@ -2579,6 +2641,111 @@ function! Test_cell_callback_places_attached_client_in_tab_layout() abort
     call assert_equal(l:notebook_tab, tabpagenr())
     call assert_equal(2, tabpagenr('$'))
   finally
+    let g:jusi_client_layout = l:save_layout
+  endtry
+endfunction
+
+function! Test_handler_cell_callback_defers_fresh_placeholder_before_native_terminal_refresh() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_launcher = get(g:, 'jusi_native_terminal_launcher', 0)
+  let l:save_launcher_ref = get(g:, 'JusiNativeTerminalLauncher', 0)
+  try
+    let g:jusi_session_adapter = {'inspect_client': function('s:test_session_adapter_inspect_client')}
+    let g:JusiNativeTerminalLauncher = function('TestNativeTerminalLauncher')
+    let s:inspect_client_calls = 0
+    let s:native_terminal_launches = []
+    let s:inspect_client_response = {
+          \ 'revision': 1,
+          \ 'title': 'vd',
+          \ 'lines': [],
+          \ 'execution_status': 'follow-up',
+          \ 'transport': {
+          \   'kind': 'native_terminal',
+          \   'attach_cmd': ['python', '-m', 'jusi', 'client-process', 'terminal-attach'],
+          \   'attach_env': {'JUSI_SESSION_ID': 'sess-1', 'JUSI_CLIENT_ID': 'client-1'},
+          \   'session_id': 'sess-1',
+          \   'client_id': 'client-1',
+          \   },
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ '%%vd',
+          \ '[''lalala'', ''ololo'']',
+          \ ])
+    let l:notebook = bufnr('%')
+    let l:cell_id = b:jusi_nb.cells[0].id
+    let l:notebook_win = win_getid()
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.state = 'connected'
+
+    call jusi#session#callback_cell(l:cell_id, {
+          \ 'status': 'follow-up',
+          \ 'owner': {'kind': 'handler'},
+          \ 'client_id': 'client-1',
+          \ 'client_state': 'active',
+          \ 'client_bufnr': l:client,
+          \ })
+
+    call assert_equal(l:notebook, bufnr('%'))
+    call assert_equal(l:notebook_win, win_getid())
+    call assert_equal(1, winnr('$'))
+
+    call Test_wait_until({-> len(s:native_terminal_launches) == 1}, 500)
+    call assert_equal(1, len(s:native_terminal_launches))
+    call assert_false(bufexists(l:client))
+    call assert_equal(get(s:native_terminal_launches[0], 'bufnr', -1), get(b:jusi_nb.cells[0], 'client_bufnr', -1))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_native_terminal_launcher = l:save_launcher
+    if type(l:save_launcher_ref) == type(function('tr'))
+      let g:JusiNativeTerminalLauncher = l:save_launcher_ref
+    else
+      unlet! g:JusiNativeTerminalLauncher
+    endif
+  endtry
+endfunction
+
+function! Test_handler_cell_callback_places_fresh_transcript_after_refresh() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_layout = get(g:, 'jusi_client_layout', 'bsplit')
+  try
+    let g:jusi_client_layout = 'bsplit'
+    let g:jusi_session_adapter = {'inspect_client': function('s:test_session_adapter_inspect_client')}
+    let s:inspect_client_calls = 0
+    let s:inspect_client_response = {
+          \ 'revision': 1,
+          \ 'title': 'handler output',
+          \ 'lines': ['rendered handler output'],
+          \ 'execution_status': 'done',
+          \ }
+    call Test_open_scratch([
+          \ '##',
+          \ '%%custom',
+          \ 'payload',
+          \ ])
+    let l:notebook = bufnr('%')
+    let l:cell_id = b:jusi_nb.cells[0].id
+    let l:notebook_win = win_getid()
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.state = 'connected'
+
+    call jusi#session#callback_cell(l:cell_id, {
+          \ 'status': 'done',
+          \ 'owner': {'kind': 'handler'},
+          \ 'client_id': 'client-1',
+          \ 'client_state': 'active',
+          \ 'client_bufnr': l:client,
+          \ })
+
+    call assert_equal(1, winnr('$'))
+    call Test_wait_until({-> winnr('$') == 2 && getbufline(l:client, 1, '$') == ['rendered handler output']}, 500)
+    call assert_equal(l:notebook, bufnr('%'))
+    call assert_equal(l:notebook_win, win_getid())
+    call assert_equal(l:client, winbufnr(2))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
     let g:jusi_client_layout = l:save_layout
   endtry
 endfunction
@@ -3287,6 +3454,137 @@ function! Test_handler_action_request_open_path_rejects_non_local_session_target
     call assert_match('kind "ssh"', get(b:jusi_nb.session, 'last_error', ''))
   finally
     call delete(l:path)
+  endtry
+endfunction
+
+function! Test_handler_action_request_diff_show_opens_readonly_diff_artifacts() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd main',
+        \ 'data',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+  let l:before_path = tempname() . '-before.py'
+  let l:after_path = tempname() . '-after.py'
+  call writefile(['print("old")'], l:before_path)
+  call writefile(['print("new")'], l:after_path)
+  let b:jusi_nb.session.id = 'sess-1'
+  let b:jusi_nb.session.state = 'connected'
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  let b:jusi_nb.cells[0].handler = {'id': 'vd', 'last_message_type': 'handler_snapshot', 'payload': {}}
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+
+  try
+    belowright split
+    execute 'buffer ' . l:client
+    let l:client_winid = win_getid()
+    call jusi#transport#receive(l:notebook, {
+          \ 'kind': 'event',
+          \ 'type': 'handler_message',
+          \ 'version': 1,
+          \ 'payload': {
+          \   'notebook_id': 'nb-' . l:notebook,
+          \   'session_id': 'sess-1',
+          \   'client_id': 'client-1',
+          \   'handler_id': 'vd',
+          \   'message_type': 'action_request',
+          \   'payload': {
+          \     'action_type': 'diff_show',
+          \     'payload': {
+          \       'path': 'relative/project/file.py',
+          \       'before_path': l:before_path,
+          \       'after_path': l:after_path,
+          \       'before_exists': v:true,
+          \       'after_exists': v:true,
+          \       'open_in': 'split',
+          \       'layout': 'below',
+          \     },
+          \   },
+          \ },
+          \ })
+
+    let l:after_bufnr = bufnr('%')
+    let l:before_bufnr = getbufvar(l:after_bufnr, 'jusi_diff_peer_bufnr', -1)
+    call assert_true(l:before_bufnr > 0)
+    call assert_equal(fnamemodify(l:after_path, ':p'), expand('#' . l:after_bufnr . ':p'))
+    call assert_equal(fnamemodify(l:before_path, ':p'), expand('#' . l:before_bufnr . ':p'))
+    call assert_equal(1, getbufvar(l:after_bufnr, '&readonly'))
+    call assert_equal(0, getbufvar(l:after_bufnr, '&modifiable'))
+    call assert_equal(1, getbufvar(l:before_bufnr, '&readonly'))
+    call assert_equal(0, getbufvar(l:before_bufnr, '&modifiable'))
+    call assert_equal({'path': 'relative/project/file.py', 'label': 'after'}, getbufvar(l:after_bufnr, 'jusi_diff_show', {}))
+    call assert_equal({'path': 'relative/project/file.py', 'label': 'before'}, getbufvar(l:before_bufnr, 'jusi_diff_show', {}))
+    call assert_true(getwinvar(bufwinnr(l:after_bufnr), '&diff'))
+    call assert_true(getwinvar(bufwinnr(l:before_bufnr), '&diff'))
+    call assert_true(win_id2win(l:client_winid) > 0)
+  finally
+    silent! diffoff!
+    silent! only
+    call delete(l:before_path)
+    call delete(l:after_path)
+  endtry
+endfunction
+
+function! Test_handler_action_request_diff_show_rejects_non_local_session_target() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd main',
+        \ 'data',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+  let l:before_path = tempname() . '-before.py'
+  let l:after_path = tempname() . '-after.py'
+  call writefile([''], l:before_path)
+  call writefile(['print("new")'], l:after_path)
+  let b:jusi_nb.session.id = 'sess-1'
+  let b:jusi_nb.session.state = 'connected'
+  let b:jusi_nb.session.target = {'kind': 'ssh', 'alias': 'remote'}
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  let b:jusi_nb.cells[0].handler = {'id': 'vd', 'last_message_type': 'handler_snapshot', 'payload': {}}
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+
+  try
+    call jusi#transport#receive(l:notebook, {
+          \ 'kind': 'event',
+          \ 'type': 'handler_message',
+          \ 'version': 1,
+          \ 'payload': {
+          \   'notebook_id': 'nb-' . l:notebook,
+          \   'session_id': 'sess-1',
+          \   'client_id': 'client-1',
+          \   'handler_id': 'vd',
+          \   'message_type': 'action_request',
+          \   'payload': {
+          \     'action_type': 'diff_show',
+          \     'payload': {
+          \       'path': 'relative/project/file.py',
+          \       'before_path': l:before_path,
+          \       'after_path': l:after_path,
+          \       'open_in': 'split',
+          \       'layout': 'below',
+          \     },
+          \   },
+          \ },
+          \ })
+
+    call assert_equal(l:notebook, bufnr('%'))
+    call assert_match('local-only action "diff_show"', get(b:jusi_nb.session, 'last_error', ''))
+    call assert_match('kind "ssh"', get(b:jusi_nb.session, 'last_error', ''))
+  finally
+    call delete(l:before_path)
+    call delete(l:after_path)
   endtry
 endfunction
 
@@ -4250,6 +4548,41 @@ function! Test_restart_kernel_restarts_connected_start_managed_session() abort
   endtry
 endfunction
 
+function! Test_restart_kernel_refreshes_local_jusi_config() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  let l:save_config = get(g:, 'jusi_config_file', '')
+  try
+    let s:restart_calls = []
+    let g:jusi_session_adapter = {
+          \ 'start': function('s:test_session_adapter_restart_start'),
+          \ 'stop': function('s:test_session_adapter_restart_stop'),
+          \ }
+    let g:jusi_config_file = tempname()
+    call writefile([
+          \ '[plugins.sqlite]',
+          \ 'database = "/tmp/restart.db"',
+          \ ], g:jusi_config_file)
+    call Test_open_scratch([
+          \ '##',
+          \ 'print("hello")',
+          \ ])
+    call jusi#session#apply({
+          \ 'id': 'sess-old',
+          \ 'state': 'connected',
+          \ 'kernel_name': 'python3',
+          \ 'target': {'source': 'start', 'alias': 'py', 'kind': 'venv', 'value': 'venv://py', 'config': {'label': 'existing target', 'plugins': {'sql': {'main': {'provider': 'old'}}}}},
+          \ })
+    call jusi#session#restart()
+    let l:target_config = get(get(get(s:restart_calls[1], 'payload', {}), 'target', {}), 'config', {})
+    call assert_equal('existing target', get(l:target_config, 'label', ''))
+    call assert_equal('/tmp/restart.db', get(get(get(l:target_config, 'plugins', {}), 'sqlite', {}), 'database', ''))
+    call assert_false(has_key(get(l:target_config, 'plugins', {}), 'sql'))
+  finally
+    let g:jusi_session_adapter = l:save_adapter
+    let g:jusi_config_file = l:save_config
+  endtry
+endfunction
+
 function! Test_restart_kernel_restarts_stopped_start_managed_session_without_stop_call() abort
   let l:save_adapter = get(g:, 'jusi_session_adapter', {})
   try
@@ -4632,6 +4965,21 @@ function! Test_recover_attached_buffer_requires_exact_client_identity_when_known
   call assert_equal(l:stale, jusi#client#recover_attached_buffer(l:notebook, l:cell_id, ''))
   call assert_equal(0, jusi#client#recover_attached_buffer(l:notebook, l:cell_id, 'client-new'))
   call assert_equal(l:stale, jusi#client#recover_attached_buffer(l:notebook, l:cell_id, 'client-old'))
+endfunction
+
+function! Test_recover_attached_buffer_ignores_detached_client_buffers() abort
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let b:jusi_nb.session.id = 'sess-current'
+  let l:detached = jusi#client#create_managed_buffer(l:notebook, 'client-old', 'detached')
+  call setbufvar(l:detached, 'jusi_client_cell_id', 0)
+
+  call assert_equal(0, jusi#client#recover_attached_buffer(l:notebook, l:cell_id, ''))
+  call assert_equal(0, jusi#client#recover_attached_buffer(l:notebook, l:cell_id, 'client-old'))
 endfunction
 
 function! Test_recover_attached_buffer_ignores_other_session_buffers() abort
@@ -6395,6 +6743,53 @@ function! Test_palette_command_reuses_existing_magic_cell_with_extra_args() abor
   call assert_equal(2, line('.'))
 endfunction
 
+function! Test_palette_command_reuses_exact_entry_prefix_not_longer_entry() abort
+  call s:test_cleanup_palette_buffers()
+  call s:test_open_named_notebook('alpha.vipynb', [
+        \ '##',
+        \ '%%codex jusivim',
+        \ 'vim body',
+        \ '##',
+        \ '%%codex jusi',
+        \ 'jusi body',
+        \ ], {
+        \ 'codex': {'entries': ['jusi', 'jusivim']},
+        \ })
+
+  call jusi#palette#command(0, 0, 0, 'alpha codex jusi')
+  silent! stopinsert
+
+  call assert_equal('%%codex jusivim', getline(2))
+  call assert_equal('vim body', getline(3))
+  call assert_equal('%%codex jusi', getline(5))
+  call assert_equal('jusi body', getline(6))
+  call assert_equal(5, line('.'))
+endfunction
+
+function! Test_palette_command_creates_short_entry_instead_of_reusing_longer_entry() abort
+  call s:test_cleanup_palette_buffers()
+  call s:test_open_named_notebook('alpha.vipynb', [
+        \ '##',
+        \ '%%codex jusivim',
+        \ 'vim body',
+        \ ], {
+        \ 'codex': {'entries': ['jusi', 'jusivim']},
+        \ })
+
+  call jusi#palette#command(0, 0, 0, 'alpha codex jusi')
+  silent! stopinsert
+
+  call assert_equal([
+        \ '##',
+        \ '%%codex jusivim',
+        \ 'vim body',
+        \ '##',
+        \ '%%codex jusi',
+        \ '',
+        \ ], getline(1, '$'))
+  call assert_equal(6, line('.'))
+endfunction
+
 function! Test_palette_command_bang_opens_target_notebook_split() abort
   call s:test_cleanup_palette_buffers()
   let l:target = s:test_open_named_notebook('alpha.vipynb', ['##', '%%sql db1', 'select 1'], {
@@ -6434,6 +6829,24 @@ function! Test_palette_command_bang_splits_when_target_visible_only_in_other_tab
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
+endfunction
+
+function! Test_palette_command_splits_when_target_visible_only_in_other_tab() abort
+  call s:test_cleanup_palette_buffers()
+  let l:target = s:test_open_named_notebook('alpha.vipynb', ['##', '%%sql db1', 'select 1'], {
+        \ 'sql': {'entries': ['db1']},
+        \ })
+  tabnew
+  call s:test_open_plain_buffer(tempname() . '.txt', ['outside'])
+  let l:outside_tab = tabpagenr()
+
+  call jusi#palette#command(0, 0, 0, 'alpha sql db1')
+  silent! stopinsert
+
+  call assert_equal(l:outside_tab, tabpagenr())
+  call assert_equal('alpha.vipynb', bufname('%'))
+  call assert_true(len(filter(getwininfo(), 'v:val.tabnr == tabpagenr()')) > 1)
+  call assert_equal('initial', get(jusi#notebook#cell_at_line(), 'status', ''))
 endfunction
 
 function! Test_palette_command_range_replaces_target_cell_body() abort
@@ -6657,6 +7070,10 @@ function! Test_notebook_statusline_shows_session_and_current_cell() abort
   call assert_match('Jusi test\.vipynb', jusi#statusline#render_notebook())
   call assert_match('connected', jusi#statusline#render_notebook())
   call assert_match('target:ololo', jusi#statusline#render_notebook())
+  call assert_notmatch('mode:cell', jusi#statusline#render_notebook())
+  call jusi#cellmode#enable()
+  call assert_match('target:ololo mode:cell', jusi#statusline#render_notebook())
+  call assert_match('%#JusiStatusNotebookMode# mode:cell%#StatusLine#', jusi#statusline#render_notebook())
   call assert_notmatch('cell:', jusi#statusline#render_notebook())
   call assert_match('^%!jusi#statusline#render_notebook()', &l:statusline)
 endfunction
@@ -6824,14 +7241,17 @@ function! Test_cell_mode_indicator_state_transitions() abort
         \ '##',
         \ 'one',
         \ ])
-  let g:jusi_cellmode_indicator = 0
   call jusi#cellmode#disable()
   call assert_equal(0, jusi#cellmode#should_show_indicator())
-  call assert_equal(0, g:jusi_cellmode_indicator)
+  call assert_equal('', jusi#cellmode#indicator_text())
+  call assert_notmatch('mode:cell', jusi#statusline#render_notebook())
   call jusi#cellmode#enable()
   call assert_equal(&filetype ==# 'jusinb' && mode() =~# '^[nc]', jusi#cellmode#should_show_indicator())
+  call assert_equal('cell', jusi#cellmode#indicator_text())
+  call assert_match('mode:cell', jusi#statusline#render_notebook())
+  call assert_match('%#JusiStatusNotebookMode# mode:cell%#StatusLine#', jusi#statusline#render_notebook())
   call jusi#cellmode#update_indicator(v:true)
-  call assert_equal(0, g:jusi_cellmode_indicator)
+  call assert_match('mode:cell', jusi#statusline#render_notebook())
 endfunction
 
 function! Test_insert_invalidation_defers_rebuild_until_exit() abort
@@ -6895,6 +7315,28 @@ function! Test_normal_mode_same_line_edit_uses_fast_path() abort
   call assert_equal(2, len(b:jusi_nb.cells))
 endfunction
 
+function! Test_normal_mode_same_line_edit_preserves_magic_history_region() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 0',
+        \ '##>>',
+        \ ])
+  let l:id_before = b:jusi_nb.cells[0].id
+
+  call setline(3, 'select 2')
+  call jusi#notebook#handle_text_changed()
+
+  call assert_equal(l:id_before, b:jusi_nb.cells[0].id)
+  call assert_equal(3, b:jusi_nb.cells[0].body_end)
+  call assert_equal(4, b:jusi_nb.cells[0].history_start)
+  call assert_equal(7, b:jusi_nb.cells[0].history_end)
+  call assert_equal(['%%sql main', 'select 2'], jusi#notebook#cell_main_lines(b:jusi_nb.cells[0]))
+endfunction
+
 function! Test_normal_mode_line_insert_inside_cell_updates_ranges_without_full_rebuild() abort
   call Test_open_scratch([
         \ '##',
@@ -6909,6 +7351,31 @@ function! Test_normal_mode_line_insert_inside_cell_updates_ranges_without_full_r
   call assert_equal(3, b:jusi_nb.cells[0].end)
   call assert_equal(4, b:jusi_nb.cells[1].start)
   call assert_equal(5, line('$'))
+endfunction
+
+function! Test_normal_mode_line_insert_preserves_magic_history_region() abort
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select 1',
+        \ '##<<',
+        \ '###',
+        \ 'select 0',
+        \ '##>>',
+        \ '##',
+        \ 'print("next")',
+        \ ])
+  let l:ids_before = map(copy(b:jusi_nb.cells), 'v:val.id')
+
+  call append(3, 'limit 1')
+  call jusi#notebook#handle_text_changed()
+
+  call assert_equal(l:ids_before, map(copy(b:jusi_nb.cells), 'v:val.id'))
+  call assert_equal(4, b:jusi_nb.cells[0].body_end)
+  call assert_equal(5, b:jusi_nb.cells[0].history_start)
+  call assert_equal(8, b:jusi_nb.cells[0].history_end)
+  call assert_equal(9, b:jusi_nb.cells[1].start)
+  call assert_equal(['%%sql main', 'select 1', 'limit 1'], jusi#notebook#cell_main_lines(b:jusi_nb.cells[0]))
 endfunction
 
 function! Test_delimiter_insert_falls_back_to_full_rebuild() abort

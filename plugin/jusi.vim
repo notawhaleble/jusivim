@@ -9,14 +9,6 @@ if !exists('g:jusi_cell_mode')
   let g:jusi_cell_mode = 0
 endif
 
-if !exists('g:jusi_cellmode_indicator')
-  let g:jusi_cellmode_indicator = 0
-endif
-
-if !exists('g:jusi_cellmode_indicator_text')
-  let g:jusi_cellmode_indicator_text = ''
-endif
-
 if !exists('g:jusi_cell_clipboard')
   let g:jusi_cell_clipboard = []
 endif
@@ -63,7 +55,6 @@ endif
 
 call jusi#render#define_signs()
 highlight Folded ctermfg=DarkGray ctermbg=NONE guifg=#777777 guibg=NONE
-highlight default link JusiStatusNotebookMode ModeMsg
 highlight default link JusiStatusSessionConnected Directory
 highlight default link JusiStatusSessionDisconnected WarningMsg
 highlight default link JusiStatusSessionFailed ErrorMsg
@@ -74,6 +65,23 @@ if hlexists('StatusLineTerm')
 else
   highlight default JusiStatusClientInteractive cterm=bold ctermfg=Black ctermbg=Green gui=bold guifg=#111111 guibg=#7fbf7f
 endif
+
+function! s:highlight_bg(group, mode) abort
+  let l:id = synIDtrans(hlID(a:group))
+  let l:attr = a:mode ==# 'gui' ? 'bg#' : 'bg'
+  let l:bg = synIDattr(l:id, l:attr, a:mode)
+  return empty(l:bg) ? 'NONE' : l:bg
+endfunction
+
+function! s:define_status_highlights() abort
+  let l:ctermbg = s:highlight_bg('JusiStatusSessionConnected', 'cterm')
+  let l:guibg = s:highlight_bg('JusiStatusSessionConnected', 'gui')
+  execute 'highlight JusiStatusNotebookMode'
+        \ . ' cterm=bold ctermfg=Magenta ctermbg=' . l:ctermbg
+        \ . ' gui=bold guifg=#d33682 guibg=' . l:guibg
+endfunction
+
+call s:define_status_highlights()
 
 command! JusiRebuild call jusi#notebook#rebuild()
 command! JusiCellNext call jusi#notebook#goto_next()
@@ -110,10 +118,18 @@ command! -bang JusiInternalQuit call jusi#notebook#command_quit(<bang>0, 0)
 command! -bang JusiInternalQuitAll call jusi#notebook#command_quit(<bang>0, 1)
 command! -bang JusiInternalBwipeout call jusi#notebook#command_wipeout(<bang>0)
 
+if empty(maparg("\<C-\\>\<C-\\>", 'n'))
+  nnoremap <silent> <C-\><C-\> :JusiToggleFocus<CR>
+endif
+if empty(maparg("\<C-\\>\<C-\\>", 'i'))
+  inoremap <silent> <C-\><C-\> <C-\><C-o>:JusiToggleFocus<CR>
+endif
+
 cnoremap <expr> <CR> jusi#notebook#command_enter()
 
 augroup jusi_notebook
   au!
+  au ColorScheme * call <SID>define_status_highlights()
   au FileType jusinb runtime! ftplugin/jusinb.vim | call jusi#cellmode#refresh(expand('<abuf>'))
   au VimLeavePre * call jusi#notebook#prepare_forced_exit()
   au BufReadPost,BufNewFile *.vipynb call jusi#notebook#rebuild(expand('<abuf>'))
@@ -130,6 +146,10 @@ augroup jusi_notebook
     au WinScrolled *.vipynb call jusi#syntax#request_refresh(expand('<abuf>'))
   endif
   au VimResized *.vipynb call jusi#syntax#request_refresh(expand('<abuf>'))
+  au VimResized * call jusi#client#schedule_resize_visible_native_terminals()
+  if exists('##WinResized')
+    au WinResized * call jusi#client#schedule_resize_visible_native_terminals()
+  endif
   au BufHidden * call jusi#client#handle_editor_close(expand('<abuf>'))
   au BufUnload * call jusi#client#handle_editor_close(expand('<abuf>'))
   au BufWipeout * call jusi#client#handle_editor_close(expand('<abuf>'))

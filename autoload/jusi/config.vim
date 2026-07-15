@@ -282,3 +282,17 @@ function! jusi#config#merge_target_config(target, session_config) abort
   let l:target.config = l:config
   return l:target
 endfunction
+
+function! jusi#config#refresh_target_config(target, session_config) abort
+  let l:target = type(a:target) == type({}) ? copy(a:target) : {}
+  let l:config = {}
+  let l:target_config = get(l:target, 'config', {})
+  if type(l:target_config) == type({})
+    let l:config = copy(l:target_config)
+  endif
+  if type(a:session_config) == type({})
+    call extend(l:config, copy(a:session_config), 'force')
+  endif
+  let l:target.config = l:config
+  return l:target
+endfunction

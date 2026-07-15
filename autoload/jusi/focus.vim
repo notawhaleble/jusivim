@@ -31,6 +31,7 @@ function! s:prime_visible_client_window(winid) abort
   call win_execute(a:winid, 'setlocal nonumber norelativenumber', 'silent!')
   call jusi#statusline#setup_client(a:winid)
   call jusi#client#follow_terminal_output(winbufnr(a:winid))
+  call jusi#client#schedule_resize_visible_native_terminals()
   return 1
 endfunction
 
@@ -53,17 +54,6 @@ function! s:restore_terminal_job_mode_if_visible(winid, bufnr) abort
     return 0
   endif
   return jusi#client#restore_terminal_job_mode(a:winid, a:bufnr)
-endfunction
-
-function! s:find_window_for_buffer(bufnr) abort
-  for l:tab in gettabinfo()
-    for l:win in get(l:tab, 'windows', [])
-      if winbufnr(l:win) == a:bufnr
-        return {'tabnr': l:tab.tabnr, 'winnr': bufwinnr(a:bufnr)}
-      endif
-    endfor
-  endfor
-  return {}
 endfunction
 
 function! s:jump_to_buffer(bufnr) abort
@@ -107,6 +97,7 @@ function! jusi#focus#place_client_buffer(bufnr, ...) abort
     execute l:info.winnr . 'wincmd w'
   endif
   call s:apply_client_window_options()
+  call jusi#client#schedule_resize_visible_native_terminals()
   if l:return_focus && win_gotoid(l:source_winid)
     return a:bufnr
   endif

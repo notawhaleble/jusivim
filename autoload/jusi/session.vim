@@ -150,6 +150,19 @@ function! s:update_cell_sign(bufnr, cell) abort
         \ . ' buffer=' . a:bufnr
 endfunction
 
+function! s:should_defer_client_placement(state, cell) abort
+  if get(get(a:state, 'session', {}), 'state', '') !=# 'connected'
+    return 0
+  endif
+  let l:bufnr = get(a:cell, 'client_bufnr', -1)
+  if l:bufnr <= 0 || jusi#client#is_native_terminal_buffer(l:bufnr)
+    return 0
+  endif
+  return getbufvar(l:bufnr, 'jusi_client_managed', 0)
+        \ && getbufvar(l:bufnr, 'jusi_client_role', '') ==# 'cell'
+        \ && getbufvar(l:bufnr, 'jusi_client_revision', -1) < 0
+endfunction
+
 function! s:update_cell(bufnr, cell_id, update) abort
   let l:state = s:notebook_state(a:bufnr)
   if empty(l:state)
@@ -214,7 +227,9 @@ function! s:update_cell(bufnr, cell_id, update) abort
           \ l:state.cells[l:idx].client_bufnr)
     if get(l:state.cells[l:idx], 'client_state', '') ==# 'active'
           \ && get(l:state.cells[l:idx], 'status', '') !=# 'initial'
-      call jusi#focus#place_client_buffer(l:state.cells[l:idx].client_bufnr)
+      if !s:should_defer_client_placement(l:state, l:state.cells[l:idx])
+        call jusi#focus#place_client_buffer(l:state.cells[l:idx].client_bufnr)
+      endif
       call jusi#client#schedule_attached_refresh(
             \ a:bufnr,
             \ l:state.cells[l:idx].id,
@@ -1424,6 +1439,79 @@ function! s:open_path_action(bufnr, payload) abort
   return 1
 endfunction
 
+function! s:is_absolute_local_path(path) abort
+  if type(a:path) != type('') || empty(a:path)
+    return 0
+  endif
+  if has('win32') || has('win64')
+    return a:path =~# '^\a:[\/]' || a:path =~# '^\\\\'
+  endif
+  return a:path =~# '^/'
+endfunction
+
+function! s:diff_show_statusline(path, label) abort
+  let l:path = type(a:path) == type('') && !empty(a:path) ? a:path : '[artifact]'
+  let l:text = 'Jusi diff ' . a:label . ': ' . l:path
+  return substitute(l:text, '%', '%%', 'g')
+endfunction
+
+function! s:setup_diff_show_buffer(display_path, label) abort
+  let b:jusi_diff_show = {
+        \ 'path': a:display_path,
+        \ 'label': a:label,
+        \ }
+  let &l:statusline = s:diff_show_statusline(a:display_path, a:label)
+  setlocal readonly nomodifiable noswapfile
+endfunction
+
+function! s:diff_show_action(bufnr, cell_id, payload) abort
+  if type(a:payload) != type({})
+    return 0
+  endif
+  if !s:session_supports_local_filesystem_actions(jusi#session#state(a:bufnr))
+    return s:reject_local_filesystem_action(a:bufnr, 'diff_show')
+  endif
+
+  let l:before_path = get(a:payload, 'before_path', '')
+  let l:after_path = get(a:payload, 'after_path', '')
+  if !s:is_absolute_local_path(l:before_path) || !s:is_absolute_local_path(l:after_path)
+    call s:reject_action(a:bufnr, {'last_action': 'handler_message'}, 'diff_show requires absolute local artifact paths')
+    return 0
+  endif
+  if !filereadable(l:before_path) || !filereadable(l:after_path)
+    call s:reject_action(a:bufnr, {'last_action': 'handler_message'}, 'diff_show artifact file is not readable')
+    return 0
+  endif
+
+  let l:open_in = tolower(type(get(a:payload, 'open_in', 'split')) == type('') ? get(a:payload, 'open_in', 'split') : 'split')
+  let l:layout = tolower(type(get(a:payload, 'layout', 'below')) == type('') ? get(a:payload, 'layout', 'below') : 'below')
+  if l:open_in !=# 'split' && l:open_in !=# 'hsplit'
+    return 0
+  endif
+
+  let l:cell = jusi#notebook#cell_by_id(a:bufnr, a:cell_id)
+  let l:client_bufnr = get(l:cell, 'client_bufnr', -1)
+  if l:client_bufnr > 0 && bufwinid(l:client_bufnr) > 0
+    call win_gotoid(bufwinid(l:client_bufnr))
+  endif
+
+  let l:display_path = get(a:payload, 'path', '')
+  let l:split_cmd = l:layout ==# 'above' ? 'aboveleft split' : 'belowright split'
+  execute 'keepalt ' . l:split_cmd . ' ' . fnameescape(l:before_path)
+  let l:before_bufnr = bufnr('%')
+  call s:setup_diff_show_buffer(l:display_path, 'before')
+  diffthis
+
+  execute 'keepalt vertical belowright split ' . fnameescape(l:after_path)
+  let l:after_bufnr = bufnr('%')
+  call s:setup_diff_show_buffer(l:display_path, 'after')
+  diffthis
+
+  call setbufvar(l:before_bufnr, 'jusi_diff_peer_bufnr', l:after_bufnr)
+  call setbufvar(l:after_bufnr, 'jusi_diff_peer_bufnr', l:before_bufnr)
+  return 1
+endfunction
+
 function! s:setup_edit_path_buffer(bufnr) abort
   let l:bufnr = str2nr(a:bufnr)
   if l:bufnr <= 0 || !bufexists(l:bufnr)
@@ -1560,6 +1648,15 @@ function! s:handle_handler_action_request(bufnr, cell_id, client_id, handler_id,
           \ 'payload': l:action_payload,
           \ })
     return s:edit_path_action(a:bufnr, a:cell_id, a:client_id, a:handler_id, l:action_payload)
+  endif
+  if l:action_type ==# 'diff_show'
+    call s:debug_log(a:bufnr, 'handler-action-diff-show', {
+          \ 'cell_id': a:cell_id,
+          \ 'client_id': a:client_id,
+          \ 'handler_id': a:handler_id,
+          \ 'payload': l:action_payload,
+          \ })
+    return s:diff_show_action(a:bufnr, a:cell_id, l:action_payload)
   endif
   if l:action_type ==# 'yank_text'
     call s:debug_log(a:bufnr, 'handler-action-yank-text', {
@@ -2817,6 +2914,13 @@ function! jusi#session#restart() abort
   if empty(l:kernel_name)
     return s:fail_session(l:bufnr, {'last_action': 'restart'}, 'Cannot restart without a tracked kernel name')
   endif
+  let l:config_result = s:load_session_config_result()
+  if !get(l:config_result, 'ok', 0)
+    return s:reject_action(l:bufnr, {'last_action': 'restart'}, get(l:config_result, 'error', 'Failed to load Jusi config'))
+  endif
+  let l:target = jusi#config#refresh_target_config(
+        \ l:target,
+        \ get(l:config_result, 'config', {}))
 
   if l:state ==# 'connected'
     call s:update_session(l:bufnr, {

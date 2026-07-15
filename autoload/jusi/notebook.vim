@@ -570,12 +570,13 @@ endfunction
 
 function! s:parse_cell_at(lines, cell) abort
   let l:type_info = s:derive_cell_type(a:lines, a:cell.start, a:cell.end)
-  return s:make_parsed_cell(
+  let l:cell = s:make_parsed_cell(
         \ a:cell.start,
         \ a:cell.end,
         \ l:type_info.kind,
         \ l:type_info.magic,
         \ s:cell_signature(a:lines, a:cell.start, a:cell.end))
+  return s:decorate_parsed_cell(a:lines, l:cell)
 endfunction
 
 function! s:lines_have_delimiter(lines) abort

@@ -202,11 +202,12 @@ function! s:find_plain_code_cell(bufnr) abort
 endfunction
 
 function! s:find_cell_by_header_prefix(bufnr, header) abort
+  let l:pattern = '^' . escape(a:header, '\.^$~[]*') . '\%(\s\|$\)'
   for l:cell in jusi#notebook#cells(a:bufnr)
     if get(l:cell, 'kind', '') !=# 'magic'
       continue
     endif
-    if s:cell_header(l:cell, a:bufnr) =~# '^' . escape(a:header, '\.^$~[]*')
+    if s:cell_header(l:cell, a:bufnr) =~# l:pattern
       return l:cell
     endif
   endfor
@@ -264,15 +265,6 @@ function! s:update_palette_cell(cell, kind, header, body_lines, replace_body) ab
   return jusi#notebook#cell_at_line(bufnr('%'), a:cell.start)
 endfunction
 
-function! s:current_window_for_buffer(bufnr) abort
-  for l:win in getwininfo()
-    if get(l:win, 'bufnr', 0) == a:bufnr
-      return get(l:win, 'winid', 0)
-    endif
-  endfor
-  return 0
-endfunction
-
 function! s:current_tab_window_for_buffer(bufnr) abort
   for l:win in getwininfo()
     if get(l:win, 'bufnr', 0) == a:bufnr
@@ -283,25 +275,16 @@ function! s:current_tab_window_for_buffer(bufnr) abort
   return 0
 endfunction
 
-function! s:show_target_notebook(bufnr, execute_now) abort
+function! s:show_target_notebook(bufnr) abort
   if a:bufnr == bufnr('%')
     return 1
   endif
-  if a:execute_now
-    let l:winid = s:current_tab_window_for_buffer(a:bufnr)
-    if l:winid > 0
-      call win_gotoid(l:winid)
-      return 1
-    endif
-    execute 'vertical sbuffer ' . a:bufnr
-    return 1
-  endif
-  let l:winid = s:current_window_for_buffer(a:bufnr)
+  let l:winid = s:current_tab_window_for_buffer(a:bufnr)
   if l:winid > 0
     call win_gotoid(l:winid)
     return 1
   endif
-  execute 'buffer ' . a:bufnr
+  execute 'vertical sbuffer ' . a:bufnr
   return 1
 endfunction
 
@@ -389,7 +372,7 @@ function! jusi#palette#command(bang, line1, line2, qargs) abort
     let l:replace_body = !empty(l:body_lines)
   endif
 
-  call s:show_target_notebook(l:target_bufnr, a:bang)
+  call s:show_target_notebook(l:target_bufnr)
   if l:resolved.plain
     let l:kind = 'code'
     let l:header = ''
