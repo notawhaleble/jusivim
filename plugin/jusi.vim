@@ -33,6 +33,18 @@ if !exists('g:jusi_transport_timeout_ms')
   let g:jusi_transport_timeout_ms = 5000
 endif
 
+if !exists('g:jusi_log_level')
+  let g:jusi_log_level = 'off'
+endif
+
+if !exists('g:jusi_log_file')
+  let g:jusi_log_file = '~/.jusi/jusivim.log'
+endif
+
+if !exists('g:jusi_log_max_bytes')
+  let g:jusi_log_max_bytes = 1048576
+endif
+
 if !exists('g:jusi_client_layout')
   let g:jusi_client_layout = 'bsplit'
 endif
@@ -111,6 +123,10 @@ command! -nargs=? JusiDisconnect call jusi#session#disconnect(<q-args>)
 command! JusiReconnect call jusi#session#reconnect()
 command! JusiRestartKernel call jusi#session#restart()
 command! JusiStopKernel call jusi#session#stop()
+command! -nargs=? -complete=customlist,jusi#log#complete_levels JusiLogEnable call jusi#log#enable(<q-args>)
+command! JusiLogDisable call jusi#log#disable()
+command! JusiLogOpen call jusi#log#open()
+command! JusiLogPath echo jusi#log#path()
 command! JusiCellModeEnable call jusi#cellmode#enable()
 command! JusiCellModeDisable call jusi#cellmode#disable()
 command! JusiCellModeToggle call jusi#cellmode#toggle()

@@ -42,6 +42,34 @@ function! s:debug_log(bufnr, message, ...) abort
   call writefile([join(l:parts, ' | ')], l:path, 'a')
 endfunction
 
+function! s:session_log_summary(session) abort
+  let l:target = get(a:session, 'target', {})
+  return {
+        \ 'state': get(a:session, 'state', 'idle'),
+        \ 'session_id': get(a:session, 'id', ''),
+        \ 'backend': get(a:session, 'backend', ''),
+        \ 'kernel_name': get(a:session, 'kernel_name', ''),
+        \ 'target_source': get(l:target, 'source', ''),
+        \ 'target_kind': get(l:target, 'kind', ''),
+        \ 'last_action': get(a:session, 'last_action', ''),
+        \ 'last_error_code': get(a:session, 'last_error_code', ''),
+        \ 'last_error': get(a:session, 'last_error', ''),
+        \ 'expires_at': get(a:session, 'expires_at', ''),
+        \ }
+endfunction
+
+function! s:cell_log_summary(cell_id, update) abort
+  return {
+        \ 'cell_id': a:cell_id,
+        \ 'status': get(a:update, 'status', ''),
+        \ 'client_id': get(a:update, 'client_id', ''),
+        \ 'client_state': get(a:update, 'client_state', ''),
+        \ 'owner_kind': get(get(a:update, 'owner', {}), 'kind', ''),
+        \ 'handler_id': get(get(a:update, 'handler', {}), 'id', ''),
+        \ 'source_session_id': get(a:update, '_source_session_id', ''),
+        \ }
+endfunction
+
 function! s:terminal_debug_log_enabled() abort
   return type(get(g:, 'jusi_terminal_debug_log', 0)) == type('')
         \ && !empty(get(g:, 'jusi_terminal_debug_log', ''))
@@ -120,13 +148,25 @@ function! s:update_session(bufnr, update) abort
   if empty(l:state)
     return {}
   endif
-  call s:debug_log(a:bufnr, 'update-session-begin', a:update, get(l:state, 'session', {}))
+  let l:previous_session = copy(get(l:state, 'session', {}))
+  call s:debug_log(a:bufnr, 'update-session-begin', a:update, l:previous_session)
   let l:state.session = s:copy_update(l:state.session, a:update)
   call s:update_state(a:bufnr, l:state)
   if s:session_update_affects_statusline(a:update)
     call s:refresh_statuslines()
   endif
   call s:debug_log(a:bufnr, 'update-session-end', get(l:state, 'session', {}))
+  let l:previous_state = get(l:previous_session, 'state', 'idle')
+  let l:next_state = get(l:state.session, 'state', 'idle')
+  if l:previous_state !=# l:next_state
+    let l:level = l:next_state ==# 'failed' ? 'error'
+          \ : (l:next_state ==# 'disconnected' ? 'warn' : 'info')
+    call jusi#log#write(l:level, 'session', 'state_changed', {
+          \ 'from': l:previous_state,
+          \ 'to': l:next_state,
+          \ 'session': s:session_log_summary(l:state.session),
+          \ }, a:bufnr)
+  endif
   return l:state
 endfunction
 
@@ -571,6 +611,12 @@ function! s:ignore_session_callback(current_session, update) abort
 endfunction
 
 function! s:fail_session(bufnr, update, message) abort
+  call jusi#log#write('error', 'session', 'action_failed', {
+        \ 'action': get(a:update, 'last_action', ''),
+        \ 'error_code': get(a:update, 'last_error_code', ''),
+        \ 'message': a:message,
+        \ 'session': s:session_log_summary(jusi#session#state(a:bufnr)),
+        \ }, a:bufnr)
   let l:state = s:update_session(a:bufnr, extend(copy(a:update), {
         \ 'state': 'failed',
         \ 'last_error': a:message,
@@ -602,6 +648,12 @@ function! s:transport_message(response, fallback) abort
 endfunction
 
 function! s:reject_transport_failure(bufnr, update, response, fallback) abort
+  call jusi#log#write('warn', 'transport', 'action_unreachable', {
+        \ 'action': get(a:update, 'last_action', ''),
+        \ 'error_code': get(a:response, 'error_code', ''),
+        \ 'message': get(a:response, 'error', a:fallback),
+        \ 'session': s:session_log_summary(jusi#session#state(a:bufnr)),
+        \ }, a:bufnr)
   let l:update = extend(copy(a:update), {
         \ 'last_error_code': get(a:response, 'error_code', ''),
         \ })
@@ -1126,6 +1178,15 @@ endfunction
 function! jusi#session#callback_session(update, ...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
   let l:session = jusi#session#state(l:bufnr)
+  call jusi#log#write(
+        \ get(a:update, 'state', '') ==# 'disconnected' ? 'warn' : 'debug',
+        \ 'session',
+        \ 'backend_update',
+        \ {
+        \   'current': s:session_log_summary(l:session),
+        \   'update': s:session_log_summary(a:update),
+        \ },
+        \ l:bufnr)
   if s:ignore_session_callback(l:session, a:update)
     call s:debug_log(l:bufnr, 'callback-session-ignored-inactive', a:update, l:session)
     return jusi#notebook#state(l:bufnr)
@@ -1158,6 +1219,8 @@ function! jusi#session#callback_cell(cell_id, update, ...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
   let l:update = s:apply_presentation_update(a:update)
   let l:session = jusi#session#state(l:bufnr)
+  call jusi#log#write('debug', 'cell', 'backend_update',
+        \ s:cell_log_summary(a:cell_id, l:update), l:bufnr)
   call s:debug_log(l:bufnr, 'callback-cell-begin', a:cell_id, l:update, l:session)
   if !s:accept_runtime_callbacks(l:session)
     call s:debug_log(l:bufnr, 'callback-cell-ignored-inactive', a:cell_id, l:update, l:session)
@@ -1256,6 +1319,11 @@ function! jusi#session#callback_healthcheck(payload, ...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
   let l:payload = type(a:payload) == type({}) ? a:payload : {}
   let l:session = jusi#session#state(l:bufnr)
+  call jusi#log#write('debug', 'session', 'healthcheck_received', {
+        \ 'session_id': get(l:payload, 'session_id', ''),
+        \ 'healthcheck_id': get(l:payload, 'healthcheck_id', ''),
+        \ 'state': get(l:session, 'state', 'idle'),
+        \ }, l:bufnr)
   call s:debug_log(l:bufnr, 'callback-healthcheck', l:payload, l:session)
 
   if get(l:session, 'state', 'idle') !=# 'connected'
@@ -1275,6 +1343,13 @@ function! jusi#session#callback_healthcheck(payload, ...) abort
         \ 'session_id': get(l:payload, 'session_id', ''),
         \ 'healthcheck_id': get(l:payload, 'healthcheck_id', ''),
         \ })
+  call jusi#log#write(get(l:response, 'ok', 0) ? 'debug' : 'warn',
+        \ 'session', 'healthcheck_reply', {
+        \   'healthcheck_id': get(l:payload, 'healthcheck_id', ''),
+        \   'ok': get(l:response, 'ok', 0),
+        \   'error_code': get(l:response, 'error_code', ''),
+        \   'error': get(l:response, 'error', ''),
+        \ }, l:bufnr)
   call s:debug_log(l:bufnr, 'callback-healthcheck-reply', l:response)
   return l:session
 endfunction
@@ -1326,6 +1401,12 @@ function! jusi#session#callback_handler_message(payload, ...) abort
   let l:bufnr = s:normalize_bufnr(a:0 >= 1 ? a:1 : bufnr('%'))
   let l:payload = type(a:payload) == type({}) ? a:payload : {}
   let l:session = jusi#session#state(l:bufnr)
+  call jusi#log#write('debug', 'handler', 'message_received', {
+        \ 'session_id': get(l:payload, 'session_id', ''),
+        \ 'client_id': get(l:payload, 'client_id', ''),
+        \ 'handler_id': get(l:payload, 'handler_id', ''),
+        \ 'message_type': get(l:payload, 'message_type', ''),
+        \ }, l:bufnr)
   call s:debug_log(l:bufnr, 'callback-handler-message', l:payload, l:session)
 
   if get(l:session, 'state', 'idle') !=# 'connected'
@@ -1625,6 +1706,101 @@ function! s:yank_text_action(payload) abort
   return 1
 endfunction
 
+function! s:web_buffer_command_available() abort
+  return exists(':JusiWebBuffer') == 2
+endfunction
+
+function! s:web_buffer_command_arg(url) abort
+  return escape(a:url, ' \|"')
+endfunction
+
+function! s:goto_cell_client_window(bufnr, cell_id, layout) abort
+  let l:cell = jusi#notebook#cell_by_id(a:cell_id, a:bufnr)
+  let l:client_bufnr = get(l:cell, 'client_bufnr', -1)
+  if l:client_bufnr <= 0
+    return 0
+  endif
+
+  let l:wininfo = filter(copy(getwininfo()), {_, v -> get(v, 'bufnr', 0) == l:client_bufnr})
+  if !empty(l:wininfo)
+    let l:info = l:wininfo[0]
+    execute 'tabnext ' . l:info.tabnr
+    execute l:info.winnr . 'wincmd w'
+    return 1
+  endif
+
+  if jusi#buffer#is_valid_bufnr(l:client_bufnr)
+    call jusi#focus#place_client_buffer(l:client_bufnr, a:layout, 0)
+    return bufnr('%') == l:client_bufnr
+  endif
+  return 0
+endfunction
+
+function! s:cell_client_bufnr(bufnr, cell_id) abort
+  let l:cell = jusi#notebook#cell_by_id(a:cell_id, a:bufnr)
+  return get(l:cell, 'client_bufnr', -1)
+endfunction
+
+function! s:prepare_web_buffer_metadata(notebook_bufnr, cell_id, client_id, origin_bufnr, url) abort
+  return jusi#client#mark_web_buffer(
+        \ a:notebook_bufnr,
+        \ a:cell_id,
+        \ a:client_id,
+        \ bufnr('%'),
+        \ a:origin_bufnr,
+        \ a:url)
+endfunction
+
+function! s:open_url_action(bufnr, cell_id, client_id, payload) abort
+  if type(a:payload) != type({})
+    return 0
+  endif
+  let l:url = get(a:payload, 'url', get(a:payload, 'href', get(a:payload, 'link', '')))
+  if type(l:url) != type('') || empty(l:url)
+    return 0
+  endif
+  if !s:web_buffer_command_available()
+    call s:reject_action(a:bufnr, {'last_action': 'handler_message'}, 'JusiWebBuffer is not available in this editor')
+    return 0
+  endif
+
+  let l:open_in = tolower(type(get(a:payload, 'open_in', 'client')) == type('') ? get(a:payload, 'open_in', 'client') : 'client')
+  let l:layout = type(get(a:payload, 'layout', '')) == type('') && !empty(get(a:payload, 'layout', ''))
+        \ ? get(a:payload, 'layout', '')
+        \ : get(g:, 'jusi_client_layout', 'bsplit')
+
+  let l:origin_bufnr = s:cell_client_bufnr(a:bufnr, a:cell_id)
+  if l:open_in ==# 'tab' || l:open_in ==# 'tabedit'
+    tabnew
+  elseif l:open_in ==# 'client' || l:open_in ==# 'current' || l:open_in ==# 'same_window'
+    if l:open_in ==# 'client'
+      call s:goto_cell_client_window(a:bufnr, a:cell_id, l:layout)
+    endif
+    if l:open_in ==# 'current' && getbufvar(bufnr('%'), 'jusi_client_role', '') ==# 'cell'
+      let l:origin_bufnr = bufnr('%')
+    endif
+    let l:hidden_bufnr = bufnr('%')
+    let l:hidden_blocked = jusi#buffer#is_valid_bufnr(l:hidden_bufnr)
+          \ ? getbufvar(l:hidden_bufnr, 'jusi_client_editor_close_blocked', 0)
+          \ : 0
+    if jusi#buffer#is_valid_bufnr(l:hidden_bufnr)
+          \ && getbufvar(l:hidden_bufnr, 'jusi_client_notebook_bufnr', 0) > 0
+      call setbufvar(l:hidden_bufnr, 'jusi_client_editor_close_blocked', 1)
+    endif
+    enew
+    if jusi#buffer#is_valid_bufnr(l:hidden_bufnr)
+      call setbufvar(l:hidden_bufnr, 'jusi_client_editor_close_blocked', l:hidden_blocked)
+    endif
+  else
+    return 0
+  endif
+
+  let l:web_bufnr = s:prepare_web_buffer_metadata(a:bufnr, a:cell_id, a:client_id, l:origin_bufnr, l:url)
+  execute 'JusiWebBuffer ' . s:web_buffer_command_arg(l:url)
+  call jusi#focus#refresh_client_window(l:web_bufnr)
+  return l:web_bufnr
+endfunction
+
 function! s:handle_handler_action_request(bufnr, cell_id, client_id, handler_id, payload) abort
   if type(a:payload) != type({})
     return 0
@@ -1666,6 +1842,16 @@ function! s:handle_handler_action_request(bufnr, cell_id, client_id, handler_id,
           \ 'payload': l:action_payload,
           \ })
     return s:yank_text_action(l:action_payload)
+  endif
+  if l:action_type ==# 'open_url' || l:action_type ==# 'open_link'
+    call s:debug_log(a:bufnr, 'handler-action-open-url', {
+          \ 'cell_id': a:cell_id,
+          \ 'client_id': a:client_id,
+          \ 'handler_id': a:handler_id,
+          \ 'action_type': l:action_type,
+          \ 'payload': l:action_payload,
+          \ })
+    return s:open_url_action(a:bufnr, a:cell_id, a:client_id, l:action_payload)
   endif
   call s:debug_log(a:bufnr, 'handler-action-ignored', {
         \ 'cell_id': a:cell_id,
@@ -2426,6 +2612,14 @@ function! jusi#session#execute_current() abort
   if empty(l:cell)
     return s:fail_session(l:bufnr, {'last_action': 'execute'}, 'Cannot execute without an active cell')
   endif
+  call jusi#log#write('debug', 'cell', 'execute_requested', {
+        \ 'cell_id': get(l:cell, 'id', 0),
+        \ 'kind': get(l:cell, 'kind', ''),
+        \ 'magic': get(l:cell, 'magic', ''),
+        \ 'status': get(l:cell, 'status', ''),
+        \ 'client_id': get(l:cell, 'client_id', ''),
+        \ 'owner_kind': get(get(l:cell, 'owner', {}), 'kind', ''),
+        \ }, l:bufnr)
   if get(l:cell, 'status', '') ==# 'follow-up'
         \ && get(get(l:cell, 'owner', {}), 'kind', '') ==# 'handler'
     return jusi#session#send_handler_followup_current()
@@ -2602,6 +2796,18 @@ endfunction
 
 function! jusi#session#close_current_client() abort
   let l:bufnr = s:normalize_bufnr(bufnr('%'))
+  if jusi#client#is_web_buffer(l:bufnr)
+    return jusi#client#close_web_buffer(l:bufnr)
+  endif
+  if getbufvar(l:bufnr, 'jusi_client_role', '') ==# 'cell'
+    let l:notebook_bufnr = getbufvar(l:bufnr, 'jusi_client_notebook_bufnr', 0)
+    let l:cell_id = getbufvar(l:bufnr, 'jusi_client_cell_id', 0)
+    if l:notebook_bufnr > 0 && l:cell_id > 0
+      return s:close_cell_client(
+            \ l:notebook_bufnr,
+            \ jusi#notebook#cell_by_id(l:cell_id, l:notebook_bufnr))
+    endif
+  endif
   if !s:require_notebook_buffer(l:bufnr, 'close client')
     return {}
   endif
@@ -2673,10 +2879,16 @@ function! s:close_cell_client(bufnr, cell) abort
   if get(l:response, 'ok', 0)
     if s:use_async_transport_shutdown(a:bufnr) || get(l:response, '_transport', 0)
       if l:client_bufnr > 0
-        call jusi#client#detach_buffer(l:client_bufnr)
+        if jusi#client#is_native_terminal_buffer(l:client_bufnr)
+          call jusi#client#destroy_buffer(l:client_bufnr)
+        else
+          call jusi#client#detach_buffer(l:client_bufnr)
+        endif
       endif
       let l:update = s:cell_close_final_update(l:cell)
-      let l:update._preserve_local_buffer = l:client_bufnr > 0 ? 1 : 0
+      if l:client_bufnr > 0 && !jusi#client#is_native_terminal_buffer(l:client_bufnr)
+        let l:update._preserve_local_buffer = 1
+      endif
       return s:update_cell(a:bufnr, l:cell.id, l:update)
     endif
     if has_key(l:response, 'cell')
@@ -2814,6 +3026,10 @@ function! jusi#session#disconnect(...) abort
   endif
 
   let l:reason = a:0 >= 1 && !empty(a:1) ? a:1 : 'user_requested'
+  call jusi#log#write('info', 'session', 'disconnect_requested', {
+        \ 'reason': l:reason,
+        \ 'session': s:session_log_summary(l:session),
+        \ }, l:bufnr)
   call s:update_session(l:bufnr, {
         \ 'last_action': 'disconnect',
         \ 'expires_at': '',
@@ -2857,6 +3073,10 @@ function! jusi#session#reconnect() abort
     return s:fail_session(l:bufnr, {'last_action': 'reconnect'}, 'Can only reconnect a disconnected session')
   endif
 
+  call jusi#log#write('info', 'session', 'reconnect_requested', {
+        \ 'session': s:session_log_summary(l:session),
+        \ }, l:bufnr)
+
   call s:update_session(l:bufnr, {
         \ 'state': 'starting',
         \ 'expires_at': '',
@@ -2867,6 +3087,12 @@ function! jusi#session#reconnect() abort
         \ })
   let l:request_session = copy(jusi#session#state(l:bufnr))
   let l:response = jusi#adapter#call('reconnect', l:bufnr, {'session': l:request_session})
+  call jusi#log#write(get(l:response, 'ok', 0) ? 'info' : 'warn',
+        \ 'session', 'reconnect_response', {
+        \   'ok': get(l:response, 'ok', 0),
+        \   'error_code': get(l:response, 'error_code', ''),
+        \   'error': get(l:response, 'error', ''),
+        \ }, l:bufnr)
   call s:debug_log(l:bufnr, 'reconnect-response', l:response)
   if get(l:response, 'ok', 0)
     if get(l:response, '_transport', 0) && !s:response_has_state_updates(l:response)

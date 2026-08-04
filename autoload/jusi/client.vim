@@ -138,6 +138,61 @@ function! s:resize_native_terminal_buffer(bufnr, width, height) abort
   return 0
 endfunction
 
+function! s:notify_native_terminal_geometry(bufnr, width, height) abort
+  if a:bufnr <= 0 || a:width <= 0 || a:height <= 0
+    return 0
+  endif
+  let l:geometry = {'rows': a:height, 'cols': a:width}
+  if getbufvar(a:bufnr, 'jusi_client_terminal_geometry', {}) ==# l:geometry
+    return 0
+  endif
+
+  let l:notebook_bufnr = getbufvar(a:bufnr, 'jusi_client_notebook_bufnr', 0)
+  let l:cell_id = getbufvar(a:bufnr, 'jusi_client_cell_id', 0)
+  let l:client_id = getbufvar(a:bufnr, 'jusi_client_id', '')
+  if l:notebook_bufnr <= 0 || !bufexists(l:notebook_bufnr)
+        \ || l:cell_id <= 0 || empty(l:client_id)
+    return 0
+  endif
+
+  let l:cell = jusi#notebook#cell_by_id(l:cell_id, l:notebook_bufnr)
+  if empty(l:cell)
+        \ || get(get(l:cell, 'owner', {}), 'kind', '') !=# 'handler'
+        \ || get(l:cell, 'client_id', '') !=# l:client_id
+    return 0
+  endif
+  let l:handler_id = get(get(l:cell, 'handler', {}), 'id', '')
+  if empty(l:handler_id)
+    let l:handler_id = getbufvar(a:bufnr, 'jusi_handler_id', '')
+  endif
+  if empty(l:handler_id)
+    return 0
+  endif
+
+  let l:session = jusi#session#state(l:notebook_bufnr)
+  if get(l:session, 'state', 'idle') !=# 'connected'
+        \ || getbufvar(a:bufnr, 'jusi_client_session_id', '') !=# get(l:session, 'id', '')
+    return 0
+  endif
+  let l:response = jusi#session#send_handler_message(
+        \ l:client_id,
+        \ l:handler_id,
+        \ 'terminal_resize',
+        \ l:geometry,
+        \ l:notebook_bufnr)
+  if !get(l:response, 'ok', 0)
+    return 0
+  endif
+  call setbufvar(a:bufnr, 'jusi_client_terminal_geometry', l:geometry)
+  call s:client_debug('native-terminal-geometry-notified', {
+        \ 'bufnr': a:bufnr,
+        \ 'client_id': l:client_id,
+        \ 'handler_id': l:handler_id,
+        \ 'geometry': l:geometry,
+        \ })
+  return 1
+endfunction
+
 function! jusi#client#resize_visible_native_terminals() abort
   let l:resized = 0
   for l:info in getwininfo()
@@ -146,10 +201,15 @@ function! jusi#client#resize_visible_native_terminals() abort
       continue
     endif
     let l:geometry = s:terminal_window_geometry(l:info)
-    let l:resized += s:resize_native_terminal_buffer(
+    let l:local_resized = s:resize_native_terminal_buffer(
           \ l:bufnr,
           \ get(l:geometry, 'width', 0),
           \ get(l:geometry, 'height', 0))
+    let l:notified = s:notify_native_terminal_geometry(
+          \ l:bufnr,
+          \ get(l:geometry, 'width', 0),
+          \ get(l:geometry, 'height', 0))
+    let l:resized += l:local_resized || l:notified
   endfor
   return l:resized
 endfunction
@@ -642,6 +702,16 @@ function! jusi#client#mark_attached_buffer(notebook_bufnr, cell_id, client_id, b
   return a:bufnr
 endfunction
 
+function! jusi#client#mark_web_buffer(notebook_bufnr, cell_id, client_id, bufnr, origin_bufnr, url) abort
+  call s:set_managed_vars(a:bufnr, a:notebook_bufnr, a:client_id, 'web', a:cell_id)
+  call setbufvar(a:bufnr, 'jusi_client_origin_bufnr', a:origin_bufnr)
+  call setbufvar(a:bufnr, 'jusi_client_web_url', a:url)
+  if jusi#buffer#is_valid_bufnr(a:origin_bufnr)
+    call setbufvar(a:origin_bufnr, 'jusi_client_web_bufnr', a:bufnr)
+  endif
+  return a:bufnr
+endfunction
+
 function! jusi#client#record_handler_message(bufnr, handler_id, message_type, payload) abort
   if !jusi#buffer#is_valid_bufnr(a:bufnr)
     return 0
@@ -691,6 +761,69 @@ endfunction
 function! jusi#client#is_native_terminal_buffer(bufnr) abort
   return jusi#buffer#is_valid_bufnr(a:bufnr)
         \ && jusi#client#transport_kind(a:bufnr) ==# 'native_terminal'
+endfunction
+
+function! jusi#client#is_web_buffer(bufnr) abort
+  return jusi#buffer#is_valid_bufnr(a:bufnr)
+        \ && getbufvar(a:bufnr, 'jusi_client_role', '') ==# 'web'
+endfunction
+
+function! s:web_origin_bufnr(bufnr) abort
+  let l:origin = getbufvar(a:bufnr, 'jusi_client_origin_bufnr', 0)
+  if jusi#buffer#is_valid_bufnr(l:origin)
+    return l:origin
+  endif
+  let l:notebook = getbufvar(a:bufnr, 'jusi_client_notebook_bufnr', 0)
+  let l:cell_id = getbufvar(a:bufnr, 'jusi_client_cell_id', 0)
+  if l:notebook <= 0 || !bufexists(l:notebook) || l:cell_id <= 0
+    return 0
+  endif
+  let l:cell = jusi#notebook#cell_by_id(l:cell_id, l:notebook)
+  return get(l:cell, 'client_bufnr', 0)
+endfunction
+
+function! s:show_buffer_in_current_window(bufnr, ...) abort
+  if !jusi#buffer#is_valid_bufnr(a:bufnr)
+    return 0
+  endif
+  let l:preserve_current = a:0 >= 1 ? a:1 : 0
+  let l:current = bufnr('%')
+  let l:blocked = jusi#buffer#is_valid_bufnr(l:current)
+        \ ? getbufvar(l:current, 'jusi_client_editor_close_blocked', 0)
+        \ : 0
+  if l:preserve_current && l:current != a:bufnr && jusi#buffer#is_valid_bufnr(l:current)
+    call setbufvar(l:current, 'jusi_client_editor_close_blocked', 1)
+  endif
+  execute 'keepalt buffer ' . a:bufnr
+  if l:preserve_current && l:current != a:bufnr && jusi#buffer#is_valid_bufnr(l:current)
+    call setbufvar(l:current, 'jusi_client_editor_close_blocked', l:blocked)
+  endif
+  call jusi#focus#refresh_client_window(a:bufnr)
+  return a:bufnr
+endfunction
+
+function! jusi#client#close_web_buffer(...) abort
+  let l:web_bufnr = a:0 >= 1 ? str2nr(a:1) : bufnr('%')
+  if !jusi#client#is_web_buffer(l:web_bufnr)
+    return 0
+  endif
+
+  let l:origin = s:web_origin_bufnr(l:web_bufnr)
+  let l:current_winid = exists('*win_getid') ? win_getid() : 0
+  let l:shown = 0
+  if bufnr('%') == l:web_bufnr && jusi#buffer#is_valid_bufnr(l:origin)
+    let l:shown = s:show_buffer_in_current_window(l:origin, 1)
+  endif
+
+  if jusi#buffer#is_valid_bufnr(l:origin)
+    call setbufvar(l:origin, 'jusi_client_web_bufnr', 0)
+  endif
+  call s:suppress_editor_close(l:web_bufnr)
+  execute 'silent! bwipeout! ' . l:web_bufnr
+  if !l:shown && l:current_winid > 0
+    call win_gotoid(l:current_winid)
+  endif
+  return jusi#buffer#is_valid_bufnr(l:origin) ? l:origin : 1
 endfunction
 
 function! jusi#client#apply_handler_terminal_message(bufnr, message_type, payload) abort

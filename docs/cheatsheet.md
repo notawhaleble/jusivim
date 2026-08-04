@@ -102,6 +102,20 @@ Completion behavior:
 | `:JusiStopKernel` | Stop current session |
 | `:JusiInterruptKernel` | Interrupt the busy cell |
 
+## Usage Logging
+
+| Command | Action |
+| --- | --- |
+| `:JusiLogEnable [level]` | Enable the bounded user log; defaults to `debug` |
+| `:JusiLogDisable` | Disable user logging |
+| `:JusiLogOpen` | Open the current log file |
+| `:JusiLogPath` | Show the current log path |
+
+Levels are `error`, `warn`, `info`, and `debug`. The default path is
+`~/.jusi/jusivim.log`; set `g:jusi_log_file` to override it. The active log
+rotates to `.1` at 1 MiB by default. Sensitive credentials and executable cell
+content are not written to this log.
+
 ## Execution And Completion Commands
 
 | Command | Action |
@@ -139,6 +153,8 @@ Completion behavior:
 | `:JusiCloseClient` | Close the current cell's attached client |
 | `:JusiTogglePark` | Park/unpark a client |
 | `:JusiToggleFocus` | Toggle focus between notebook and client; from an unrelated buffer, jump to the first known notebook |
+
+Client buffers also map `Q` to close the current client or web view. Closing a web view returns the window to the regular client buffer.
 
 ## Palette Command
 

@@ -38,7 +38,7 @@ package "Backend Side" {
 [Frontend Notebook Model] --> [Frontend Session Layer] : current cell / runtime state
 [Frontend Session Layer] --> [Frontend Transport / Adapter] : requests / event handling
 [Frontend Session Layer] --> [Frontend Client Buffer Layer] : attach / refresh / detach
-[Frontend Session Layer] --> [Frontend Focus / Window Layer] : place / jump / open_path
+[Frontend Session Layer] --> [Frontend Focus / Window Layer] : place / jump / open_path / open_url
 
 [Frontend Transport / Adapter] <--> [Jusi Backend Root] : Jusivim protocol\nrequest/response/events
 [Jusi Backend Root] <--> [Jupyter Kernel] : kernel execution / magics
@@ -239,7 +239,7 @@ end note
 - Frontend Focus / Window Layer
   - Places client buffers.
   - Switches notebook <-> client focus.
-  - Handles built-in editor actions like `open_path`.
+  - Handles built-in editor actions like `open_path` and `open_url`.
 
 - Native Terminal Buffer
   - A real Vim/Neovim terminal buffer created from backend-provided `attach_cmd` and `attach_env`.

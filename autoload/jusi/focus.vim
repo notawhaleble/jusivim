@@ -8,6 +8,7 @@ function! s:apply_client_window_options() abort
   call jusi#statusline#setup_client()
   nnoremap <silent> <buffer> <C-\><C-\> :JusiToggleFocus<CR>
   inoremap <silent> <buffer> <C-\><C-\> <C-R>=jusi#focus#toggle()<CR>
+  nnoremap <silent> <buffer> Q :JusiCloseClient<CR>
   if exists(':tnoremap')
     tnoremap <silent> <buffer> <C-\><C-\> <C-\><C-n>:call jusi#focus#toggle_from_terminal()<CR>
   endif

@@ -232,9 +232,7 @@ function! Test_integration_stop_cleans_hidden_detached_client_after_transport_cl
     let s:integration_last_request_envelope = {}
     call jusi#session#close_current_client()
 
-    call assert_true(bufexists(l:client))
-    call assert_equal('detached', getbufvar(l:client, 'jusi_client_role', ''))
-    call assert_equal(0, getbufvar(l:client, 'jusi_client_cell_id', -1))
+    call assert_false(bufexists(l:client))
     call assert_equal(-1, bufwinid(l:client))
     call assert_equal('shutdown_client', get(s:integration_last_request_envelope, 'type', ''))
     call assert_equal(-1, b:jusi_nb.cells[0].client_bufnr)
@@ -417,8 +415,7 @@ function! Test_integration_cleanup_destroys_hidden_detached_client_after_transpo
     let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
 
     call jusi#session#close_current_client()
-    call assert_true(bufexists(l:client))
-    call assert_equal('detached', getbufvar(l:client, 'jusi_client_role', ''))
+    call assert_false(bufexists(l:client))
 
     call jusi#notebook#cleanup(l:notebook)
 
@@ -453,8 +450,7 @@ function! Test_integration_execute_close_execute_across_cells_keeps_old_client_d
 
     call cursor(2, 1)
     call jusi#session#close_current_client()
-    call assert_true(bufexists(l:old_client))
-    call assert_equal('detached', getbufvar(l:old_client, 'jusi_client_role', ''))
+    call assert_false(bufexists(l:old_client))
 
     call cursor(4, 1)
     let g:jusi_session_adapter = {'execute': function('s:integration_session_adapter_execute')}
@@ -465,8 +461,7 @@ function! Test_integration_execute_close_execute_across_cells_keeps_old_client_d
     call assert_equal('busy', b:jusi_nb.cells[1].status)
     call assert_equal('client-int-1', b:jusi_nb.cells[1].client_id)
     call assert_true(b:jusi_nb.cells[1].client_bufnr > 0)
-    call assert_equal('detached', getbufvar(l:old_client, 'jusi_client_role', ''))
-    call assert_equal(0, getbufvar(l:old_client, 'jusi_client_cell_id', -1))
+    call assert_false(bufexists(l:old_client))
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
@@ -494,8 +489,7 @@ function! Test_integration_start_after_transport_close_clears_cell_runtime_witho
     let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
 
     call jusi#session#close_current_client()
-    call assert_true(bufexists(l:old_client))
-    call assert_equal('detached', getbufvar(l:old_client, 'jusi_client_role', ''))
+    call assert_false(bufexists(l:old_client))
 
     call jusi#session#apply({'state': 'stopped', 'id': ''})
     let g:jusi_session_adapter = {'start': function('s:integration_session_adapter_start')}
@@ -648,8 +642,7 @@ function! Test_integration_stop_in_other_notebook_does_not_destroy_detached_buff
     let b:jusi_nb.cells[0].client_bufnr = l:detached
     let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
     call jusi#session#close_current_client()
-    call assert_true(bufexists(l:detached))
-    call assert_equal('detached', getbufvar(l:detached, 'jusi_client_role', ''))
+    call assert_false(bufexists(l:detached))
 
     let l:notebook_b = s:integration_open_additional_notebook([
           \ '##',
@@ -664,9 +657,7 @@ function! Test_integration_stop_in_other_notebook_does_not_destroy_detached_buff
 
     call assert_equal(l:notebook_b, bufnr('%'))
     call assert_false(has_key(b:jusi_nb.session, 'prepared'))
-    call assert_true(bufexists(l:detached))
-    call assert_equal(l:notebook_a, getbufvar(l:detached, 'jusi_client_notebook_bufnr', -1))
-    call assert_equal('detached', getbufvar(l:detached, 'jusi_client_role', ''))
+    call assert_false(bufexists(l:detached))
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry
@@ -754,8 +745,7 @@ function! Test_integration_reconnect_in_other_notebook_does_not_touch_detached_b
     let b:jusi_nb.cells[0].client_bufnr = l:detached
     let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
     call jusi#session#close_current_client()
-    call assert_true(bufexists(l:detached))
-    call assert_equal('detached', getbufvar(l:detached, 'jusi_client_role', ''))
+    call assert_false(bufexists(l:detached))
 
     let l:notebook_b = s:integration_open_additional_notebook([
           \ '##',
@@ -771,9 +761,7 @@ function! Test_integration_reconnect_in_other_notebook_does_not_touch_detached_b
 
     call assert_equal(l:notebook_b, bufnr('%'))
     call assert_false(has_key(b:jusi_nb.session, 'prepared'))
-    call assert_true(bufexists(l:detached))
-    call assert_equal(l:notebook_a, getbufvar(l:detached, 'jusi_client_notebook_bufnr', -1))
-    call assert_equal('detached', getbufvar(l:detached, 'jusi_client_role', ''))
+    call assert_false(bufexists(l:detached))
   finally
     let g:jusi_session_adapter = l:save_adapter
   endtry

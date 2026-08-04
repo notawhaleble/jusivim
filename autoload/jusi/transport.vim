@@ -36,6 +36,27 @@ function! s:debug_log(bufnr, message, ...) abort
   call writefile([join(l:parts, ' | ')], l:path, 'a')
 endfunction
 
+function! s:envelope_log_summary(envelope) abort
+  let l:payload = get(a:envelope, 'payload', {})
+  let l:session = get(l:payload, 'session', {})
+  let l:cell = get(l:payload, 'cell', {})
+  let l:error = get(a:envelope, 'error', {})
+  return {
+        \ 'kind': get(a:envelope, 'kind', ''),
+        \ 'type': get(a:envelope, 'type', ''),
+        \ 'request_id': get(a:envelope, 'request_id', ''),
+        \ 'ok': get(a:envelope, 'ok', ''),
+        \ 'session_id': get(l:payload, 'session_id', get(l:session, 'id', '')),
+        \ 'session_state': get(l:session, 'state', ''),
+        \ 'cell_id': get(l:payload, 'cell_id', get(l:cell, 'id', '')),
+        \ 'client_id': get(l:payload, 'client_id', get(l:cell, 'client_id', '')),
+        \ 'handler_id': get(l:payload, 'handler_id', ''),
+        \ 'message_type': get(l:payload, 'message_type', ''),
+        \ 'error_code': type(l:error) == type({}) ? get(l:error, 'code', '') : '',
+        \ 'error': type(l:error) == type({}) ? get(l:error, 'message', '') : l:error,
+        \ }
+endfunction
+
 function! s:normalize_bufnr(bufnr) abort
   if a:bufnr is# 0 || a:bufnr is# ''
     return bufnr('%')
@@ -572,6 +593,8 @@ function! s:on_message(bufnr, envelope) abort
   if type(a:envelope) != type({})
     return
   endif
+  call jusi#log#write('debug', 'transport', 'received',
+        \ s:envelope_log_summary(a:envelope), a:bufnr)
 
   if get(a:envelope, 'kind', '') ==# 'response'
     let l:request_id = get(a:envelope, 'request_id', '')
@@ -692,6 +715,10 @@ function! s:nvim_exit(bufnr, jobid, code, event) abort
     return
   endif
   call s:debug_log(a:bufnr, 'nvim-exit', 'job=' . a:jobid, 'code=' . a:code)
+  call jusi#log#write(a:code == 0 ? 'info' : 'error', 'transport', 'backend_exited', {
+        \ 'job': a:jobid,
+        \ 'exit_code': a:code,
+        \ }, a:bufnr)
   let l:state = s:ensure_state(a:bufnr)
   let l:state.job = 0
   call s:set_state(a:bufnr, l:state)
@@ -711,6 +738,9 @@ function! s:vim_exit(bufnr, job, status) abort
     return
   endif
   call s:debug_log(a:bufnr, 'vim-exit', 'status=' . a:status)
+  call jusi#log#write(a:status == 0 ? 'info' : 'error', 'transport', 'backend_exited', {
+        \ 'exit_status': a:status,
+        \ }, a:bufnr)
   let l:state = s:ensure_state(a:bufnr)
   let l:state.job = 0
   let l:state.channel = 0
@@ -741,6 +771,9 @@ function! s:start_job(bufnr, envelope) abort
   let l:state.cmd = s:copy_cmd(l:cmd)
   call s:set_state(a:bufnr, l:state)
   call s:debug_log(a:bufnr, 'start-job', l:cmd)
+  call jusi#log#write('info', 'transport', 'backend_starting', {
+        \ 'request_type': get(a:envelope, 'type', ''),
+        \ }, a:bufnr)
   if has('nvim')
     let l:job = jobstart(l:cmd, {
           \ 'on_stdout': function('s:nvim_stdout', [a:bufnr]),
@@ -751,11 +784,15 @@ function! s:start_job(bufnr, envelope) abort
           \ })
     if l:job <= 0
       call s:debug_log(a:bufnr, 'start-job-failed', l:job)
+      call jusi#log#write('error', 'transport', 'backend_start_failed', {
+            \ 'result': l:job,
+            \ }, a:bufnr)
       return 0
     endif
     let l:state.job = l:job
     call s:set_state(a:bufnr, l:state)
     call s:debug_log(a:bufnr, 'start-job-ok', 'job=' . l:job)
+    call jusi#log#write('info', 'transport', 'backend_started', {'job': l:job}, a:bufnr)
     return 1
   endif
 
@@ -771,12 +808,16 @@ function! s:start_job(bufnr, envelope) abort
         \ })
   if type(l:job) == type(0) && (l:job == 0 || l:job == -1)
     call s:debug_log(a:bufnr, 'start-job-failed', l:job)
+    call jusi#log#write('error', 'transport', 'backend_start_failed', {
+          \ 'result': l:job,
+          \ }, a:bufnr)
     return 0
   endif
   let l:state.job = l:job
   let l:state.channel = job_getchannel(l:job)
   call s:set_state(a:bufnr, l:state)
   call s:debug_log(a:bufnr, 'start-job-ok', 'channel=' . string(l:state.channel))
+  call jusi#log#write('info', 'transport', 'backend_started', {}, a:bufnr)
   return 1
 endfunction
 
@@ -792,6 +833,8 @@ endfunction
 function! jusi#transport#request(bufnr, envelope) abort
   let l:bufnr = s:normalize_bufnr(a:bufnr)
   call s:debug_log(l:bufnr, 'request-begin', a:envelope)
+  call jusi#log#write('debug', 'transport', 'request',
+        \ s:envelope_log_summary(a:envelope), l:bufnr)
   let l:Handler = s:handler_funcref()
   if type(l:Handler) == type(function('tr'))
     let l:result = call(l:Handler, [l:bufnr, a:envelope])
@@ -840,15 +883,30 @@ function! jusi#transport#request(bufnr, envelope) abort
   endif
   if !get(l:pending, 'done', 0)
     call s:debug_log(l:bufnr, 'request-timeout', l:request_id, 'timeout_ms=' . l:timeout)
+    call jusi#log#write('warn', 'transport', 'request_timeout', {
+          \ 'request_id': l:request_id,
+          \ 'request_type': get(a:envelope, 'type', ''),
+          \ 'timeout_ms': l:timeout,
+          \ }, l:bufnr)
     return {'ok': 0, 'error': 'Timed out waiting for backend response', 'error_code': 'transport_timeout'}
   endif
   call s:debug_log(l:bufnr, 'request-complete', l:request_id, l:pending.response)
+  call jusi#log#write(get(l:pending.response, 'ok', 0) ? 'debug' : 'warn',
+        \ 'transport', 'response', {
+        \   'request_id': l:request_id,
+        \   'request_type': get(a:envelope, 'type', ''),
+        \   'ok': get(l:pending.response, 'ok', 0),
+        \   'error_code': get(l:pending.response, 'error_code', ''),
+        \   'error': get(l:pending.response, 'error', ''),
+        \ }, l:bufnr)
   return l:pending.response
 endfunction
 
 function! jusi#transport#notify(bufnr, envelope) abort
   let l:bufnr = s:normalize_bufnr(a:bufnr)
   call s:debug_log(l:bufnr, 'notify-begin', a:envelope)
+  call jusi#log#write('debug', 'transport', 'notify',
+        \ s:envelope_log_summary(a:envelope), l:bufnr)
   let l:Handler = s:handler_funcref()
   if type(l:Handler) == type(function('tr'))
     let l:result = call(l:Handler, [l:bufnr, a:envelope])

@@ -1,5 +1,14 @@
 source test/helpers.vim
 
+function! TestJusiWebBuffer(url) abort
+  let b:test_jusi_web_buffer_url = a:url
+  setlocal buftype=nofile
+  setlocal bufhidden=hide
+  setlocal noswapfile
+  setlocal readonly
+  setlocal nomodifiable
+endfunction
+
 function! Test_parser_detects_cells_and_magic() abort
   let l:parsed = jusi#notebook#parse_lines([
         \ '##',
@@ -1024,6 +1033,81 @@ function! Test_default_session_state_is_initialized_for_notebook() abort
   call assert_equal({}, get(l:session, 'palette', {}))
   call assert_equal({}, get(l:session, 'plugin_specs', {}))
   call assert_false(has_key(l:session, 'prepared'))
+endfunction
+
+function! Test_user_log_filters_levels_and_redacts_sensitive_payloads() abort
+  let l:save_level = get(g:, 'jusi_log_level', 'off')
+  let l:save_file = get(g:, 'jusi_log_file', '')
+  let l:save_max = get(g:, 'jusi_log_max_bytes', 1048576)
+  let l:path = tempname()
+  try
+    let g:jusi_log_level = 'info'
+    let g:jusi_log_file = l:path
+    let g:jusi_log_max_bytes = 1048576
+    call jusi#log#write('debug', 'test', 'hidden', {'value': 'debug-only'})
+    call jusi#log#write('info', 'test', 'visible', {
+          \ 'password': 'secret-password',
+          \ 'cell_text': 'select private_data',
+          \ 'nested': {'api_token': 'secret-token', 'state': 'connected'},
+          \ })
+
+    let l:text = join(readfile(l:path), "\n")
+    call assert_notmatch('debug-only', l:text)
+    call assert_notmatch('secret-password', l:text)
+    call assert_notmatch('select private_data', l:text)
+    call assert_notmatch('secret-token', l:text)
+    call assert_match('<redacted>', l:text)
+    call assert_match('<omitted>', l:text)
+    call assert_match('connected', l:text)
+
+    let g:jusi_log_max_bytes = 50
+    call jusi#log#write('info', 'test', 'rotated', {'state': 'done'})
+    call assert_true(filereadable(l:path . '.1'))
+  finally
+    let g:jusi_log_level = l:save_level
+    let g:jusi_log_file = l:save_file
+    let g:jusi_log_max_bytes = l:save_max
+    call delete(l:path)
+    call delete(l:path . '.1')
+  endtry
+endfunction
+
+function! Test_user_log_records_backend_disconnect_origin_and_reason() abort
+  let l:save_level = get(g:, 'jusi_log_level', 'off')
+  let l:save_file = get(g:, 'jusi_log_file', '')
+  let l:path = tempname()
+  call Test_open_scratch([
+        \ '##',
+        \ 'print("hello")',
+        \ ])
+  try
+    let g:jusi_log_level = 'debug'
+    let g:jusi_log_file = l:path
+    call jusi#session#apply({
+          \ 'id': 'sess-log-1',
+          \ 'state': 'connected',
+          \ 'last_action': 'start',
+          \ })
+    call jusi#session#callback_session({
+          \ 'id': 'sess-log-1',
+          \ 'state': 'disconnected',
+          \ 'last_error': 'healthcheck timed out',
+          \ 'last_error_code': 'healthcheck_timeout',
+          \ })
+
+    let l:text = join(readfile(l:path), "\n")
+    call assert_match('backend_update', l:text)
+    call assert_match('state_changed', l:text)
+    call assert_match('healthcheck_timeout', l:text)
+    call assert_match('healthcheck timed out', l:text)
+    call assert_match('sess-log-1', l:text)
+  finally
+    let b:jusi_nb.session.state = 'stopped'
+    let g:jusi_log_level = l:save_level
+    let g:jusi_log_file = l:save_file
+    call delete(l:path)
+    call delete(l:path . '.1')
+  endtry
 endfunction
 
 function! Test_config_ensure_file_creates_default_jusi_toml() abort
@@ -2326,9 +2410,7 @@ function! Test_close_client_transport_response_closes_visible_native_terminal_bu
 
     call jusi#session#close_current_client()
 
-    call assert_true(bufexists(l:client))
-    call assert_equal('detached', getbufvar(l:client, 'jusi_client_role', ''))
-    call assert_equal(0, getbufvar(l:client, 'jusi_client_cell_id', -1))
+    call assert_false(bufexists(l:client))
     call assert_equal(-1, bufwinid(l:client))
     call assert_equal('shutdown', b:jusi_nb.cells[0].client_state)
     call assert_equal(-1, b:jusi_nb.cells[0].client_bufnr)
@@ -3827,6 +3909,197 @@ function! Test_handler_action_request_yank_text_updates_main_registers() abort
   endtry
 endfunction
 
+function! Test_handler_action_request_open_url_uses_web_buffer_in_client_window() abort
+  command! -nargs=? JusiWebBuffer call TestJusiWebBuffer(<q-args>)
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select * from users',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+  let l:url = 'https://example.com/report?id=42'
+  let b:jusi_nb.session.id = 'sess-1'
+  let b:jusi_nb.session.state = 'connected'
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  let b:jusi_nb.cells[0].handler = {'id': 'sqlite', 'last_message_type': 'handler_snapshot', 'payload': {}}
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+
+  try
+    belowright split
+    execute 'buffer ' . l:client
+    let l:client_winid = win_getid()
+    call jusi#transport#receive(l:notebook, {
+          \ 'kind': 'event',
+          \ 'type': 'handler_message',
+          \ 'version': 1,
+          \ 'payload': {
+          \   'notebook_id': 'nb-' . l:notebook,
+          \   'session_id': 'sess-1',
+          \   'client_id': 'client-1',
+          \   'handler_id': 'sqlite',
+          \   'message_type': 'action_request',
+          \   'payload': {
+          \     'action_type': 'open_url',
+          \     'payload': {
+          \       'url': l:url,
+          \       'open_in': 'client',
+          \     },
+          \   },
+          \ },
+          \ })
+
+    let l:web_bufnr = bufnr('%')
+    call assert_equal(l:client_winid, win_getid())
+    call assert_notequal(l:client, l:web_bufnr)
+    call assert_equal(l:url, getbufvar(l:web_bufnr, 'test_jusi_web_buffer_url', ''))
+    call assert_equal(l:notebook, getbufvar(l:web_bufnr, 'jusi_client_notebook_bufnr', 0))
+    call assert_equal(l:cell_id, getbufvar(l:web_bufnr, 'jusi_client_cell_id', 0))
+    call assert_equal('client-1', getbufvar(l:web_bufnr, 'jusi_client_id', ''))
+    call assert_equal('web', getbufvar(l:web_bufnr, 'jusi_client_role', ''))
+    call assert_equal(l:url, getbufvar(l:web_bufnr, 'jusi_client_web_url', ''))
+    let l:notebook_state = getbufvar(l:notebook, 'jusi_nb', {})
+    call assert_equal('open_url', get(get(get(get(l:notebook_state, 'cells', [{}])[0], 'handler', {}), 'payload', {}), 'action_type', ''))
+  finally
+    let l:state = getbufvar(l:notebook, 'jusi_nb', {})
+    let l:state.session.state = 'stopped'
+    call setbufvar(l:notebook, 'jusi_nb', l:state)
+    silent! only
+    delcommand JusiWebBuffer
+  endtry
+endfunction
+
+function! Test_handler_action_request_open_link_can_open_web_buffer_in_tab() abort
+  command! -nargs=? JusiWebBuffer call TestJusiWebBuffer(<q-args>)
+  call Test_open_scratch([
+        \ '##',
+        \ '%%vd main',
+        \ 'data',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+  let l:url = 'https://example.com/dashboard'
+  let l:initial_tabs = tabpagenr('$')
+  let b:jusi_nb.session.id = 'sess-1'
+  let b:jusi_nb.session.state = 'connected'
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  let b:jusi_nb.cells[0].handler = {'id': 'vd', 'last_message_type': 'handler_snapshot', 'payload': {}}
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+
+  try
+    call jusi#transport#receive(l:notebook, {
+          \ 'kind': 'event',
+          \ 'type': 'handler_message',
+          \ 'version': 1,
+          \ 'payload': {
+          \   'notebook_id': 'nb-' . l:notebook,
+          \   'session_id': 'sess-1',
+          \   'client_id': 'client-1',
+          \   'handler_id': 'vd',
+          \   'message_type': 'action_request',
+          \   'payload': {
+          \     'action_type': 'open_link',
+          \     'payload': {
+          \       'href': l:url,
+          \       'open_in': 'tab',
+          \     },
+          \   },
+          \ },
+          \ })
+
+    let l:web_bufnr = bufnr('%')
+    call assert_equal(l:initial_tabs + 1, tabpagenr('$'))
+    call assert_equal(l:url, getbufvar(l:web_bufnr, 'test_jusi_web_buffer_url', ''))
+    call assert_equal(l:notebook, getbufvar(l:web_bufnr, 'jusi_client_notebook_bufnr', 0))
+    call assert_equal(l:cell_id, getbufvar(l:web_bufnr, 'jusi_client_cell_id', 0))
+    call assert_equal('web', getbufvar(l:web_bufnr, 'jusi_client_role', ''))
+    let l:notebook_state = getbufvar(l:notebook, 'jusi_nb', {})
+    call assert_equal('open_link', get(get(get(get(l:notebook_state, 'cells', [{}])[0], 'handler', {}), 'payload', {}), 'action_type', ''))
+  finally
+    let l:state = getbufvar(l:notebook, 'jusi_nb', {})
+    let l:state.session.state = 'stopped'
+    call setbufvar(l:notebook, 'jusi_nb', l:state)
+    silent! tabonly!
+    delcommand JusiWebBuffer
+  endtry
+endfunction
+
+function! Test_web_buffer_close_returns_window_to_origin_client() abort
+  command! -nargs=? JusiWebBuffer call TestJusiWebBuffer(<q-args>)
+  call Test_open_scratch([
+        \ '##',
+        \ '%%sql main',
+        \ 'select * from users',
+        \ ])
+  let l:notebook = bufnr('%')
+  let l:cell_id = b:jusi_nb.cells[0].id
+  let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+  let l:url = 'https://example.com/report'
+  let b:jusi_nb.session.id = 'sess-1'
+  let b:jusi_nb.session.state = 'connected'
+  let b:jusi_nb.cells[0].status = 'follow-up'
+  let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+  let b:jusi_nb.cells[0].client_id = 'client-1'
+  let b:jusi_nb.cells[0].client_state = 'active'
+  let b:jusi_nb.cells[0].client_bufnr = l:client
+  let b:jusi_nb.cells[0].handler = {'id': 'sqlite', 'last_message_type': 'handler_snapshot', 'payload': {}}
+  call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+
+  try
+    belowright split
+    execute 'buffer ' . l:client
+    let l:client_winid = win_getid()
+    call jusi#transport#receive(l:notebook, {
+          \ 'kind': 'event',
+          \ 'type': 'handler_message',
+          \ 'version': 1,
+          \ 'payload': {
+          \   'notebook_id': 'nb-' . l:notebook,
+          \   'session_id': 'sess-1',
+          \   'client_id': 'client-1',
+          \   'handler_id': 'sqlite',
+          \   'message_type': 'action_request',
+          \   'payload': {
+          \     'action_type': 'open_url',
+          \     'payload': {
+          \       'url': l:url,
+          \       'open_in': 'client',
+          \     },
+          \   },
+          \ },
+          \ })
+    let l:web = bufnr('%')
+
+    call assert_equal(l:client_winid, win_getid())
+    call assert_equal(l:web, getbufvar(l:client, 'jusi_client_web_bufnr', 0))
+
+    call jusi#session#close_current_client()
+
+    call assert_equal(l:client_winid, win_getid())
+    call assert_equal(l:client, bufnr('%'))
+    call assert_false(bufexists(l:web))
+    call assert_equal(0, getbufvar(l:client, 'jusi_client_web_bufnr', -1))
+    let l:notebook_state = getbufvar(l:notebook, 'jusi_nb', {})
+    call assert_equal(l:client, get(get(l:notebook_state, 'cells', [{}])[0], 'client_bufnr', -1))
+  finally
+    let l:state = getbufvar(l:notebook, 'jusi_nb', {})
+    let l:state.session.state = 'stopped'
+    call setbufvar(l:notebook, 'jusi_nb', l:state)
+    silent! only
+    delcommand JusiWebBuffer
+  endtry
+endfunction
+
 function! Test_handler_message_event_ignores_mismatched_session() abort
   call Test_open_scratch([
         \ '##',
@@ -3886,6 +4159,82 @@ function! Test_send_handler_message_builds_protocol_request() abort
     call assert_equal(12, get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'rows', 0))
     call assert_equal(40, get(get(get(s:last_request_envelope, 'payload', {}), 'payload', {}), 'cols', 0))
   finally
+    let g:jusi_session_adapter = l:save_adapter
+  endtry
+endfunction
+
+function! Test_existing_native_terminal_notifies_handler_when_window_geometry_changes() abort
+  let l:save_adapter = get(g:, 'jusi_session_adapter', {})
+  try
+    let g:jusi_session_adapter = {
+          \ 'request': function('s:test_request_adapter'),
+          \ }
+    let s:request_envelopes = []
+    call Test_open_scratch([
+          \ '##',
+          \ '%%vd pods',
+          \ ])
+    let l:notebook = bufnr('%')
+    let l:cell_id = b:jusi_nb.cells[0].id
+    let b:jusi_nb.session.id = 'sess-1'
+    let b:jusi_nb.session.state = 'connected'
+    let b:jusi_nb.cells[0].status = 'follow-up'
+    let b:jusi_nb.cells[0].owner = {'kind': 'handler'}
+    let b:jusi_nb.cells[0].client_id = 'client-1'
+    let b:jusi_nb.cells[0].client_state = 'active'
+    let b:jusi_nb.cells[0].handler = {
+          \ 'id': 'vd',
+          \ 'last_message_type': 'handler_snapshot',
+          \ 'payload': {},
+          \ 'snapshot': {'transport': 'native_terminal'},
+          \ }
+    let l:client = jusi#client#create_managed_buffer(l:notebook, 'client-1')
+    let b:jusi_nb.cells[0].client_bufnr = l:client
+    call jusi#client#mark_attached_buffer(l:notebook, l:cell_id, 'client-1', l:client)
+    call setbufvar(l:client, 'jusi_client_transport_kind', 'native_terminal')
+
+    belowright 8split
+    execute 'buffer ' . l:client
+    let l:first_rows = winheight(0)
+    let l:first_cols = winwidth(0)
+    call jusi#client#resize_visible_native_terminals()
+
+    let l:resize_requests = filter(copy(s:request_envelopes), {_, v ->
+          \ get(v, 'type', '') ==# 'handler_message'
+          \ && get(get(v, 'payload', {}), 'message_type', '') ==# 'terminal_resize'})
+    call assert_equal(1, len(l:resize_requests))
+    call assert_equal('client-1', get(get(l:resize_requests[0], 'payload', {}), 'client_id', ''))
+    call assert_equal('vd', get(get(l:resize_requests[0], 'payload', {}), 'handler_id', ''))
+    call assert_equal({
+          \ 'rows': l:first_rows,
+          \ 'cols': l:first_cols,
+          \ }, get(get(l:resize_requests[0], 'payload', {}), 'payload', {}))
+
+    call jusi#client#resize_visible_native_terminals()
+    let l:resize_requests = filter(copy(s:request_envelopes), {_, v ->
+          \ get(v, 'type', '') ==# 'handler_message'
+          \ && get(get(v, 'payload', {}), 'message_type', '') ==# 'terminal_resize'})
+    call assert_equal(1, len(l:resize_requests))
+
+    resize 5
+    let l:changed_rows = winheight(0)
+    call assert_notequal(l:first_rows, l:changed_rows)
+    call jusi#client#resize_visible_native_terminals()
+    let l:resize_requests = filter(copy(s:request_envelopes), {_, v ->
+          \ get(v, 'type', '') ==# 'handler_message'
+          \ && get(get(v, 'payload', {}), 'message_type', '') ==# 'terminal_resize'})
+    call assert_equal(2, len(l:resize_requests))
+    call assert_equal({
+          \ 'rows': l:changed_rows,
+          \ 'cols': winwidth(0),
+          \ }, get(get(l:resize_requests[-1], 'payload', {}), 'payload', {}))
+  finally
+    if exists('l:notebook') && bufexists(l:notebook)
+      let l:state = getbufvar(l:notebook, 'jusi_nb', {})
+      let l:state.session.state = 'stopped'
+      call setbufvar(l:notebook, 'jusi_nb', l:state)
+    endif
+    silent! only
     let g:jusi_session_adapter = l:save_adapter
   endtry
 endfunction
@@ -6984,6 +7333,8 @@ function! Test_client_buffer_gets_toggle_focus_mappings() abort
   call assert_equal(':JusiToggleFocus<CR>', maparg("\<C-\\>\<C-\\>", 'n', 0, 1).rhs)
   call assert_equal('<C-R>=jusi#focus#toggle()<CR>', maparg("\<C-\\>\<C-\\>", 'i', 0, 1).rhs)
   call assert_equal('<C-\><C-n>:call jusi#focus#toggle_from_terminal()<CR>', maparg("\<C-\\>\<C-\\>", 't', 0, 1).rhs)
+  call assert_equal(':JusiCloseClient<CR>', maparg('Q', 'n', 0, 1).rhs)
+  call assert_equal('', maparg('W', 'n'))
   call assert_match('^%!jusi#statusline#render_client()', &l:statusline)
   call win_gotoid(bufwinid(l:notebook))
 endfunction

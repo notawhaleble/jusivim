@@ -277,6 +277,16 @@ Current durable-session compatibility:
 - unknown bare `:JusiAttach` aliases fail locally and must not be reinterpreted as `connection_file` targets
 - a failed or timed-out attach/reconnect attempt must not clear the notebook's existing cell-runtime bindings unless the new session establishment actually succeeds
 
+Current user logging compatibility:
+
+- user-facing logging is disabled by default and can be enabled with `:JusiLogEnable [level]`
+- supported levels are `error`, `warn`, `info`, and `debug`; omitted level defaults to `debug`
+- the default log is `~/.jusi/jusivim.log` and can be overridden with `g:jusi_log_file`
+- the active log rotates to `.1` at 1 MiB by default; `g:jusi_log_max_bytes` may override the limit
+- logs combine session transitions, backend lifecycle, healthchecks, reconnect results, cell/client lifecycle summaries, handler message types, and transport outcomes into one chronology
+- credentials, cell bodies, VisiData config, terminal attach environment, and large payload fields are redacted or omitted
+- legacy component-specific debug logs remain available for development-level raw tracing
+
 Current frontend-owned config compatibility:
 
 - frontend owns the local Jusi user config file
